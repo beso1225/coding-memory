@@ -54,13 +54,14 @@ read a runtime state directory, or call a provider. Re-run the opt-in probe when
 changing supported Codex versions rather than treating these fixture checks as
 proof of behavior in a newly installed runtime.
 
-## Remaining ChatGPT App GUI check
+## ChatGPT App GUI check
 
 The bundled executable can be tested above without operating ChatGPT App.
 The actual App-owned process has also been checked for its executable and open
-state-file locations, but App GUI hook execution remains unverified. The available
-Computer Use tool rejected control of this App (`com.openai.codex`), so the GUI
-step needs a human in this environment.
+state-file locations. A later human-run GUI probe confirmed normal hook approval,
+`UserPromptSubmit`/`Stop` execution, and an independent cold read of the App-created
+thread. See `fixtures/app-gui-26.1007.30912.json`. The available Computer Use tool
+rejected control of this App (`com.openai.codex`), so repeat GUI steps manually.
 
 Prepare a separate test project without changing regular Codex settings:
 
@@ -73,18 +74,36 @@ project-local configuration uses absolute executable paths and logs only metadat
 for that project's exact working directory. It does not record conversation text.
 The printed `events` path identifies the log to inspect after the test.
 
-Before closing issue #1, use a separate synthetic project in ChatGPT App:
+To repeat the baseline or extend coverage, use a separate synthetic project:
 
 1. Review the prepared project's hook script and project-local `.codex` configuration.
 2. Review and trust those hooks through the App's supported flow. Do not transfer
    the probe's trust bypass to the user's regular configuration.
-3. Start a local App turn asking for a literal synthetic answer, then perform
-   another turn with a harmless tool call and interrupt a third turn.
+3. Start a local App turn asking for a literal synthetic answer. For broader
+   daily-use coverage, also test a harmless tool call and an interrupted turn.
 4. Record the hook/notification payloads, trust behavior, and executable environment.
    Use a separately started matching bundled app-server to cold-read only those
    known synthetic thread IDs without resuming them.
-5. Repeat after an App restart. Record any inability to enable hooks, access the
-   state store, or read the selected histories as a design checkpoint.
+5. For later daily-use validation, repeat after an App restart. Record any inability
+   to enable hooks, access the state store, or read the selected histories as a
+   design checkpoint.
 
-Do not infer success here from the isolated bundled-binary probe. No App GUI
-conversation was created or sent by this experiment.
+Cold-read an explicitly selected synthetic App thread with the matching binary:
+
+```sh
+python3 experiments/codex_capture/read_app_thread.py \
+  /Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex THREAD_ID \
+  --project /private/tmp/coding-memory-app-probe-EXAMPLE/project \
+  --codex-home ~/.codex \
+  --output /private/tmp/coding-memory-app-probe-EXAMPLE/app-read.json
+```
+
+Supply the actual state directory explicitly; replace `~/.codex` if the App uses
+a different `CODEX_HOME`. The reader checks the selected thread's working directory before
+saving the result and never resumes it. Keep raw output outside Git. A missing
+recording log before hook approval is different from missing persisted history;
+project trust and per-hook approval are distinct readiness checks.
+
+Do not infer GUI success from the isolated bundled-binary probe. The GUI fixture
+was obtained from the user's manually created conversation and explicit approval;
+no GUI conversation was created or sent by the probe scripts.

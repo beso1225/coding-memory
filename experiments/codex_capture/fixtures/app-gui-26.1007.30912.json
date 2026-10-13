@@ -1,0 +1,161 @@
+{
+  "format": "coding-memory-app-gui-fixture-v1",
+  "app_version": "26.1007.30912",
+  "observation": "human-run local App; hooks approved in GUI; independent bundled cold reader",
+  "project_trusted": true,
+  "trusted_hook_events": [
+    "interrupt",
+    "post_tool_use",
+    "session_start",
+    "stop",
+    "user_prompt_submit"
+  ],
+  "hooks": [
+    {
+      "hook_event_name": "UserPromptSubmit",
+      "session_id": "01a13559-745b-7ca0-b3d2-847f80fd0233",
+      "turn_id": "01a1355e-a8e0-7780-afca-36724ccea95d",
+      "cwd": "/synthetic/app-probe/project",
+      "transcript_path": "/synthetic/codex-home/sessions/2026/10/13/rollout-2026-10-13T22-00-17-01a13559-745b-7ca0-b3d2-847f80fd0233.jsonl",
+      "model": "gpt-6.1-sol",
+      "permission_mode": "default",
+      "observed_at_ns": 1791896758599566000
+    },
+    {
+      "hook_event_name": "Stop",
+      "session_id": "01a13559-745b-7ca0-b3d2-847f80fd0233",
+      "turn_id": "01a1355e-a8e0-7780-afca-36724ccea95d",
+      "cwd": "/synthetic/app-probe/project",
+      "transcript_path": "/synthetic/codex-home/sessions/2026/10/13/rollout-2026-10-13T22-00-17-01a13559-745b-7ca0-b3d2-847f80fd0233.jsonl",
+      "model": "gpt-6.1-sol",
+      "permission_mode": "default",
+      "stop_hook_active": false,
+      "observed_at_ns": 1791896762345134000
+    }
+  ],
+  "legacy_notify_observed": false,
+  "read": {
+    "thread": {
+      "id": "01a13559-745b-7ca0-b3d2-847f80fd0233",
+      "cwd": "/synthetic/app-probe/project",
+      "cliVersion": "0.162.0-alpha.17.2",
+      "originator": "Codex Desktop",
+      "source": "vscode",
+      "historyMode": "paginated",
+      "status": {
+        "type": "notLoaded"
+      },
+      "turns": [
+        {
+          "id": "01a1355a-6e41-7e51-9e9e-c8ac2461a878",
+          "rootTurnId": "01a1355a-6e41-7e51-9e9e-c8ac2461a878",
+          "items": [
+            {
+              "type": "userMessage",
+              "id": "01a1355a-70bf-7b50-9137-9725726f37cc",
+              "clientId": "ec162c46-c990-45b9-bdd0-fffbb94d7294",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "`Reply exactly APP_CAPTURE_OK` \n",
+                  "text_elements": []
+                }
+              ]
+            },
+            {
+              "type": "agentMessage",
+              "id": "msg_057799b419c11395016ace2ba5f12481919fde1cedf858f15c",
+              "text": "APP_CAPTURE_OK",
+              "phase": "final_answer",
+              "memoryCitation": null,
+              "delivery": null,
+              "questions": null
+            }
+          ],
+          "itemsView": "full",
+          "status": "completed",
+          "error": null,
+          "startedAt": 1791896481,
+          "completedAt": 1791896486,
+          "durationMs": 4847
+        },
+        {
+          "id": "01a1355e-a8e0-7780-afca-36724ccea95d",
+          "rootTurnId": "01a1355e-a8e0-7780-afca-36724ccea95d",
+          "items": [
+            {
+              "type": "userMessage",
+              "id": "01a1355e-a94b-7bd2-b25f-b809ffafe264",
+              "clientId": "96be1021-5e26-4a80-a7a2-1c52fd4c975a",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "`Reply exactly APP_CAPTURE_OK` \n",
+                  "text_elements": []
+                }
+              ]
+            },
+            {
+              "type": "agentMessage",
+              "id": "msg_057799b419c11395016ace2cba0010819184e7d040614b03fc",
+              "text": "APP_CAPTURE_OK",
+              "phase": "final_answer",
+              "memoryCitation": null,
+              "delivery": null,
+              "questions": null
+            }
+          ],
+          "itemsView": "full",
+          "status": "completed",
+          "error": null,
+          "startedAt": 1791896758,
+          "completedAt": 1791896762,
+          "durationMs": 3817
+        }
+      ]
+    }
+  },
+  "items": {
+    "data": [
+      {
+        "turnId": "01a1355e-a8e0-7780-afca-36724ccea95d",
+        "item": {
+          "type": "userMessage",
+          "id": "01a1355e-a94b-7bd2-b25f-b809ffafe264",
+          "clientId": "96be1021-5e26-4a80-a7a2-1c52fd4c975a",
+          "content": [
+            {
+              "type": "text",
+              "text": "`Reply exactly APP_CAPTURE_OK` \n",
+              "text_elements": []
+            }
+          ]
+        },
+        "startedAtMs": 1791896758606,
+        "completedAtMs": 1791896758606
+      },
+      {
+        "turnId": "01a1355e-a8e0-7780-afca-36724ccea95d",
+        "item": {
+          "type": "agentMessage",
+          "id": "msg_057799b419c11395016ace2cba0010819184e7d040614b03fc",
+          "text": "APP_CAPTURE_OK",
+          "phase": "final_answer",
+          "memoryCitation": null,
+          "delivery": null,
+          "questions": null
+        },
+        "startedAtMs": 1791896762254,
+        "completedAtMs": 1791896762255
+      }
+    ],
+    "nextCursor": null,
+    "backwardsCursor": "{\"requestedThreadId\":\"01a13559-745b-7ca0-b3d2-847f80fd0233\",\"rolloutOrdinal\":22,\"includeAnchor\":true,\"scope\":{\"kind\":\"itemsByCreatedAtOrdinal\"}}"
+  },
+  "thread_started_observed": false,
+  "requested_methods": [
+    "initialize",
+    "thread/read",
+    "thread/items/list"
+  ]
+}

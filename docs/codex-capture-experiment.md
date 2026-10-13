@@ -2,17 +2,18 @@
 
 Date: 2026-10-13 (Asia/Tokyo). Work item: [issue #1](https://github.com/beso1225/coding-memory/issues/1).
 
-Status: CLI execution and protocol probes complete; the App-bundled binary was
-tested independently. Actual App GUI hook execution and cross-process reading
-of an App-created synthetic thread remain a checkpoint. Do not close issue #1
-or describe the App adapter as validated yet.
+Status: the capture feasibility checkpoint is validated for the installed CLI
+and local ChatGPT App. The user approved project-local hooks in the App GUI and
+repeated the synthetic turn; a separate bundled app-server read that App-created
+thread without resuming it. This validates the selected interfaces, not a finished
+adapter or unattended operation.
 
 ## Environment and method
 
 | Surface | Installed version | Execution tested |
 | --- | --- | --- |
 | PATH Codex | `0.162.1` | `codex exec` and its stdio app-server |
-| ChatGPT App | `26.1007.30912`, build `20156` | App-owned backend process metadata only |
+| ChatGPT App | `26.1007.30912`, build `20156` | Human-run synthetic turn, GUI hook approval, independent cold read |
 | App-bundled Codex | `0.162.0-alpha.17.2` | Separate exec and stdio app-server probes |
 
 Source revisions corresponding to the installed executables:
@@ -24,8 +25,8 @@ The [probe](../experiments/codex_capture/README.md) uses a fresh synthetic proje
 isolated runtime state, a loopback Responses provider, and generated recording
 hooks. It exercises the installed binaries without model-account authentication
 or reading personal transcript bodies. Hook trust is bypassed only for those
-generated scripts. Default GUI trust behavior and the interactive CLI TUI were
-not exercised. This distinction matters even when the binaries share core code.
+generated scripts in the isolated probe. The later App GUI check used normal
+hook approval, without bypass. The interactive CLI TUI was not exercised.
 
 The fixtures are small projections of the observed API/history records. Generated
 runtime instruction bodies and machine-specific paths are excluded. No upstream
@@ -202,18 +203,49 @@ external `--listen` endpoint was present in the inspected invocation. It had
 Only process/file-location metadata was inspected, not personal transcript bodies.
 
 The isolated bundled-binary probe independently demonstrated executable hooks,
-legacy notify, stored history, fork-prefix resolution, and cold API reads. Together
-these findings make a matching, engine-owned reader a plausible App history route.
-They do not demonstrate attaching to the App-owned event stream or reading a
-specific App-created thread from another process under its real configuration.
+legacy notify, stored history, fork-prefix resolution, and cold API reads. The
+subsequent human-run GUI probe established the actual local App route:
+
+1. The first literal `APP_CAPTURE_OK` turn completed and was readable by a separate
+   bundled app-server, but no recording-hook log existed yet. Project trust was
+   present; per-hook approvals were not present at inspection time.
+2. The user then saw the App's hook approval UI, approved the generated hooks, and
+   repeated the instruction in the same App conversation. Saved trust hashes
+   were present for all five generated hook handlers.
+3. `UserPromptSubmit` and `Stop` were recorded with the App thread ID, native turn
+   ID, working directory, and transcript locator. The recorder stores metadata,
+   not conversation text. SessionStart was not expected to repeat for this
+   already-created conversation; tool/interruption hooks were not exercised here.
+4. A fresh matching bundled app-server read the same thread via `thread/read` and
+   `thread/items/list`. Both synthetic turns were completed, the later turn's
+   ID matched both recorded hooks, and its full items contained `APP_CAPTURE_OK`.
+   The thread was `notLoaded`; no `thread/started` notification was observed.
+
+The [App GUI fixture](../experiments/codex_capture/fixtures/app-gui-26.1007.30912.json)
+and its offline assertion preserve this result with machine paths anonymized.
+The [cold-reader probe](../experiments/codex_capture/read_app_thread.py) only uses
+initialization and read methods against explicitly supplied synthetic thread IDs.
+Hook/notify disabling in that separate reader is invocation-local and does not
+change the App's settings or resume the development thread.
+
+No legacy `agent-turn-complete` notification appeared in the GUI probe's log,
+despite the prepared project-local notify configuration. Its cause was not
+isolated; do not generalize absence in this configuration to every App version.
+Select the demonstrated project-local Stop hook as the App capture hint, with
+native history confirmation and reconciliation. CLI legacy notify remains a
+demonstrated hint for the CLI. Repeated Stop invocations share the native Run key;
+none alone confirms termination. Use Interrupt as an additional hint only after
+validating its actual App behavior, and reconcile persisted terminal outcomes.
 
 The available Computer Use tool rejected GUI control of this App
 (`com.openai.codex`) for safety reasons. No alternate GUI automation route was used.
-The probe includes a disposable project preparer so a human can perform the
-remaining check without changing normal Codex configuration.
+The user performed the GUI step manually and approved the synthetic project's
+hooks. The collector was not installed for normal projects.
 
-The [remaining GUI procedure](../experiments/codex_capture/README.md#remaining-chatgpt-app-gui-check)
-checks App hook trust/execution and cross-process reads with a known synthetic
-thread, including restart. Until that procedure passes, retain the original App
-design checkpoint and keep issue #1 open. Continue only the reversible CLI
-prototype work justified by these results.
+The [GUI procedure](../experiments/codex_capture/README.md#chatgpt-app-gui-check)
+can repeat this check for another installed version. The Issue #1 feasibility
+checkpoint is satisfied by the demonstrated hook and cross-process history route.
+App restart, App-owned tool/interruption turns, GUI approval timing, large history,
+and remote/cloud App threads remain unmeasured. Validate those scenarios when
+implementing App daily-use support; do not claim live subscription to the existing
+App-owned event stream or reliability through restart from this experiment.
