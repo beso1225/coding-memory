@@ -1,0 +1,6 @@
+/target/
+/.direnv/
+/.pkfire/
+/result
+/result-*
+.DS_Store

@@ -1,0 +1,66 @@
+amends "package://pkg.pkl-lang.org/github.com/mizchi/pkfire/pkfire@0.16.0#/Taskfile.pkl"
+
+local fmt: Task = new {
+  name = "fmt"
+  description = "Format Rust, Nix, and task definitions"
+  cmd =
+    """
+    cargo fmt --all
+    nixfmt flake.nix
+    pkl format -w Taskfile.pkl
+    """
+  shellFlags = List("-euc")
+  cache = false
+}
+
+local fmtCheck: Task = new {
+  name = "fmt-check"
+  description = "Check Rust, Nix, and task formatting"
+  cmd =
+    """
+    cargo fmt --all -- --check
+    nixfmt --check flake.nix
+    pkl format --diff-name-only Taskfile.pkl
+    """
+  shellFlags = List("-euc")
+  cache = false
+}
+
+local lint: Task = new {
+  name = "lint"
+  description = "Run Clippy with warnings denied"
+  cmd = "cargo clippy --locked --all-targets --all-features -- -D warnings"
+  cache = false
+}
+
+local test: Task = new {
+  name = "test"
+  description = "Run Rust tests and documentation tests"
+  cmd = "cargo test --locked --all-features"
+  cache = false
+}
+
+local build: Task = new {
+  name = "build"
+  description = "Build Rust library and binary targets"
+  cmd = "cargo build --locked --all-targets"
+  cache = false
+}
+
+local check: Task = new {
+  name = "check"
+  description = "Run formatting, lint, test, and build checks"
+  deps { fmtCheck; lint; test; build }
+  cache = false
+}
+
+// A local binding named `default` fails in pkfire 0.16.0's embedded evaluator.
+// The public task name remains `default` for `pkf run` without an argument.
+local allChecks: Task = new {
+  name = "default"
+  description = "Run all development checks"
+  deps { check }
+  cache = false
+}
+
+tasks { fmt; fmtCheck; lint; test; build; check; allChecks }

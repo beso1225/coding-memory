@@ -1,0 +1,6 @@
+[package]
+name = "coding-memory"
+version = "0.1.0"
+edition = "2024"
+description = "Long-term memory for coding agents"
+publish = false

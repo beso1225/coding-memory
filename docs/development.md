@@ -1,0 +1,111 @@
+# Development Setup
+
+The initial environment targets Apple Silicon macOS (`aarch64-darwin`). It uses
+one Cargo package with library and binary entry points. Both entry points are
+scaffolding: the binary currently performs no actions, and the library contains
+no memory-processing implementation. Do not use it as an operational CLI yet.
+
+## Prerequisites
+
+- Nix with the `nix-command` and `flakes` experimental features enabled.
+- direnv with its shell hook enabled if automatic activation is desired.
+
+No permanent tool installation, global shell configuration change, worker
+registration, model download, or provider credential is required by this setup.
+Codex and ChatGPT App remain separately installed runtimes for later integration
+experiments; this flake does not replace or pin their installations.
+
+## Activate the environment
+
+From the repository root, review `.envrc` and allow it:
+
+```sh
+direnv allow
+pkf run check
+```
+
+`.envrc` contains only `use flake`. It loads the declared development shell;
+it does not install Git hooks or start a worker.
+
+For a shell without direnv, or a one-shot command:
+
+```sh
+nix develop
+nix develop --command pkf run check
+```
+
+The first activation can download Nix inputs and tool binaries. `flake.lock`
+fixes input revisions, `rust-toolchain.toml` selects Rust `1.99.0`, and the pkfire
+input and Pkl task schema both select `0.16.0`. Commit lock files with intentional
+dependency changes. Nix's Git-backed flake source includes tracked files; a newly
+added file imported by the flake must be added to Git, or registered with
+`git add -N`, before it can be evaluated.
+
+These stable versions were verified on 2026-10-13 against the
+[Rust release announcement](https://blog.rust-lang.org/2026/10/01/Rust-1.99.0/)
+and the [pkfire release](https://github.com/mizchi/pkfire/releases/tag/pkfire%400.16.0).
+The pkfire `v0.16.0` tag includes the updated Nix binary metadata; the original
+`pkfire@0.16.0` package tag still contains older binary metadata. Use the `v` tag
+for the flake and the package URI above for the Pkl schema.
+
+## Included tools
+
+- Rust compiler and Cargo, with Clippy, rustfmt, and standard-library source.
+- rust-analyzer for editor integration.
+- SQLite CLI and pkg-config for upcoming storage work.
+- pkfire and Pkl for task definitions.
+- nixfmt for the environment definition.
+
+The Rust selection comes from `rust-toolchain.toml`, using rust-overlay in Nix.
+It is also understood by rustup users. The editor should inherit the development
+shell so it finds the selected toolchain and `RUST_SRC_PATH`.
+
+There are currently no third-party Rust dependencies. `publish = false` prevents
+accidental crate publication while the project and its license are being defined.
+
+## Tasks
+
+| Command | Behavior |
+| --- | --- |
+| `pkf list` | List development tasks |
+| `pkf run fmt` | Format Rust, `flake.nix`, and `Taskfile.pkl` in place |
+| `pkf run fmt-check` | Check all three formats without modifying files |
+| `pkf run lint` | Run Clippy on all targets/features with warnings denied |
+| `pkf run test` | Run Rust tests and documentation tests |
+| `pkf run build` | Build library and binary targets |
+| `pkf run check` | Run format, lint, test, and build checks |
+| `pkf run` | Run the same aggregate checks by default |
+
+Tasks use Cargo's lock file and incremental compilation. pkfire result caching
+is disabled for these wrappers so a previous successful check cannot hide a
+toolchain/environment change or a missing build artifact.
+
+The scaffold has no behavior tests yet. A successful test command confirms that
+the test targets and documentation-test pipeline execute; it does not validate
+the future engine. Add focused regression tests alongside behavior changes.
+
+The same Rust checks can be invoked directly inside the environment:
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-features
+cargo build --locked --all-targets
+```
+
+## Updating tools and keeping state local
+
+Change Rust deliberately in `rust-toolchain.toml`. For pkfire, keep the flake
+input and `Taskfile.pkl` package URI on the same version. Refresh `flake.lock`
+deliberately and rerun `pkf run check` after a tool update.
+
+`target/` and `.direnv/` are ignored. Captured evidence, runtime SQLite state,
+and provider credentials do not belong in either the source repository or the
+development shell definition. The separate memory vault is not modified by
+development setup.
+
+The setup covers the bootstrap portion of
+[issue #3](https://github.com/beso1225/coding-memory/issues/3). Durable ingestion,
+evidence capture, and the integration gates in
+[issues #1](https://github.com/beso1225/coding-memory/issues/1) and
+[#2](https://github.com/beso1225/coding-memory/issues/2) are still pending.
