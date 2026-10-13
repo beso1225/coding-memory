@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import Mock
-from contract import classify, permitted_call, is_internal
+
+from contract import classify, is_internal, permitted_call
 
 
 class ContractTests(unittest.TestCase):
@@ -37,4 +38,20 @@ class ContractTests(unittest.TestCase):
             self.assertTrue(is_internal(event, {"owned"}, set()))
         self.assertFalse(
             is_internal({"store": "development", "thread": "a"}, {"owned"}, set())
+        )
+
+
+class StrictOutputTests(unittest.TestCase):
+    def test_unknown_role_and_duplicate_keys_are_invalid(self):
+        self.assertEqual(
+            "invalid_output",
+            classify("unknown", 0, '{"role":"unknown","items":[],"approved":true}'),
+        )
+        self.assertEqual(
+            "invalid_output",
+            classify(
+                "review",
+                0,
+                '{"role":"review","items":[],"approved":false,"approved":true}',
+            ),
         )

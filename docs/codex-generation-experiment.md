@@ -4,7 +4,8 @@ Date: 2026-10-14 (Asia/Tokyo). Work item: #2.
 
 This is an installed CLI 0.162.1 experiment, not the production generation
 backend. The three roles use separate exec processes and distinct configurable
-model names against the synthetic loopback Responses provider. The loopback probe uses no personal history or authentication. A subsequent
+model names against the synthetic loopback Responses provider. The loopback
+probe uses no personal history or authentication. A subsequent
 authenticated probe reused the existing Codex login in a private generation home
 with synthetic evidence only; its three gpt-6.1-sol contexts returned valid
 structured output. These checks establish plumbing, not knowledge quality.
@@ -71,7 +72,11 @@ script in that fresh home. Do not enable bypass in a regular development home.
 
 The authenticated probe used that policy with web_search disabled, user config
 and rules ignored, plugins disabled, and read-only execution. Existing auth was
-copied with mode 0600 into a private state directory and removed in finally.
+copied into an exclusively created mode-0600 file in a private state directory.
+The credential context cleans up partial copies and ordinary completed copies.
+If Codex refreshes the credential, the changed copy is preserved privately as
+`refreshed-auth.json` and reported in `refreshed_credentials_preserved`; the probe
+does not overwrite the existing login or discard a potentially rotated token.
 All three fresh contexts returned schema-shaped output without requesting tools.
 This does not prove interception of every tool family or managed configuration.
 The command-denial fixture is the positive policy test; the authenticated runs
@@ -80,7 +85,10 @@ are the credential/schema tests.
 To repeat authenticated tests, explicitly opt in to external synthetic requests:
 `python3 experiments/codex_generation/authenticated_probe.py --allow-external`.
 Without that flag it returns held_external_policy before reading credentials or
-creating the generation home. It uses the default ~/.codex/auth.json login.
+creating the generation home. It defaults to ~/.codex/auth.json; `--auth-source`, `--binary`, and `--model`
+can select the installed environment explicitly. The script is import-safe,
+uses the shared schema/policy helpers, and persists a report even on exceptions.
+Timeout and malformed output are recorded outcomes; it refuses stale output paths.
 Raw results stay outside Git; fixtures contain only synthetic results and IDs.
 
 ## Remaining implementation work
@@ -88,8 +96,8 @@ Raw results stay outside Git; fixtures contain only synthetic results and IDs.
 The user selected further Codex exec hardening rather than switching to a direct
 API. The experiment now demonstrates credential reuse, policy-based command
 denial, three independent contexts, collector exclusion, and output handling.
-The Rust implementation must make namespace registration durable, preserve
-refreshed credentials safely, and validate other tool families and managed
+The Rust implementation must make namespace registration durable, integrate
+credential refresh safely with the regular login, and validate other tool families and managed
 configuration before unattended use. Do not claim a complete filesystem or
 network isolation guarantee from one denied command. Do not silently substitute
 an external provider for a disallowed project.

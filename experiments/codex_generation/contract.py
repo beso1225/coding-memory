@@ -14,13 +14,24 @@ SCHEMA = {
 }
 
 
+def reject_duplicate_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Duplicate JSON key")
+        result[key] = value
+    return result
+
+
 def classify(role, exit_code, final):
     if exit_code != 0:
         return "process_failure"
+    if role not in SCHEMA["properties"]["role"]["enum"] or not isinstance(final, str):
+        return "invalid_output"
     if len(final.encode()) > 65536:
         return "output_limit"
     try:
-        value = json.loads(final)
+        value = json.loads(final, object_pairs_hook=reject_duplicate_keys)
     except (ValueError, TypeError):
         return "invalid_output"
     if not isinstance(value, dict) or set(value) != set(SCHEMA["required"]):
