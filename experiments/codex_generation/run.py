@@ -31,11 +31,12 @@ for name, role, answer in [
     ("failure", "review", None),
     ("tools", "review", {"role": "review", "items": [], "approved": True}),
     ("minimized", "review", {"role": "review", "items": [], "approved": True}),
+    ("guarded", "review", {"role": "review", "items": [], "approved": True}),
 ]:
     model = "capture-" + role
     if name == "failure":
         p.PLANS.put("fail")
-    elif name in ("tools", "minimized"):
+    elif name in ("tools", "minimized", "guarded"):
         p.PLANS.put(
             {
                 "items": [
@@ -89,6 +90,37 @@ for name, role, answer in [
     ]
     if name == "minimized":
         args[1:1] = ["--disable", "shell_tool", "--disable", "unified_exec"]
+    if name == "guarded":
+        guard = p.ROOT / "deny_tools.py"
+        guard.write_text(
+            "import sys,json,pathlib\nevent=json.load(sys.stdin)\npathlib.Path("
+            + repr(str(p.ROOT / "policy-called"))
+            + ").write_text(json.dumps(event))\nprint('Generation tool execution denied',file=sys.stderr)\nsys.exit(2)\n"
+        )
+        (p.HOME_DIR / "hooks.json").write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "PreToolUse": [
+                            {
+                                "matcher": ".*",
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": f"{sys.executable} {guard}",
+                                        "timeout": 3,
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                }
+            )
+        )
+        args[1:1] = ["--enable", "hooks", "--dangerously-bypass-hook-trust"]
+        # Remove the later conflicting disable flag for this dedicated policy home.
+        hook_disable = args.index("hooks", args.index("exec"))
+        del args[hook_disable - 1 : hook_disable + 1]
     process = permitted_call(
         True,
         lambda: subprocess.run(

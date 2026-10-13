@@ -4,10 +4,10 @@ Date: 2026-10-14 (Asia/Tokyo). Work item: #2.
 
 This is an installed CLI 0.162.1 experiment, not the production generation
 backend. The three roles use separate exec processes and distinct configurable
-model names against the synthetic loopback Responses provider. No personal
-history, authentication file, or paid model request was used. This demonstrates
-runtime plumbing and output handling, not real LLM knowledge quality or successful
-reuse of ChatGPT authentication in a dedicated generation home.
+model names against the synthetic loopback Responses provider. The loopback probe uses no personal history or authentication. A subsequent
+authenticated probe reused the existing Codex login in a private generation home
+with synthetic evidence only; its three gpt-6.1-sol contexts returned valid
+structured output. These checks establish plumbing, not knowledge quality.
 
 Run `python3 experiments/codex_generation/run.py /opt/homebrew/bin/codex`.
 Raw results stay under `/private/tmp/coding-memory-capture-*`. The committed
@@ -59,14 +59,40 @@ separate outcomes. The Rust backend must retain these distinctions, use fresh
 output paths, validate the full domain schema and evidence locators, terminate
 owned children on timeout, and bound stdout/stderr while reading.
 
-## Remaining checkpoint
+## Stronger execution policy
 
-Issue #2 remains open: validate a stronger tool/filesystem boundary and actual
-ChatGPT credential reuse without inheriting user tooling. The current controls
-are a useful measured baseline but do not establish the desired closed-input
-backend. Options are to harden the Codex execution sandbox or implement a direct
-provider API backend if its independent authentication is acceptable. Do not
-silently substitute an external provider for a disallowed project.
+A dedicated generation home containing only a vetted PreToolUse deny hook
+blocked the same exec_command request. The Hook recorded the attempted call,
+and no command-execution item was emitted; the unguarded control did execute
+the command. This configuration enables lifecycle hooks for execution policy,
+not for collection. Explicit notify=[] and the registered engine-owned namespace
+remain necessary. Trust bypass applies only to the generated, reviewed policy
+script in that fresh home. Do not enable bypass in a regular development home.
+
+The authenticated probe used that policy with web_search disabled, user config
+and rules ignored, plugins disabled, and read-only execution. Existing auth was
+copied with mode 0600 into a private state directory and removed in finally.
+All three fresh contexts returned schema-shaped output without requesting tools.
+This does not prove interception of every tool family or managed configuration.
+The command-denial fixture is the positive policy test; the authenticated runs
+are the credential/schema tests.
+
+To repeat authenticated tests, explicitly opt in to external synthetic requests:
+`python3 experiments/codex_generation/authenticated_probe.py --allow-external`.
+Without that flag it returns held_external_policy before reading credentials or
+creating the generation home. It uses the default ~/.codex/auth.json login.
+Raw results stay outside Git; fixtures contain only synthetic results and IDs.
+
+## Remaining implementation work
+
+The user selected further Codex exec hardening rather than switching to a direct
+API. The experiment now demonstrates credential reuse, policy-based command
+denial, three independent contexts, collector exclusion, and output handling.
+The Rust implementation must make namespace registration durable, preserve
+refreshed credentials safely, and validate other tool families and managed
+configuration before unattended use. Do not claim a complete filesystem or
+network isolation guarantee from one denied command. Do not silently substitute
+an external provider for a disallowed project.
 
 The official [non-interactive reference](https://learn.chatgpt.com/docs/non-interactive-mode)
 describes schema output; the measured runtime fixtures establish the observations

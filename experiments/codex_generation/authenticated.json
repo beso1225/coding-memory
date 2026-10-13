@@ -1,0 +1,42 @@
+{
+  "roles": [
+    {
+      "role": "extraction",
+      "model": "gpt-6.1-sol",
+      "exit": 0,
+      "thread_id": "01a135db-9e4b-7490-97e6-c4d9a21e20b8",
+      "output": {
+        "role": "extraction",
+        "items": [],
+        "approved": false
+      },
+      "tool_items": []
+    },
+    {
+      "role": "consolidation",
+      "model": "gpt-6.1-sol",
+      "exit": 0,
+      "thread_id": "01a135db-b614-7cf1-8719-87ec508907a0",
+      "output": {
+        "role": "consolidation",
+        "items": [],
+        "approved": false
+      },
+      "tool_items": []
+    },
+    {
+      "role": "review",
+      "model": "gpt-6.1-sol",
+      "exit": 0,
+      "thread_id": "01a135db-d0b5-76a3-9b7d-24cc6c8ab35e",
+      "output": {
+        "role": "review",
+        "items": [],
+        "approved": false
+      },
+      "tool_items": []
+    }
+  ],
+  "credential_copy_removed": true,
+  "policy_calls": false
+}

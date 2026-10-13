@@ -97,8 +97,9 @@ Acceptance criteria:
 
 Progress: [the generation isolation experiment](codex-generation-experiment.md)
 records role-separated synthetic exec runs, output/policy tests, and the observed
-remaining tool exposure. Stronger isolation and authenticated-provider validation
-remain open checkpoints.
+remaining tool exposure. A dedicated policy hook denied command execution, and
+three fresh authenticated contexts returned structured results. Broader tool
+coverage and durable ownership remain implementation checks.
 
 Dependencies: none; share identity findings with [#1](https://github.com/beso1225/coding-memory/issues/1).
 

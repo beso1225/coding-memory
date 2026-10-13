@@ -18,4 +18,17 @@ class ObservedTests(unittest.TestCase):
             self.assertEqual(r["model"], r["requests"][0]["model"])
             self.assertTrue(r["requests"][0]["response_format"])
             self.assertTrue(r["internal_live"] and r["internal_reconciled"])
-        self.assertTrue(f["results"][-1]["tool_items"])
+        self.assertTrue(f["results"][-2]["tool_items"])
+        self.assertFalse(f["results"][-1]["tool_items"])
+        self.assertTrue(f["policy_called"])
+
+    def test_authenticated_roles(self):
+        f = json.loads(Path(__file__).with_name("authenticated.json").read_text())
+        self.assertTrue(f["credential_copy_removed"])
+        self.assertFalse(f["policy_calls"])
+        self.assertEqual(3, len({r["thread_id"] for r in f["roles"]}))
+        for r in f["roles"]:
+            self.assertEqual(0, r["exit"])
+            self.assertEqual(r["role"], r["output"]["role"])
+            self.assertFalse(r["tool_items"])
+            self.assertFalse(r["output"]["approved"])
