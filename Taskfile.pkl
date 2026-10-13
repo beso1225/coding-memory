@@ -54,10 +54,17 @@ local workflowLint: Task = new {
   cache = false
 }
 
+local captureFixtures: Task = new {
+  name = "capture-fixtures"
+  description = "Check observed Codex capture contracts without runtime or model calls"
+  cmd = "python3 -m unittest discover -s experiments/codex_capture -p 'test_*.py'"
+  cache = false
+}
+
 local check: Task = new {
   name = "check"
-  description = "Run formatting, lint, test, build, and workflow checks"
-  deps { fmtCheck; lint; test; build; workflowLint }
+  description = "Run formatting, lint, test, build, workflow, and capture fixture checks"
+  deps { fmtCheck; lint; test; build; workflowLint; captureFixtures }
   cache = false
 }
 
@@ -70,4 +77,4 @@ local allChecks: Task = new {
   cache = false
 }
 
-tasks { fmt; fmtCheck; lint; test; build; workflowLint; check; allChecks }
+tasks { fmt; fmtCheck; lint; test; build; workflowLint; captureFixtures; check; allChecks }

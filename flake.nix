@@ -40,6 +40,7 @@
           pkgs.nixfmt
           pkgs.pkl
           pkgs.actionlint
+          pkgs.python3
           pkfire.packages.${system}.default
         ];
 

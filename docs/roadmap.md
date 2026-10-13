@@ -67,6 +67,13 @@ Acceptance criteria:
 Dependencies: none. Treat lack of a feasible App route as a design checkpoint
 before investing in a complete engine, since App is the daily-use target.
 
+Progress: the [capture experiment report](codex-capture-experiment.md) records
+isolated CLI and App-bundled executable probes plus offline synthetic fixtures.
+The human-run App GUI probe also confirmed approved project-local hooks and a
+cross-process cold read of the App-created synthetic thread. The capture
+feasibility checkpoint is validated; App restart and broader daily-use behavior
+remain later integration checks.
+
 ### [#2](https://github.com/beso1225/coding-memory/issues/2). Validate isolated Codex generation and review
 
 Problem: Codex execution is a usable structured-output backend, but its tools,

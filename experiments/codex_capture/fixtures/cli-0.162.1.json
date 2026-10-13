@@ -1,0 +1,2740 @@
+{
+  "format": "coding-memory-capture-fixture-v1",
+  "runtime_version": "0.162.1",
+  "observation": "isolated installed binary with loopback synthetic Responses provider; not App GUI",
+  "cases": {
+    "exec_normal": {
+      "exit": 0,
+      "events": [
+        {
+          "type": "thread.started",
+          "thread_id": "01a1354e-6954-7971-ad6d-ba20620309fb"
+        },
+        {
+          "type": "item.completed",
+          "item": {
+            "id": "item_0",
+            "type": "error",
+            "message": "clamping Interrupt hook timeout to 3s in /synthetic/capture/state/hooks.json"
+          }
+        },
+        {
+          "type": "item.completed",
+          "item": {
+            "id": "item_1",
+            "type": "error",
+            "message": "Model metadata for `capture-test` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+          }
+        },
+        {
+          "type": "turn.started"
+        },
+        {
+          "type": "item.completed",
+          "item": {
+            "id": "item_2",
+            "type": "agent_message",
+            "text": "first answer"
+          }
+        },
+        {
+          "type": "turn.completed",
+          "usage": {
+            "input_tokens": 1,
+            "cached_input_tokens": 0,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 1,
+            "reasoning_output_tokens": 0
+          }
+        }
+      ],
+      "read": {
+        "thread": {
+          "id": "01a1354e-6954-7971-ad6d-ba20620309fb",
+          "forkedFromId": null,
+          "cliVersion": "0.162.1",
+          "source": "exec",
+          "historyMode": "paginated",
+          "status": {
+            "type": "notLoaded"
+          },
+          "turns": [
+            {
+              "id": "01a1354e-69ae-7971-8f29-918587cb37b2",
+              "rootTurnId": "01a1354e-69ae-7971-8f29-918587cb37b2",
+              "items": [
+                {
+                  "type": "userMessage",
+                  "id": "01a1354e-69eb-7150-90d8-1c67e8c3eab8",
+                  "clientId": null,
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "first instruction",
+                      "text_elements": []
+                    }
+                  ]
+                },
+                {
+                  "type": "agentMessage",
+                  "id": "msg-synthetic-1",
+                  "text": "first answer",
+                  "phase": null,
+                  "memoryCitation": null,
+                  "delivery": null,
+                  "questions": null
+                }
+              ],
+              "itemsView": "full",
+              "status": "completed",
+              "error": null,
+              "startedAt": 1791895693,
+              "completedAt": 1791895693,
+              "durationMs": 76
+            }
+          ]
+        }
+      }
+    },
+    "exec_failure": {
+      "exit": 1,
+      "events": [
+        {
+          "type": "thread.started",
+          "thread_id": "01a1354e-6cac-7331-879f-771755fc86d4"
+        },
+        {
+          "type": "item.completed",
+          "item": {
+            "id": "item_0",
+            "type": "error",
+            "message": "clamping Interrupt hook timeout to 3s in /synthetic/capture/state/hooks.json"
+          }
+        },
+        {
+          "type": "item.completed",
+          "item": {
+            "id": "item_1",
+            "type": "error",
+            "message": "Model metadata for `capture-test` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+          }
+        },
+        {
+          "type": "turn.started"
+        },
+        {
+          "type": "error",
+          "message": "{\"error\":{\"message\":\"synthetic failure\",\"type\":\"invalid_request_error\"}}"
+        },
+        {
+          "type": "turn.failed",
+          "error": {
+            "message": "{\"error\":{\"message\":\"synthetic failure\",\"type\":\"invalid_request_error\"}}"
+          }
+        }
+      ],
+      "read": {
+        "thread": {
+          "id": "01a1354e-6cac-7331-879f-771755fc86d4",
+          "forkedFromId": null,
+          "cliVersion": "0.162.1",
+          "source": "exec",
+          "historyMode": "paginated",
+          "status": {
+            "type": "notLoaded"
+          },
+          "turns": [
+            {
+              "id": "01a1354e-6cd3-7601-9296-4d55fc2e2a88",
+              "rootTurnId": "01a1354e-6cd3-7601-9296-4d55fc2e2a88",
+              "items": [
+                {
+                  "type": "userMessage",
+                  "id": "01a1354e-6cd9-7cd2-b39f-db4975723d2a",
+                  "clientId": null,
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "synthetic failure instruction",
+                      "text_elements": []
+                    }
+                  ]
+                }
+              ],
+              "itemsView": "full",
+              "status": "failed",
+              "error": {
+                "message": "{\"error\":{\"message\":\"synthetic failure\",\"type\":\"invalid_request_error\"}}",
+                "codexErrorInfo": "other",
+                "additionalDetails": null,
+                "misalignment": null
+              },
+              "startedAt": 1791895694,
+              "completedAt": 1791895694,
+              "durationMs": 10
+            }
+          ]
+        }
+      }
+    },
+    "exec_interruption": {
+      "exit": 1,
+      "events": [
+        {
+          "type": "thread.started",
+          "thread_id": "01a1354e-6cfb-7572-b889-8af23b378b26"
+        },
+        {
+          "type": "item.completed",
+          "item": {
+            "id": "item_0",
+            "type": "error",
+            "message": "clamping Interrupt hook timeout to 3s in /synthetic/capture/state/hooks.json"
+          }
+        },
+        {
+          "type": "item.completed",
+          "item": {
+            "id": "item_1",
+            "type": "error",
+            "message": "Model metadata for `capture-test` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+          }
+        },
+        {
+          "type": "turn.started"
+        }
+      ],
+      "read": {
+        "thread": {
+          "id": "01a1354e-6cfb-7572-b889-8af23b378b26",
+          "forkedFromId": null,
+          "cliVersion": "0.162.1",
+          "source": "exec",
+          "historyMode": "paginated",
+          "status": {
+            "type": "notLoaded"
+          },
+          "turns": [
+            {
+              "id": "01a1354e-6d1f-7f11-a96c-3a8f15a59060",
+              "rootTurnId": "01a1354e-6d1f-7f11-a96c-3a8f15a59060",
+              "items": [
+                {
+                  "type": "userMessage",
+                  "id": "01a1354e-6d26-7940-a0d6-0b800325eb34",
+                  "clientId": null,
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "synthetic interrupt instruction",
+                      "text_elements": []
+                    }
+                  ]
+                }
+              ],
+              "itemsView": "full",
+              "status": "interrupted",
+              "error": null,
+              "startedAt": 1791895694,
+              "completedAt": 1791895694,
+              "durationMs": 16
+            }
+          ]
+        }
+      }
+    },
+    "exec_stop": {
+      "exit": 0,
+      "events": [
+        {
+          "type": "thread.started",
+          "thread_id": "01a1354e-6d49-71f0-bc57-bd6014c1da04"
+        },
+        {
+          "type": "item.completed",
+          "item": {
+            "id": "item_0",
+            "type": "error",
+            "message": "`--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation."
+          }
+        },
+        {
+          "type": "item.completed",
+          "item": {
+            "id": "item_1",
+            "type": "error",
+            "message": "`--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation."
+          }
+        },
+        {
+          "type": "item.completed",
+          "item": {
+            "id": "item_2",
+            "type": "error",
+            "message": "clamping Interrupt hook timeout to 3s in /synthetic/capture/state/hooks.json"
+          }
+        },
+        {
+          "type": "item.completed",
+          "item": {
+            "id": "item_3",
+            "type": "error",
+            "message": "Model metadata for `capture-test` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+          }
+        },
+        {
+          "type": "turn.started"
+        },
+        {
+          "type": "item.completed",
+          "item": {
+            "id": "item_4",
+            "type": "agent_message",
+            "text": "pre-continuation answer"
+          }
+        },
+        {
+          "type": "item.completed",
+          "item": {
+            "id": "item_5",
+            "type": "agent_message",
+            "text": "post-continuation answer"
+          }
+        },
+        {
+          "type": "turn.completed",
+          "usage": {
+            "input_tokens": 2,
+            "cached_input_tokens": 0,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 2,
+            "reasoning_output_tokens": 0
+          }
+        }
+      ],
+      "read": {
+        "thread": {
+          "id": "01a1354e-6d49-71f0-bc57-bd6014c1da04",
+          "forkedFromId": null,
+          "cliVersion": "0.162.1",
+          "source": "exec",
+          "historyMode": "paginated",
+          "status": {
+            "type": "notLoaded"
+          },
+          "turns": [
+            {
+              "id": "01a1354e-6d6a-79b1-b3d1-ea80c9644551",
+              "rootTurnId": "01a1354e-6d6a-79b1-b3d1-ea80c9644551",
+              "items": [
+                {
+                  "type": "userMessage",
+                  "id": "01a1354e-6da0-7790-bf25-bbdfa3102a72",
+                  "clientId": null,
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "continue once",
+                      "text_elements": []
+                    }
+                  ]
+                },
+                {
+                  "type": "agentMessage",
+                  "id": "msg-synthetic-4",
+                  "text": "pre-continuation answer",
+                  "phase": null,
+                  "memoryCitation": null,
+                  "delivery": null,
+                  "questions": null
+                },
+                {
+                  "type": "hookPrompt",
+                  "id": "msg_01a1354e-6dbd-7311-a7d8-3c75e06600d7",
+                  "fragments": [
+                    {
+                      "text": "Synthetic one-time continuation.",
+                      "hookRunId": "stop:5:/synthetic/capture/state/hooks.json"
+                    }
+                  ]
+                },
+                {
+                  "type": "agentMessage",
+                  "id": "msg-synthetic-5",
+                  "text": "post-continuation answer",
+                  "phase": null,
+                  "memoryCitation": null,
+                  "delivery": null,
+                  "questions": null
+                }
+              ],
+              "itemsView": "full",
+              "status": "completed",
+              "error": null,
+              "startedAt": 1791895694,
+              "completedAt": 1791895694,
+              "durationMs": 110
+            }
+          ]
+        }
+      }
+    },
+    "tools": {
+      "thread_id": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+      "turn_id": "01a1354e-7109-7ee0-bf3e-c8a1ced3b8bc",
+      "terminal": {
+        "threadId": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+        "turn": {
+          "id": "01a1354e-7109-7ee0-bf3e-c8a1ced3b8bc",
+          "rootTurnId": "01a1354e-7109-7ee0-bf3e-c8a1ced3b8bc",
+          "items": [
+            {
+              "type": "agentMessage",
+              "id": "msg-synthetic-7",
+              "text": "tool answer",
+              "phase": null,
+              "memoryCitation": null,
+              "delivery": null,
+              "questions": null
+            }
+          ],
+          "itemsView": "summary",
+          "status": "completed",
+          "error": null,
+          "startedAt": 1791895695,
+          "completedAt": 1791895695,
+          "durationMs": 149
+        }
+      },
+      "read": {
+        "thread": {
+          "id": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+          "forkedFromId": null,
+          "cliVersion": "0.162.1",
+          "source": "vscode",
+          "historyMode": "paginated",
+          "status": {
+            "type": "idle"
+          },
+          "turns": [
+            {
+              "id": "01a1354e-7109-7ee0-bf3e-c8a1ced3b8bc",
+              "rootTurnId": "01a1354e-7109-7ee0-bf3e-c8a1ced3b8bc",
+              "items": [
+                {
+                  "type": "userMessage",
+                  "id": "01a1354e-713c-7dd0-b628-1a46505e85a7",
+                  "clientId": null,
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "tools instruction",
+                      "text_elements": []
+                    }
+                  ]
+                },
+                {
+                  "type": "commandExecution",
+                  "id": "synthetic-call",
+                  "pluginId": null,
+                  "scriptPath": null,
+                  "command": "/bin/zsh -lc 'printf synthetic-tool-result'",
+                  "cwd": "/synthetic/capture/project",
+                  "processId": "20610",
+                  "source": "unifiedExecStartup",
+                  "status": "completed",
+                  "commandActions": [
+                    {
+                      "type": "unknown",
+                      "command": "printf synthetic-tool-result"
+                    }
+                  ],
+                  "aggregatedOutput": "synthetic-tool-result",
+                  "exitCode": 0,
+                  "durationMs": 0
+                },
+                {
+                  "type": "agentMessage",
+                  "id": "msg-synthetic-7",
+                  "text": "tool answer",
+                  "phase": null,
+                  "memoryCitation": null,
+                  "delivery": null,
+                  "questions": null
+                }
+              ],
+              "itemsView": "full",
+              "status": "completed",
+              "error": null,
+              "startedAt": 1791895695,
+              "completedAt": 1791895695,
+              "durationMs": 149
+            }
+          ]
+        }
+      }
+    },
+    "later_read": {
+      "thread_id": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+      "earlier_turn_id": "01a1354e-7109-7ee0-bf3e-c8a1ced3b8bc",
+      "later_turn_id": "01a1354e-71a3-7822-9ed7-cdef41fd2f90",
+      "read": {
+        "thread": {
+          "id": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+          "forkedFromId": null,
+          "cliVersion": "0.162.1",
+          "source": "vscode",
+          "historyMode": "paginated",
+          "status": {
+            "type": "idle"
+          },
+          "turns": [
+            {
+              "id": "01a1354e-7109-7ee0-bf3e-c8a1ced3b8bc",
+              "rootTurnId": "01a1354e-7109-7ee0-bf3e-c8a1ced3b8bc",
+              "items": [
+                {
+                  "type": "userMessage",
+                  "id": "01a1354e-713c-7dd0-b628-1a46505e85a7",
+                  "clientId": null,
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "tools instruction",
+                      "text_elements": []
+                    }
+                  ]
+                },
+                {
+                  "type": "commandExecution",
+                  "id": "synthetic-call",
+                  "pluginId": null,
+                  "scriptPath": null,
+                  "command": "/bin/zsh -lc 'printf synthetic-tool-result'",
+                  "cwd": "/synthetic/capture/project",
+                  "processId": "20610",
+                  "source": "unifiedExecStartup",
+                  "status": "completed",
+                  "commandActions": [
+                    {
+                      "type": "unknown",
+                      "command": "printf synthetic-tool-result"
+                    }
+                  ],
+                  "aggregatedOutput": "synthetic-tool-result",
+                  "exitCode": 0,
+                  "durationMs": 0
+                },
+                {
+                  "type": "agentMessage",
+                  "id": "msg-synthetic-7",
+                  "text": "tool answer",
+                  "phase": null,
+                  "memoryCitation": null,
+                  "delivery": null,
+                  "questions": null
+                }
+              ],
+              "itemsView": "full",
+              "status": "completed",
+              "error": null,
+              "startedAt": 1791895695,
+              "completedAt": 1791895695,
+              "durationMs": 149
+            },
+            {
+              "id": "01a1354e-71a3-7822-9ed7-cdef41fd2f90",
+              "rootTurnId": "01a1354e-71a3-7822-9ed7-cdef41fd2f90",
+              "items": [
+                {
+                  "type": "userMessage",
+                  "id": "01a1354e-71bc-7a81-89c5-19c0f4a31a15",
+                  "clientId": null,
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "later instruction",
+                      "text_elements": []
+                    }
+                  ]
+                },
+                {
+                  "type": "agentMessage",
+                  "id": "msg-synthetic-8",
+                  "text": "later answer",
+                  "phase": null,
+                  "memoryCitation": null,
+                  "delivery": null,
+                  "questions": null
+                }
+              ],
+              "itemsView": "full",
+              "status": "completed",
+              "error": null,
+              "startedAt": 1791895695,
+              "completedAt": 1791895695,
+              "durationMs": 52
+            }
+          ]
+        }
+      }
+    },
+    "pagination": {
+      "newest": {
+        "data": [
+          {
+            "id": "01a1354e-71a3-7822-9ed7-cdef41fd2f90",
+            "rootTurnId": "01a1354e-71a3-7822-9ed7-cdef41fd2f90",
+            "items": [
+              {
+                "type": "userMessage",
+                "id": "01a1354e-71bc-7a81-89c5-19c0f4a31a15",
+                "clientId": null,
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "later instruction",
+                    "text_elements": []
+                  }
+                ]
+              },
+              {
+                "type": "agentMessage",
+                "id": "msg-synthetic-8",
+                "text": "later answer",
+                "phase": null,
+                "memoryCitation": null,
+                "delivery": null,
+                "questions": null
+              }
+            ],
+            "itemsView": "full",
+            "status": "completed",
+            "error": null,
+            "startedAt": 1791895695,
+            "completedAt": 1791895695,
+            "durationMs": 52
+          }
+        ],
+        "nextCursor": "{\"requestedThreadId\":\"01a1354e-70e0-7220-a0ac-6e6807b5d7d9\",\"rolloutOrdinal\":18,\"includeAnchor\":false,\"scope\":{\"kind\":\"turns\"}}",
+        "backwardsCursor": "{\"requestedThreadId\":\"01a1354e-70e0-7220-a0ac-6e6807b5d7d9\",\"rolloutOrdinal\":18,\"includeAnchor\":true,\"scope\":{\"kind\":\"turns\"}}"
+      },
+      "older": {
+        "data": [
+          {
+            "id": "01a1354e-7109-7ee0-bf3e-c8a1ced3b8bc",
+            "rootTurnId": "01a1354e-7109-7ee0-bf3e-c8a1ced3b8bc",
+            "items": [
+              {
+                "type": "userMessage",
+                "id": "01a1354e-713c-7dd0-b628-1a46505e85a7",
+                "clientId": null,
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "tools instruction",
+                    "text_elements": []
+                  }
+                ]
+              },
+              {
+                "type": "commandExecution",
+                "id": "synthetic-call",
+                "pluginId": null,
+                "scriptPath": null,
+                "command": "/bin/zsh -lc 'printf synthetic-tool-result'",
+                "cwd": "/synthetic/capture/project",
+                "processId": "20610",
+                "source": "unifiedExecStartup",
+                "status": "completed",
+                "commandActions": [
+                  {
+                    "type": "unknown",
+                    "command": "printf synthetic-tool-result"
+                  }
+                ],
+                "aggregatedOutput": "synthetic-tool-result",
+                "exitCode": 0,
+                "durationMs": 0
+              },
+              {
+                "type": "agentMessage",
+                "id": "msg-synthetic-7",
+                "text": "tool answer",
+                "phase": null,
+                "memoryCitation": null,
+                "delivery": null,
+                "questions": null
+              }
+            ],
+            "itemsView": "full",
+            "status": "completed",
+            "error": null,
+            "startedAt": 1791895695,
+            "completedAt": 1791895695,
+            "durationMs": 149
+          }
+        ],
+        "nextCursor": null,
+        "backwardsCursor": "{\"requestedThreadId\":\"01a1354e-70e0-7220-a0ac-6e6807b5d7d9\",\"rolloutOrdinal\":1,\"includeAnchor\":true,\"scope\":{\"kind\":\"turns\"}}"
+      },
+      "earlier_items": {
+        "data": [
+          {
+            "turnId": "01a1354e-7109-7ee0-bf3e-c8a1ced3b8bc",
+            "item": {
+              "type": "userMessage",
+              "id": "01a1354e-713c-7dd0-b628-1a46505e85a7",
+              "clientId": null,
+              "content": [
+                {
+                  "type": "text",
+                  "text": "tools instruction",
+                  "text_elements": []
+                }
+              ]
+            },
+            "startedAtMs": 1791895695677,
+            "completedAtMs": 1791895695677
+          },
+          {
+            "turnId": "01a1354e-7109-7ee0-bf3e-c8a1ced3b8bc",
+            "item": {
+              "type": "commandExecution",
+              "id": "synthetic-call",
+              "pluginId": null,
+              "scriptPath": null,
+              "command": "/bin/zsh -lc 'printf synthetic-tool-result'",
+              "cwd": "/synthetic/capture/project",
+              "processId": "20610",
+              "source": "unifiedExecStartup",
+              "status": "completed",
+              "commandActions": [
+                {
+                  "type": "unknown",
+                  "command": "printf synthetic-tool-result"
+                }
+              ],
+              "aggregatedOutput": "synthetic-tool-result",
+              "exitCode": 0,
+              "durationMs": 0
+            },
+            "startedAtMs": 1791895695723,
+            "completedAtMs": 1791895695724
+          },
+          {
+            "turnId": "01a1354e-7109-7ee0-bf3e-c8a1ced3b8bc",
+            "item": {
+              "type": "agentMessage",
+              "id": "msg-synthetic-7",
+              "text": "tool answer",
+              "phase": null,
+              "memoryCitation": null,
+              "delivery": null,
+              "questions": null
+            },
+            "startedAtMs": 1791895695752,
+            "completedAtMs": 1791895695752
+          }
+        ],
+        "nextCursor": null,
+        "backwardsCursor": "{\"requestedThreadId\":\"01a1354e-70e0-7220-a0ac-6e6807b5d7d9\",\"rolloutOrdinal\":7,\"includeAnchor\":true,\"scope\":{\"kind\":\"itemsByCreatedAtOrdinal\"}}"
+      },
+      "earlier_turn_id": "01a1354e-7109-7ee0-bf3e-c8a1ced3b8bc",
+      "later_turn_id": "01a1354e-71a3-7822-9ed7-cdef41fd2f90"
+    },
+    "steering": {
+      "thread_id": "01a1354e-71e0-77e1-b9bd-4a04ce815830",
+      "turn_id": "01a1354e-71fd-78f0-9cbe-431eea171712",
+      "terminal": {
+        "threadId": "01a1354e-71e0-77e1-b9bd-4a04ce815830",
+        "turn": {
+          "id": "01a1354e-71fd-78f0-9cbe-431eea171712",
+          "rootTurnId": "01a1354e-71fd-78f0-9cbe-431eea171712",
+          "items": [
+            {
+              "type": "agentMessage",
+              "id": "msg-synthetic-10",
+              "text": "after steering",
+              "phase": null,
+              "memoryCitation": null,
+              "delivery": null,
+              "questions": null
+            }
+          ],
+          "itemsView": "summary",
+          "status": "completed",
+          "error": null,
+          "startedAt": 1791895695,
+          "completedAt": 1791895696,
+          "durationMs": 445
+        }
+      },
+      "steer": {
+        "turnId": "01a1354e-71fd-78f0-9cbe-431eea171712"
+      },
+      "read": {
+        "thread": {
+          "id": "01a1354e-71e0-77e1-b9bd-4a04ce815830",
+          "forkedFromId": null,
+          "cliVersion": "0.162.1",
+          "source": "vscode",
+          "historyMode": "paginated",
+          "status": {
+            "type": "idle"
+          },
+          "turns": [
+            {
+              "id": "01a1354e-71fd-78f0-9cbe-431eea171712",
+              "rootTurnId": "01a1354e-71fd-78f0-9cbe-431eea171712",
+              "items": [
+                {
+                  "type": "userMessage",
+                  "id": "01a1354e-722f-7783-808f-79d5f902ae3d",
+                  "clientId": null,
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "steering instruction",
+                      "text_elements": []
+                    }
+                  ]
+                },
+                {
+                  "type": "userMessage",
+                  "id": "01a1354e-739b-7ad3-bdd9-f94d14f63dfb",
+                  "clientId": null,
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "synthetic steering instruction",
+                      "text_elements": []
+                    }
+                  ]
+                },
+                {
+                  "type": "agentMessage",
+                  "id": "msg-synthetic-10",
+                  "text": "after steering",
+                  "phase": null,
+                  "memoryCitation": null,
+                  "delivery": null,
+                  "questions": null
+                }
+              ],
+              "itemsView": "full",
+              "status": "completed",
+              "error": null,
+              "startedAt": 1791895695,
+              "completedAt": 1791895696,
+              "durationMs": 445
+            }
+          ]
+        }
+      }
+    },
+    "failure": {
+      "thread_id": "01a1354e-73c1-7e32-9823-9e81f2b678d4",
+      "turn_id": "01a1354e-73e1-7510-8ca3-88adf5f756f9",
+      "terminal": {
+        "threadId": "01a1354e-73c1-7e32-9823-9e81f2b678d4",
+        "turn": {
+          "id": "01a1354e-73e1-7510-8ca3-88adf5f756f9",
+          "rootTurnId": "01a1354e-73e1-7510-8ca3-88adf5f756f9",
+          "items": [],
+          "itemsView": "notLoaded",
+          "status": "failed",
+          "error": {
+            "message": "{\"error\":{\"message\":\"synthetic failure\",\"type\":\"invalid_request_error\"}}",
+            "codexErrorInfo": "other",
+            "additionalDetails": null,
+            "misalignment": null
+          },
+          "startedAt": 1791895696,
+          "completedAt": 1791895696,
+          "durationMs": 53
+        }
+      },
+      "read": {
+        "thread": {
+          "id": "01a1354e-73c1-7e32-9823-9e81f2b678d4",
+          "forkedFromId": null,
+          "cliVersion": "0.162.1",
+          "source": "vscode",
+          "historyMode": "paginated",
+          "status": {
+            "type": "systemError"
+          },
+          "turns": [
+            {
+              "id": "01a1354e-73e1-7510-8ca3-88adf5f756f9",
+              "rootTurnId": "01a1354e-73e1-7510-8ca3-88adf5f756f9",
+              "items": [
+                {
+                  "type": "userMessage",
+                  "id": "01a1354e-7415-7061-9788-f571eaac9127",
+                  "clientId": null,
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "failure instruction",
+                      "text_elements": []
+                    }
+                  ]
+                }
+              ],
+              "itemsView": "full",
+              "status": "failed",
+              "error": {
+                "message": "{\"error\":{\"message\":\"synthetic failure\",\"type\":\"invalid_request_error\"}}",
+                "codexErrorInfo": "other",
+                "additionalDetails": null,
+                "misalignment": null
+              },
+              "startedAt": 1791895696,
+              "completedAt": 1791895696,
+              "durationMs": 53
+            }
+          ]
+        }
+      }
+    },
+    "interruption": {
+      "thread_id": "01a1354e-741b-7500-8be0-ae35f7d98f36",
+      "turn_id": "01a1354e-7439-70e3-bae3-5d442af6204d",
+      "terminal": {
+        "threadId": "01a1354e-741b-7500-8be0-ae35f7d98f36",
+        "turn": {
+          "id": "01a1354e-7439-70e3-bae3-5d442af6204d",
+          "rootTurnId": "01a1354e-7439-70e3-bae3-5d442af6204d",
+          "items": [],
+          "itemsView": "notLoaded",
+          "status": "interrupted",
+          "error": null,
+          "startedAt": 1791895696,
+          "completedAt": 1791895696,
+          "durationMs": 156
+        }
+      },
+      "observer_read_before_interrupt": {
+        "thread": {
+          "id": "01a1354e-741b-7500-8be0-ae35f7d98f36",
+          "forkedFromId": null,
+          "cliVersion": "0.162.1",
+          "source": "vscode",
+          "historyMode": "paginated",
+          "status": {
+            "type": "notLoaded"
+          },
+          "turns": [
+            {
+              "id": "01a1354e-7439-70e3-bae3-5d442af6204d",
+              "rootTurnId": "01a1354e-7439-70e3-bae3-5d442af6204d",
+              "items": [
+                {
+                  "type": "userMessage",
+                  "id": "01a1354e-746d-7260-a662-a717717828e2",
+                  "clientId": null,
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "interruption instruction",
+                      "text_elements": []
+                    }
+                  ]
+                }
+              ],
+              "itemsView": "full",
+              "status": "interrupted",
+              "error": null,
+              "startedAt": 1791895696,
+              "completedAt": null,
+              "durationMs": null
+            }
+          ]
+        }
+      },
+      "interrupt": {},
+      "read": {
+        "thread": {
+          "id": "01a1354e-741b-7500-8be0-ae35f7d98f36",
+          "forkedFromId": null,
+          "cliVersion": "0.162.1",
+          "source": "vscode",
+          "historyMode": "paginated",
+          "status": {
+            "type": "idle"
+          },
+          "turns": [
+            {
+              "id": "01a1354e-7439-70e3-bae3-5d442af6204d",
+              "rootTurnId": "01a1354e-7439-70e3-bae3-5d442af6204d",
+              "items": [
+                {
+                  "type": "userMessage",
+                  "id": "01a1354e-746d-7260-a662-a717717828e2",
+                  "clientId": null,
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "interruption instruction",
+                      "text_elements": []
+                    }
+                  ]
+                }
+              ],
+              "itemsView": "full",
+              "status": "interrupted",
+              "error": null,
+              "startedAt": 1791895696,
+              "completedAt": 1791895696,
+              "durationMs": 156
+            }
+          ]
+        }
+      }
+    },
+    "fork": {
+      "parent_thread_id": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+      "inherited_turn_id": "01a1354e-7109-7ee0-bf3e-c8a1ced3b8bc",
+      "new_turn_id": "01a1354e-7507-7fe1-b440-b4327fe585dc",
+      "read": {
+        "thread": {
+          "id": "01a1354e-74e9-7783-8d21-5a83335372e5",
+          "forkedFromId": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+          "cliVersion": "0.162.1",
+          "source": "vscode",
+          "historyMode": "paginated",
+          "status": {
+            "type": "idle"
+          },
+          "turns": [
+            {
+              "id": "01a1354e-7109-7ee0-bf3e-c8a1ced3b8bc",
+              "rootTurnId": "01a1354e-7109-7ee0-bf3e-c8a1ced3b8bc",
+              "items": [
+                {
+                  "type": "userMessage",
+                  "id": "01a1354e-713c-7dd0-b628-1a46505e85a7",
+                  "clientId": null,
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "tools instruction",
+                      "text_elements": []
+                    }
+                  ]
+                },
+                {
+                  "type": "commandExecution",
+                  "id": "synthetic-call",
+                  "pluginId": null,
+                  "scriptPath": null,
+                  "command": "/bin/zsh -lc 'printf synthetic-tool-result'",
+                  "cwd": "/synthetic/capture/project",
+                  "processId": "20610",
+                  "source": "unifiedExecStartup",
+                  "status": "completed",
+                  "commandActions": [
+                    {
+                      "type": "unknown",
+                      "command": "printf synthetic-tool-result"
+                    }
+                  ],
+                  "aggregatedOutput": "synthetic-tool-result",
+                  "exitCode": 0,
+                  "durationMs": 0
+                },
+                {
+                  "type": "agentMessage",
+                  "id": "msg-synthetic-7",
+                  "text": "tool answer",
+                  "phase": null,
+                  "memoryCitation": null,
+                  "delivery": null,
+                  "questions": null
+                }
+              ],
+              "itemsView": "full",
+              "status": "completed",
+              "error": null,
+              "startedAt": 1791895695,
+              "completedAt": 1791895695,
+              "durationMs": 149
+            },
+            {
+              "id": "01a1354e-7507-7fe1-b440-b4327fe585dc",
+              "rootTurnId": "01a1354e-7507-7fe1-b440-b4327fe585dc",
+              "items": [
+                {
+                  "type": "userMessage",
+                  "id": "01a1354e-7538-7c12-8b38-cf3c2e59320c",
+                  "clientId": null,
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "fork instruction",
+                      "text_elements": []
+                    }
+                  ]
+                },
+                {
+                  "type": "agentMessage",
+                  "id": "msg-synthetic-13",
+                  "text": "fork answer",
+                  "phase": null,
+                  "memoryCitation": null,
+                  "delivery": null,
+                  "questions": null
+                }
+              ],
+              "itemsView": "full",
+              "status": "completed",
+              "error": null,
+              "startedAt": 1791895696,
+              "completedAt": 1791895696,
+              "durationMs": 77
+            }
+          ]
+        }
+      }
+    },
+    "cold_read": {
+      "read": {
+        "thread": {
+          "id": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+          "forkedFromId": null,
+          "cliVersion": "0.162.1",
+          "source": "vscode",
+          "historyMode": "paginated",
+          "status": {
+            "type": "notLoaded"
+          },
+          "turns": [
+            {
+              "id": "01a1354e-7109-7ee0-bf3e-c8a1ced3b8bc",
+              "rootTurnId": "01a1354e-7109-7ee0-bf3e-c8a1ced3b8bc",
+              "items": [
+                {
+                  "type": "userMessage",
+                  "id": "01a1354e-713c-7dd0-b628-1a46505e85a7",
+                  "clientId": null,
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "tools instruction",
+                      "text_elements": []
+                    }
+                  ]
+                },
+                {
+                  "type": "commandExecution",
+                  "id": "synthetic-call",
+                  "pluginId": null,
+                  "scriptPath": null,
+                  "command": "/bin/zsh -lc 'printf synthetic-tool-result'",
+                  "cwd": "/synthetic/capture/project",
+                  "processId": "20610",
+                  "source": "unifiedExecStartup",
+                  "status": "completed",
+                  "commandActions": [
+                    {
+                      "type": "unknown",
+                      "command": "printf synthetic-tool-result"
+                    }
+                  ],
+                  "aggregatedOutput": "synthetic-tool-result",
+                  "exitCode": 0,
+                  "durationMs": 0
+                },
+                {
+                  "type": "agentMessage",
+                  "id": "msg-synthetic-7",
+                  "text": "tool answer",
+                  "phase": null,
+                  "memoryCitation": null,
+                  "delivery": null,
+                  "questions": null
+                }
+              ],
+              "itemsView": "full",
+              "status": "completed",
+              "error": null,
+              "startedAt": 1791895695,
+              "completedAt": 1791895695,
+              "durationMs": 149
+            },
+            {
+              "id": "01a1354e-71a3-7822-9ed7-cdef41fd2f90",
+              "rootTurnId": "01a1354e-71a3-7822-9ed7-cdef41fd2f90",
+              "items": [
+                {
+                  "type": "userMessage",
+                  "id": "01a1354e-71bc-7a81-89c5-19c0f4a31a15",
+                  "clientId": null,
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "later instruction",
+                      "text_elements": []
+                    }
+                  ]
+                },
+                {
+                  "type": "agentMessage",
+                  "id": "msg-synthetic-8",
+                  "text": "later answer",
+                  "phase": null,
+                  "memoryCitation": null,
+                  "delivery": null,
+                  "questions": null
+                }
+              ],
+              "itemsView": "full",
+              "status": "completed",
+              "error": null,
+              "startedAt": 1791895695,
+              "completedAt": 1791895695,
+              "durationMs": 52
+            }
+          ]
+        }
+      }
+    },
+    "resume": {
+      "new_turn_id": "01a1354e-7589-7e42-be65-049a3e9a8abf",
+      "read": {
+        "thread": {
+          "id": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+          "forkedFromId": null,
+          "cliVersion": "0.162.1",
+          "source": "vscode",
+          "historyMode": "paginated",
+          "status": {
+            "type": "idle"
+          },
+          "turns": [
+            {
+              "id": "01a1354e-7109-7ee0-bf3e-c8a1ced3b8bc",
+              "rootTurnId": "01a1354e-7109-7ee0-bf3e-c8a1ced3b8bc",
+              "items": [
+                {
+                  "type": "userMessage",
+                  "id": "01a1354e-713c-7dd0-b628-1a46505e85a7",
+                  "clientId": null,
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "tools instruction",
+                      "text_elements": []
+                    }
+                  ]
+                },
+                {
+                  "type": "commandExecution",
+                  "id": "synthetic-call",
+                  "pluginId": null,
+                  "scriptPath": null,
+                  "command": "/bin/zsh -lc 'printf synthetic-tool-result'",
+                  "cwd": "/synthetic/capture/project",
+                  "processId": "20610",
+                  "source": "unifiedExecStartup",
+                  "status": "completed",
+                  "commandActions": [
+                    {
+                      "type": "unknown",
+                      "command": "printf synthetic-tool-result"
+                    }
+                  ],
+                  "aggregatedOutput": "synthetic-tool-result",
+                  "exitCode": 0,
+                  "durationMs": 0
+                },
+                {
+                  "type": "agentMessage",
+                  "id": "msg-synthetic-7",
+                  "text": "tool answer",
+                  "phase": null,
+                  "memoryCitation": null,
+                  "delivery": null,
+                  "questions": null
+                }
+              ],
+              "itemsView": "full",
+              "status": "completed",
+              "error": null,
+              "startedAt": 1791895695,
+              "completedAt": 1791895695,
+              "durationMs": 149
+            },
+            {
+              "id": "01a1354e-71a3-7822-9ed7-cdef41fd2f90",
+              "rootTurnId": "01a1354e-71a3-7822-9ed7-cdef41fd2f90",
+              "items": [
+                {
+                  "type": "userMessage",
+                  "id": "01a1354e-71bc-7a81-89c5-19c0f4a31a15",
+                  "clientId": null,
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "later instruction",
+                      "text_elements": []
+                    }
+                  ]
+                },
+                {
+                  "type": "agentMessage",
+                  "id": "msg-synthetic-8",
+                  "text": "later answer",
+                  "phase": null,
+                  "memoryCitation": null,
+                  "delivery": null,
+                  "questions": null
+                }
+              ],
+              "itemsView": "full",
+              "status": "completed",
+              "error": null,
+              "startedAt": 1791895695,
+              "completedAt": 1791895695,
+              "durationMs": 52
+            },
+            {
+              "id": "01a1354e-7589-7e42-be65-049a3e9a8abf",
+              "rootTurnId": "01a1354e-7589-7e42-be65-049a3e9a8abf",
+              "items": [
+                {
+                  "type": "userMessage",
+                  "id": "01a1354e-75bc-7c70-a7e9-79f41c398635",
+                  "clientId": null,
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "resume instruction",
+                      "text_elements": []
+                    }
+                  ]
+                },
+                {
+                  "type": "agentMessage",
+                  "id": "msg-synthetic-14",
+                  "text": "resumed answer",
+                  "phase": null,
+                  "memoryCitation": null,
+                  "delivery": null,
+                  "questions": null
+                }
+              ],
+              "itemsView": "full",
+              "status": "completed",
+              "error": null,
+              "startedAt": 1791895696,
+              "completedAt": 1791895696,
+              "durationMs": 80
+            }
+          ]
+        }
+      }
+    },
+    "compaction": {
+      "events": [
+        {
+          "method": "item/started",
+          "params": {
+            "item": {
+              "type": "contextCompaction",
+              "id": "01a1354e-75f7-76a2-be4d-f437fe73fc94"
+            },
+            "threadId": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+            "turnId": "01a1354e-75dd-7c03-8262-9ecd57c5ed2d",
+            "startedAtMs": 1791895696887
+          },
+          "emittedAtMs": 1791895696888
+        },
+        {
+          "method": "item/completed",
+          "params": {
+            "item": {
+              "type": "contextCompaction",
+              "id": "01a1354e-75f7-76a2-be4d-f437fe73fc94"
+            },
+            "threadId": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+            "turnId": "01a1354e-75dd-7c03-8262-9ecd57c5ed2d",
+            "completedAtMs": 1791895696892
+          },
+          "emittedAtMs": 1791895696892
+        }
+      ],
+      "read": {
+        "thread": {
+          "id": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+          "forkedFromId": null,
+          "cliVersion": "0.162.1",
+          "source": "vscode",
+          "historyMode": "paginated",
+          "status": {
+            "type": "active",
+            "activeFlags": []
+          },
+          "turns": [
+            {
+              "id": "01a1354e-7109-7ee0-bf3e-c8a1ced3b8bc",
+              "rootTurnId": "01a1354e-7109-7ee0-bf3e-c8a1ced3b8bc",
+              "items": [
+                {
+                  "type": "userMessage",
+                  "id": "01a1354e-713c-7dd0-b628-1a46505e85a7",
+                  "clientId": null,
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "tools instruction",
+                      "text_elements": []
+                    }
+                  ]
+                },
+                {
+                  "type": "commandExecution",
+                  "id": "synthetic-call",
+                  "pluginId": null,
+                  "scriptPath": null,
+                  "command": "/bin/zsh -lc 'printf synthetic-tool-result'",
+                  "cwd": "/synthetic/capture/project",
+                  "processId": "20610",
+                  "source": "unifiedExecStartup",
+                  "status": "completed",
+                  "commandActions": [
+                    {
+                      "type": "unknown",
+                      "command": "printf synthetic-tool-result"
+                    }
+                  ],
+                  "aggregatedOutput": "synthetic-tool-result",
+                  "exitCode": 0,
+                  "durationMs": 0
+                },
+                {
+                  "type": "agentMessage",
+                  "id": "msg-synthetic-7",
+                  "text": "tool answer",
+                  "phase": null,
+                  "memoryCitation": null,
+                  "delivery": null,
+                  "questions": null
+                }
+              ],
+              "itemsView": "full",
+              "status": "completed",
+              "error": null,
+              "startedAt": 1791895695,
+              "completedAt": 1791895695,
+              "durationMs": 149
+            },
+            {
+              "id": "01a1354e-71a3-7822-9ed7-cdef41fd2f90",
+              "rootTurnId": "01a1354e-71a3-7822-9ed7-cdef41fd2f90",
+              "items": [
+                {
+                  "type": "userMessage",
+                  "id": "01a1354e-71bc-7a81-89c5-19c0f4a31a15",
+                  "clientId": null,
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "later instruction",
+                      "text_elements": []
+                    }
+                  ]
+                },
+                {
+                  "type": "agentMessage",
+                  "id": "msg-synthetic-8",
+                  "text": "later answer",
+                  "phase": null,
+                  "memoryCitation": null,
+                  "delivery": null,
+                  "questions": null
+                }
+              ],
+              "itemsView": "full",
+              "status": "completed",
+              "error": null,
+              "startedAt": 1791895695,
+              "completedAt": 1791895695,
+              "durationMs": 52
+            },
+            {
+              "id": "01a1354e-7589-7e42-be65-049a3e9a8abf",
+              "rootTurnId": "01a1354e-7589-7e42-be65-049a3e9a8abf",
+              "items": [
+                {
+                  "type": "userMessage",
+                  "id": "01a1354e-75bc-7c70-a7e9-79f41c398635",
+                  "clientId": null,
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "resume instruction",
+                      "text_elements": []
+                    }
+                  ]
+                },
+                {
+                  "type": "agentMessage",
+                  "id": "msg-synthetic-14",
+                  "text": "resumed answer",
+                  "phase": null,
+                  "memoryCitation": null,
+                  "delivery": null,
+                  "questions": null
+                }
+              ],
+              "itemsView": "full",
+              "status": "completed",
+              "error": null,
+              "startedAt": 1791895696,
+              "completedAt": 1791895696,
+              "durationMs": 80
+            },
+            {
+              "id": "01a1354e-75dd-7c03-8262-9ecd57c5ed2d",
+              "rootTurnId": "01a1354e-75dd-7c03-8262-9ecd57c5ed2d",
+              "items": [
+                {
+                  "type": "contextCompaction",
+                  "id": "01a1354e-75f7-76a2-be4d-f437fe73fc94"
+                }
+              ],
+              "itemsView": "full",
+              "status": "inProgress",
+              "error": null,
+              "startedAt": 1791895696,
+              "completedAt": null,
+              "durationMs": null
+            }
+          ]
+        }
+      },
+      "terminal": {
+        "threadId": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+        "turn": {
+          "id": "01a1354e-75dd-7c03-8262-9ecd57c5ed2d",
+          "rootTurnId": "01a1354e-75dd-7c03-8262-9ecd57c5ed2d",
+          "items": [],
+          "itemsView": "notLoaded",
+          "status": "completed",
+          "error": null,
+          "startedAt": 1791895696,
+          "completedAt": 1791895696,
+          "durationMs": 55
+        }
+      },
+      "final_read": {
+        "thread": {
+          "id": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+          "forkedFromId": null,
+          "cliVersion": "0.162.1",
+          "source": "vscode",
+          "historyMode": "paginated",
+          "status": {
+            "type": "idle"
+          },
+          "turns": [
+            {
+              "id": "01a1354e-7109-7ee0-bf3e-c8a1ced3b8bc",
+              "rootTurnId": "01a1354e-7109-7ee0-bf3e-c8a1ced3b8bc",
+              "items": [
+                {
+                  "type": "userMessage",
+                  "id": "01a1354e-713c-7dd0-b628-1a46505e85a7",
+                  "clientId": null,
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "tools instruction",
+                      "text_elements": []
+                    }
+                  ]
+                },
+                {
+                  "type": "commandExecution",
+                  "id": "synthetic-call",
+                  "pluginId": null,
+                  "scriptPath": null,
+                  "command": "/bin/zsh -lc 'printf synthetic-tool-result'",
+                  "cwd": "/synthetic/capture/project",
+                  "processId": "20610",
+                  "source": "unifiedExecStartup",
+                  "status": "completed",
+                  "commandActions": [
+                    {
+                      "type": "unknown",
+                      "command": "printf synthetic-tool-result"
+                    }
+                  ],
+                  "aggregatedOutput": "synthetic-tool-result",
+                  "exitCode": 0,
+                  "durationMs": 0
+                },
+                {
+                  "type": "agentMessage",
+                  "id": "msg-synthetic-7",
+                  "text": "tool answer",
+                  "phase": null,
+                  "memoryCitation": null,
+                  "delivery": null,
+                  "questions": null
+                }
+              ],
+              "itemsView": "full",
+              "status": "completed",
+              "error": null,
+              "startedAt": 1791895695,
+              "completedAt": 1791895695,
+              "durationMs": 149
+            },
+            {
+              "id": "01a1354e-71a3-7822-9ed7-cdef41fd2f90",
+              "rootTurnId": "01a1354e-71a3-7822-9ed7-cdef41fd2f90",
+              "items": [
+                {
+                  "type": "userMessage",
+                  "id": "01a1354e-71bc-7a81-89c5-19c0f4a31a15",
+                  "clientId": null,
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "later instruction",
+                      "text_elements": []
+                    }
+                  ]
+                },
+                {
+                  "type": "agentMessage",
+                  "id": "msg-synthetic-8",
+                  "text": "later answer",
+                  "phase": null,
+                  "memoryCitation": null,
+                  "delivery": null,
+                  "questions": null
+                }
+              ],
+              "itemsView": "full",
+              "status": "completed",
+              "error": null,
+              "startedAt": 1791895695,
+              "completedAt": 1791895695,
+              "durationMs": 52
+            },
+            {
+              "id": "01a1354e-7589-7e42-be65-049a3e9a8abf",
+              "rootTurnId": "01a1354e-7589-7e42-be65-049a3e9a8abf",
+              "items": [
+                {
+                  "type": "userMessage",
+                  "id": "01a1354e-75bc-7c70-a7e9-79f41c398635",
+                  "clientId": null,
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "resume instruction",
+                      "text_elements": []
+                    }
+                  ]
+                },
+                {
+                  "type": "agentMessage",
+                  "id": "msg-synthetic-14",
+                  "text": "resumed answer",
+                  "phase": null,
+                  "memoryCitation": null,
+                  "delivery": null,
+                  "questions": null
+                }
+              ],
+              "itemsView": "full",
+              "status": "completed",
+              "error": null,
+              "startedAt": 1791895696,
+              "completedAt": 1791895696,
+              "durationMs": 80
+            },
+            {
+              "id": "01a1354e-75dd-7c03-8262-9ecd57c5ed2d",
+              "rootTurnId": "01a1354e-75dd-7c03-8262-9ecd57c5ed2d",
+              "items": [
+                {
+                  "type": "contextCompaction",
+                  "id": "01a1354e-75f7-76a2-be4d-f437fe73fc94"
+                }
+              ],
+              "itemsView": "full",
+              "status": "completed",
+              "error": null,
+              "startedAt": 1791895696,
+              "completedAt": 1791895696,
+              "durationMs": 55
+            }
+          ]
+        }
+      }
+    }
+  },
+  "hooks": [
+    {
+      "event": {
+        "type": "agent-turn-complete",
+        "thread-id": "01a1354e-6954-7971-ad6d-ba20620309fb",
+        "turn-id": "01a1354e-69ae-7971-8f29-918587cb37b2",
+        "cwd": "/synthetic/capture/project",
+        "client": "codex_exec",
+        "input-messages": [
+          "first instruction"
+        ],
+        "last-assistant-message": "first answer"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 10,
+          "type": "token_usage_record",
+          "event_type": null
+        },
+        {
+          "ordinal": 11,
+          "type": "event_msg",
+          "event_type": "token_count"
+        },
+        {
+          "ordinal": 12,
+          "type": "event_msg",
+          "event_type": "task_complete"
+        }
+      ]
+    },
+    {
+      "event": {
+        "session_id": "01a1354e-6d49-71f0-bc57-bd6014c1da04",
+        "transcript_path": "/synthetic/capture/state/sessions/2026/10/13/rollout-2026-10-13T21-48-14-01a1354e-6d49-71f0-bc57-bd6014c1da04.jsonl",
+        "cwd": "/synthetic/capture/project",
+        "hook_event_name": "SessionStart",
+        "model": "capture-test",
+        "permission_mode": "bypassPermissions",
+        "source": "startup"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 3,
+          "type": "response_item",
+          "event_type": "message"
+        },
+        {
+          "ordinal": 4,
+          "type": "world_state",
+          "event_type": null
+        },
+        {
+          "ordinal": 5,
+          "type": "turn_context",
+          "event_type": null
+        }
+      ]
+    },
+    {
+      "event": {
+        "session_id": "01a1354e-6d49-71f0-bc57-bd6014c1da04",
+        "turn_id": "01a1354e-6d6a-79b1-b3d1-ea80c9644551",
+        "transcript_path": "/synthetic/capture/state/sessions/2026/10/13/rollout-2026-10-13T21-48-14-01a1354e-6d49-71f0-bc57-bd6014c1da04.jsonl",
+        "cwd": "/synthetic/capture/project",
+        "hook_event_name": "UserPromptSubmit",
+        "model": "capture-test",
+        "permission_mode": "bypassPermissions",
+        "prompt": "continue once"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 3,
+          "type": "response_item",
+          "event_type": "message"
+        },
+        {
+          "ordinal": 4,
+          "type": "world_state",
+          "event_type": null
+        },
+        {
+          "ordinal": 5,
+          "type": "turn_context",
+          "event_type": null
+        }
+      ]
+    },
+    {
+      "event": {
+        "session_id": "01a1354e-6d49-71f0-bc57-bd6014c1da04",
+        "turn_id": "01a1354e-6d6a-79b1-b3d1-ea80c9644551",
+        "transcript_path": "/synthetic/capture/state/sessions/2026/10/13/rollout-2026-10-13T21-48-14-01a1354e-6d49-71f0-bc57-bd6014c1da04.jsonl",
+        "cwd": "/synthetic/capture/project",
+        "hook_event_name": "Stop",
+        "model": "capture-test",
+        "permission_mode": "bypassPermissions",
+        "stop_hook_active": false,
+        "last_assistant_message": "pre-continuation answer"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 9,
+          "type": "response_item",
+          "event_type": "message"
+        },
+        {
+          "ordinal": 10,
+          "type": "token_usage_record",
+          "event_type": null
+        },
+        {
+          "ordinal": 11,
+          "type": "event_msg",
+          "event_type": "token_count"
+        }
+      ]
+    },
+    {
+      "event": {
+        "session_id": "01a1354e-6d49-71f0-bc57-bd6014c1da04",
+        "turn_id": "01a1354e-6d6a-79b1-b3d1-ea80c9644551",
+        "transcript_path": "/synthetic/capture/state/sessions/2026/10/13/rollout-2026-10-13T21-48-14-01a1354e-6d49-71f0-bc57-bd6014c1da04.jsonl",
+        "cwd": "/synthetic/capture/project",
+        "hook_event_name": "Stop",
+        "model": "capture-test",
+        "permission_mode": "bypassPermissions",
+        "stop_hook_active": true,
+        "last_assistant_message": "post-continuation answer"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 15,
+          "type": "response_item",
+          "event_type": "message"
+        },
+        {
+          "ordinal": 16,
+          "type": "token_usage_record",
+          "event_type": null
+        },
+        {
+          "ordinal": 17,
+          "type": "event_msg",
+          "event_type": "token_count"
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "agent-turn-complete",
+        "thread-id": "01a1354e-6d49-71f0-bc57-bd6014c1da04",
+        "turn-id": "01a1354e-6d6a-79b1-b3d1-ea80c9644551",
+        "cwd": "/synthetic/capture/project",
+        "client": "codex_exec",
+        "input-messages": [
+          "continue once"
+        ],
+        "last-assistant-message": "post-continuation answer"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 16,
+          "type": "token_usage_record",
+          "event_type": null
+        },
+        {
+          "ordinal": 17,
+          "type": "event_msg",
+          "event_type": "token_count"
+        },
+        {
+          "ordinal": 18,
+          "type": "event_msg",
+          "event_type": "task_complete"
+        }
+      ]
+    },
+    {
+      "event": {
+        "session_id": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+        "transcript_path": "/synthetic/capture/state/sessions/2026/10/13/rollout-2026-10-13T21-48-15-01a1354e-70e0-7220-a0ac-6e6807b5d7d9.jsonl",
+        "cwd": "/synthetic/capture/project",
+        "hook_event_name": "SessionStart",
+        "model": "capture-test",
+        "permission_mode": "bypassPermissions",
+        "source": "startup"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 3,
+          "type": "response_item",
+          "event_type": "message"
+        },
+        {
+          "ordinal": 4,
+          "type": "world_state",
+          "event_type": null
+        },
+        {
+          "ordinal": 5,
+          "type": "turn_context",
+          "event_type": null
+        }
+      ]
+    },
+    {
+      "event": {
+        "session_id": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+        "turn_id": "01a1354e-7109-7ee0-bf3e-c8a1ced3b8bc",
+        "transcript_path": "/synthetic/capture/state/sessions/2026/10/13/rollout-2026-10-13T21-48-15-01a1354e-70e0-7220-a0ac-6e6807b5d7d9.jsonl",
+        "cwd": "/synthetic/capture/project",
+        "hook_event_name": "UserPromptSubmit",
+        "model": "capture-test",
+        "permission_mode": "bypassPermissions",
+        "prompt": "tools instruction"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 3,
+          "type": "response_item",
+          "event_type": "message"
+        },
+        {
+          "ordinal": 4,
+          "type": "world_state",
+          "event_type": null
+        },
+        {
+          "ordinal": 5,
+          "type": "turn_context",
+          "event_type": null
+        }
+      ]
+    },
+    {
+      "event": {
+        "session_id": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+        "turn_id": "01a1354e-7109-7ee0-bf3e-c8a1ced3b8bc",
+        "transcript_path": "/synthetic/capture/state/sessions/2026/10/13/rollout-2026-10-13T21-48-15-01a1354e-70e0-7220-a0ac-6e6807b5d7d9.jsonl",
+        "cwd": "/synthetic/capture/project",
+        "hook_event_name": "PostToolUse",
+        "model": "capture-test",
+        "permission_mode": "bypassPermissions",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "printf synthetic-tool-result"
+        },
+        "tool_response": "synthetic-tool-result",
+        "tool_use_id": "synthetic-call"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 8,
+          "type": "response_item",
+          "event_type": "function_call"
+        },
+        {
+          "ordinal": 9,
+          "type": "token_usage_record",
+          "event_type": null
+        },
+        {
+          "ordinal": 10,
+          "type": "event_msg",
+          "event_type": "item_completed"
+        }
+      ]
+    },
+    {
+      "event": {
+        "session_id": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+        "turn_id": "01a1354e-7109-7ee0-bf3e-c8a1ced3b8bc",
+        "transcript_path": "/synthetic/capture/state/sessions/2026/10/13/rollout-2026-10-13T21-48-15-01a1354e-70e0-7220-a0ac-6e6807b5d7d9.jsonl",
+        "cwd": "/synthetic/capture/project",
+        "hook_event_name": "Stop",
+        "model": "capture-test",
+        "permission_mode": "bypassPermissions",
+        "stop_hook_active": false,
+        "last_assistant_message": "tool answer"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 14,
+          "type": "response_item",
+          "event_type": "message"
+        },
+        {
+          "ordinal": 15,
+          "type": "token_usage_record",
+          "event_type": null
+        },
+        {
+          "ordinal": 16,
+          "type": "event_msg",
+          "event_type": "token_count"
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "agent-turn-complete",
+        "thread-id": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+        "turn-id": "01a1354e-7109-7ee0-bf3e-c8a1ced3b8bc",
+        "cwd": "/synthetic/capture/project",
+        "client": "coding_memory_capture_probe",
+        "input-messages": [
+          "tools instruction"
+        ],
+        "last-assistant-message": "tool answer"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 17,
+          "type": "event_msg",
+          "event_type": "task_complete"
+        },
+        {
+          "ordinal": 18,
+          "type": "event_msg",
+          "event_type": "task_started"
+        },
+        {
+          "ordinal": 19,
+          "type": "turn_context",
+          "event_type": null
+        }
+      ]
+    },
+    {
+      "event": {
+        "session_id": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+        "turn_id": "01a1354e-71a3-7822-9ed7-cdef41fd2f90",
+        "transcript_path": "/synthetic/capture/state/sessions/2026/10/13/rollout-2026-10-13T21-48-15-01a1354e-70e0-7220-a0ac-6e6807b5d7d9.jsonl",
+        "cwd": "/synthetic/capture/project",
+        "hook_event_name": "UserPromptSubmit",
+        "model": "capture-test",
+        "permission_mode": "bypassPermissions",
+        "prompt": "later instruction"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 17,
+          "type": "event_msg",
+          "event_type": "task_complete"
+        },
+        {
+          "ordinal": 18,
+          "type": "event_msg",
+          "event_type": "task_started"
+        },
+        {
+          "ordinal": 19,
+          "type": "turn_context",
+          "event_type": null
+        }
+      ]
+    },
+    {
+      "event": {
+        "session_id": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+        "turn_id": "01a1354e-71a3-7822-9ed7-cdef41fd2f90",
+        "transcript_path": "/synthetic/capture/state/sessions/2026/10/13/rollout-2026-10-13T21-48-15-01a1354e-70e0-7220-a0ac-6e6807b5d7d9.jsonl",
+        "cwd": "/synthetic/capture/project",
+        "hook_event_name": "Stop",
+        "model": "capture-test",
+        "permission_mode": "bypassPermissions",
+        "stop_hook_active": false,
+        "last_assistant_message": "later answer"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 23,
+          "type": "response_item",
+          "event_type": "message"
+        },
+        {
+          "ordinal": 24,
+          "type": "token_usage_record",
+          "event_type": null
+        },
+        {
+          "ordinal": 25,
+          "type": "event_msg",
+          "event_type": "token_count"
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "agent-turn-complete",
+        "thread-id": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+        "turn-id": "01a1354e-71a3-7822-9ed7-cdef41fd2f90",
+        "cwd": "/synthetic/capture/project",
+        "client": "coding_memory_capture_probe",
+        "input-messages": [
+          "tools instruction",
+          "later instruction"
+        ],
+        "last-assistant-message": "later answer"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 24,
+          "type": "token_usage_record",
+          "event_type": null
+        },
+        {
+          "ordinal": 25,
+          "type": "event_msg",
+          "event_type": "token_count"
+        },
+        {
+          "ordinal": 26,
+          "type": "event_msg",
+          "event_type": "task_complete"
+        }
+      ]
+    },
+    {
+      "event": {
+        "session_id": "01a1354e-71e0-77e1-b9bd-4a04ce815830",
+        "transcript_path": "/synthetic/capture/state/sessions/2026/10/13/rollout-2026-10-13T21-48-15-01a1354e-71e0-77e1-b9bd-4a04ce815830.jsonl",
+        "cwd": "/synthetic/capture/project",
+        "hook_event_name": "SessionStart",
+        "model": "capture-test",
+        "permission_mode": "bypassPermissions",
+        "source": "startup"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 3,
+          "type": "response_item",
+          "event_type": "message"
+        },
+        {
+          "ordinal": 4,
+          "type": "world_state",
+          "event_type": null
+        },
+        {
+          "ordinal": 5,
+          "type": "turn_context",
+          "event_type": null
+        }
+      ]
+    },
+    {
+      "event": {
+        "session_id": "01a1354e-71e0-77e1-b9bd-4a04ce815830",
+        "turn_id": "01a1354e-71fd-78f0-9cbe-431eea171712",
+        "transcript_path": "/synthetic/capture/state/sessions/2026/10/13/rollout-2026-10-13T21-48-15-01a1354e-71e0-77e1-b9bd-4a04ce815830.jsonl",
+        "cwd": "/synthetic/capture/project",
+        "hook_event_name": "UserPromptSubmit",
+        "model": "capture-test",
+        "permission_mode": "bypassPermissions",
+        "prompt": "steering instruction"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 3,
+          "type": "response_item",
+          "event_type": "message"
+        },
+        {
+          "ordinal": 4,
+          "type": "world_state",
+          "event_type": null
+        },
+        {
+          "ordinal": 5,
+          "type": "turn_context",
+          "event_type": null
+        }
+      ]
+    },
+    {
+      "event": {
+        "session_id": "01a1354e-71e0-77e1-b9bd-4a04ce815830",
+        "turn_id": "01a1354e-71fd-78f0-9cbe-431eea171712",
+        "transcript_path": "/synthetic/capture/state/sessions/2026/10/13/rollout-2026-10-13T21-48-15-01a1354e-71e0-77e1-b9bd-4a04ce815830.jsonl",
+        "cwd": "/synthetic/capture/project",
+        "hook_event_name": "UserPromptSubmit",
+        "model": "capture-test",
+        "permission_mode": "bypassPermissions",
+        "prompt": "synthetic steering instruction"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 5,
+          "type": "turn_context",
+          "event_type": null
+        },
+        {
+          "ordinal": 6,
+          "type": "response_item",
+          "event_type": "message"
+        },
+        {
+          "ordinal": 7,
+          "type": "event_msg",
+          "event_type": "item_completed"
+        }
+      ]
+    },
+    {
+      "event": {
+        "session_id": "01a1354e-71e0-77e1-b9bd-4a04ce815830",
+        "turn_id": "01a1354e-71fd-78f0-9cbe-431eea171712",
+        "transcript_path": "/synthetic/capture/state/sessions/2026/10/13/rollout-2026-10-13T21-48-15-01a1354e-71e0-77e1-b9bd-4a04ce815830.jsonl",
+        "cwd": "/synthetic/capture/project",
+        "hook_event_name": "Stop",
+        "model": "capture-test",
+        "permission_mode": "bypassPermissions",
+        "stop_hook_active": false,
+        "last_assistant_message": "after steering"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 11,
+          "type": "response_item",
+          "event_type": "message"
+        },
+        {
+          "ordinal": 12,
+          "type": "token_usage_record",
+          "event_type": null
+        },
+        {
+          "ordinal": 13,
+          "type": "event_msg",
+          "event_type": "token_count"
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "agent-turn-complete",
+        "thread-id": "01a1354e-71e0-77e1-b9bd-4a04ce815830",
+        "turn-id": "01a1354e-71fd-78f0-9cbe-431eea171712",
+        "cwd": "/synthetic/capture/project",
+        "client": "coding_memory_capture_probe",
+        "input-messages": [
+          "steering instruction",
+          "synthetic steering instruction"
+        ],
+        "last-assistant-message": "after steering"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 12,
+          "type": "token_usage_record",
+          "event_type": null
+        },
+        {
+          "ordinal": 13,
+          "type": "event_msg",
+          "event_type": "token_count"
+        },
+        {
+          "ordinal": 14,
+          "type": "event_msg",
+          "event_type": "task_complete"
+        }
+      ]
+    },
+    {
+      "event": {
+        "session_id": "01a1354e-73c1-7e32-9823-9e81f2b678d4",
+        "transcript_path": "/synthetic/capture/state/sessions/2026/10/13/rollout-2026-10-13T21-48-16-01a1354e-73c1-7e32-9823-9e81f2b678d4.jsonl",
+        "cwd": "/synthetic/capture/project",
+        "hook_event_name": "SessionStart",
+        "model": "capture-test",
+        "permission_mode": "bypassPermissions",
+        "source": "startup"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 3,
+          "type": "response_item",
+          "event_type": "message"
+        },
+        {
+          "ordinal": 4,
+          "type": "world_state",
+          "event_type": null
+        },
+        {
+          "ordinal": 5,
+          "type": "turn_context",
+          "event_type": null
+        }
+      ]
+    },
+    {
+      "event": {
+        "session_id": "01a1354e-73c1-7e32-9823-9e81f2b678d4",
+        "turn_id": "01a1354e-73e1-7510-8ca3-88adf5f756f9",
+        "transcript_path": "/synthetic/capture/state/sessions/2026/10/13/rollout-2026-10-13T21-48-16-01a1354e-73c1-7e32-9823-9e81f2b678d4.jsonl",
+        "cwd": "/synthetic/capture/project",
+        "hook_event_name": "UserPromptSubmit",
+        "model": "capture-test",
+        "permission_mode": "bypassPermissions",
+        "prompt": "failure instruction"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 3,
+          "type": "response_item",
+          "event_type": "message"
+        },
+        {
+          "ordinal": 4,
+          "type": "world_state",
+          "event_type": null
+        },
+        {
+          "ordinal": 5,
+          "type": "turn_context",
+          "event_type": null
+        }
+      ]
+    },
+    {
+      "event": {
+        "session_id": "01a1354e-741b-7500-8be0-ae35f7d98f36",
+        "transcript_path": "/synthetic/capture/state/sessions/2026/10/13/rollout-2026-10-13T21-48-16-01a1354e-741b-7500-8be0-ae35f7d98f36.jsonl",
+        "cwd": "/synthetic/capture/project",
+        "hook_event_name": "SessionStart",
+        "model": "capture-test",
+        "permission_mode": "bypassPermissions",
+        "source": "startup"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 3,
+          "type": "response_item",
+          "event_type": "message"
+        },
+        {
+          "ordinal": 4,
+          "type": "world_state",
+          "event_type": null
+        },
+        {
+          "ordinal": 5,
+          "type": "turn_context",
+          "event_type": null
+        }
+      ]
+    },
+    {
+      "event": {
+        "session_id": "01a1354e-741b-7500-8be0-ae35f7d98f36",
+        "turn_id": "01a1354e-7439-70e3-bae3-5d442af6204d",
+        "transcript_path": "/synthetic/capture/state/sessions/2026/10/13/rollout-2026-10-13T21-48-16-01a1354e-741b-7500-8be0-ae35f7d98f36.jsonl",
+        "cwd": "/synthetic/capture/project",
+        "hook_event_name": "UserPromptSubmit",
+        "model": "capture-test",
+        "permission_mode": "bypassPermissions",
+        "prompt": "interruption instruction"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 3,
+          "type": "response_item",
+          "event_type": "message"
+        },
+        {
+          "ordinal": 4,
+          "type": "world_state",
+          "event_type": null
+        },
+        {
+          "ordinal": 5,
+          "type": "turn_context",
+          "event_type": null
+        }
+      ]
+    },
+    {
+      "event": {
+        "session_id": "01a1354e-741b-7500-8be0-ae35f7d98f36",
+        "turn_id": "01a1354e-7439-70e3-bae3-5d442af6204d",
+        "transcript_path": "/synthetic/capture/state/sessions/2026/10/13/rollout-2026-10-13T21-48-16-01a1354e-741b-7500-8be0-ae35f7d98f36.jsonl",
+        "cwd": "/synthetic/capture/project",
+        "hook_event_name": "Interrupt",
+        "model": "capture-test",
+        "permission_mode": "bypassPermissions"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 6,
+          "type": "response_item",
+          "event_type": "message"
+        },
+        {
+          "ordinal": 7,
+          "type": "event_msg",
+          "event_type": "item_completed"
+        },
+        {
+          "ordinal": 8,
+          "type": "response_item",
+          "event_type": "message"
+        }
+      ]
+    },
+    {
+      "event": {
+        "session_id": "01a1354e-74e9-7783-8d21-5a83335372e5",
+        "transcript_path": "/synthetic/capture/state/sessions/2026/10/13/rollout-2026-10-13T21-48-16-01a1354e-74e9-7783-8d21-5a83335372e5.jsonl",
+        "cwd": "/synthetic/capture/project",
+        "hook_event_name": "SessionStart",
+        "model": "capture-test",
+        "permission_mode": "bypassPermissions",
+        "source": "fork"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 19,
+          "type": "event_msg",
+          "event_type": "thread_settings_applied"
+        },
+        {
+          "ordinal": 20,
+          "type": "event_msg",
+          "event_type": "task_started"
+        },
+        {
+          "ordinal": 21,
+          "type": "turn_context",
+          "event_type": null
+        }
+      ]
+    },
+    {
+      "event": {
+        "session_id": "01a1354e-74e9-7783-8d21-5a83335372e5",
+        "turn_id": "01a1354e-7507-7fe1-b440-b4327fe585dc",
+        "transcript_path": "/synthetic/capture/state/sessions/2026/10/13/rollout-2026-10-13T21-48-16-01a1354e-74e9-7783-8d21-5a83335372e5.jsonl",
+        "cwd": "/synthetic/capture/project",
+        "hook_event_name": "UserPromptSubmit",
+        "model": "capture-test",
+        "permission_mode": "bypassPermissions",
+        "prompt": "fork instruction"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 19,
+          "type": "event_msg",
+          "event_type": "thread_settings_applied"
+        },
+        {
+          "ordinal": 20,
+          "type": "event_msg",
+          "event_type": "task_started"
+        },
+        {
+          "ordinal": 21,
+          "type": "turn_context",
+          "event_type": null
+        }
+      ]
+    },
+    {
+      "event": {
+        "session_id": "01a1354e-74e9-7783-8d21-5a83335372e5",
+        "turn_id": "01a1354e-7507-7fe1-b440-b4327fe585dc",
+        "transcript_path": "/synthetic/capture/state/sessions/2026/10/13/rollout-2026-10-13T21-48-16-01a1354e-74e9-7783-8d21-5a83335372e5.jsonl",
+        "cwd": "/synthetic/capture/project",
+        "hook_event_name": "Stop",
+        "model": "capture-test",
+        "permission_mode": "bypassPermissions",
+        "stop_hook_active": false,
+        "last_assistant_message": "fork answer"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 25,
+          "type": "response_item",
+          "event_type": "message"
+        },
+        {
+          "ordinal": 26,
+          "type": "token_usage_record",
+          "event_type": null
+        },
+        {
+          "ordinal": 27,
+          "type": "event_msg",
+          "event_type": "token_count"
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "agent-turn-complete",
+        "thread-id": "01a1354e-74e9-7783-8d21-5a83335372e5",
+        "turn-id": "01a1354e-7507-7fe1-b440-b4327fe585dc",
+        "cwd": "/synthetic/capture/project",
+        "client": "coding_memory_capture_probe",
+        "input-messages": [
+          "tools instruction",
+          "fork instruction"
+        ],
+        "last-assistant-message": "fork answer"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 26,
+          "type": "token_usage_record",
+          "event_type": null
+        },
+        {
+          "ordinal": 27,
+          "type": "event_msg",
+          "event_type": "token_count"
+        },
+        {
+          "ordinal": 28,
+          "type": "event_msg",
+          "event_type": "task_complete"
+        }
+      ]
+    },
+    {
+      "event": {
+        "session_id": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+        "transcript_path": "/synthetic/capture/state/sessions/2026/10/13/rollout-2026-10-13T21-48-15-01a1354e-70e0-7220-a0ac-6e6807b5d7d9.jsonl",
+        "cwd": "/synthetic/capture/project",
+        "hook_event_name": "SessionStart",
+        "model": "capture-test",
+        "permission_mode": "bypassPermissions",
+        "source": "resume"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 27,
+          "type": "event_msg",
+          "event_type": "thread_settings_applied"
+        },
+        {
+          "ordinal": 28,
+          "type": "event_msg",
+          "event_type": "task_started"
+        },
+        {
+          "ordinal": 29,
+          "type": "turn_context",
+          "event_type": null
+        }
+      ]
+    },
+    {
+      "event": {
+        "session_id": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+        "turn_id": "01a1354e-7589-7e42-be65-049a3e9a8abf",
+        "transcript_path": "/synthetic/capture/state/sessions/2026/10/13/rollout-2026-10-13T21-48-15-01a1354e-70e0-7220-a0ac-6e6807b5d7d9.jsonl",
+        "cwd": "/synthetic/capture/project",
+        "hook_event_name": "UserPromptSubmit",
+        "model": "capture-test",
+        "permission_mode": "bypassPermissions",
+        "prompt": "resume instruction"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 27,
+          "type": "event_msg",
+          "event_type": "thread_settings_applied"
+        },
+        {
+          "ordinal": 28,
+          "type": "event_msg",
+          "event_type": "task_started"
+        },
+        {
+          "ordinal": 29,
+          "type": "turn_context",
+          "event_type": null
+        }
+      ]
+    },
+    {
+      "event": {
+        "session_id": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+        "turn_id": "01a1354e-7589-7e42-be65-049a3e9a8abf",
+        "transcript_path": "/synthetic/capture/state/sessions/2026/10/13/rollout-2026-10-13T21-48-15-01a1354e-70e0-7220-a0ac-6e6807b5d7d9.jsonl",
+        "cwd": "/synthetic/capture/project",
+        "hook_event_name": "Stop",
+        "model": "capture-test",
+        "permission_mode": "bypassPermissions",
+        "stop_hook_active": false,
+        "last_assistant_message": "resumed answer"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 33,
+          "type": "response_item",
+          "event_type": "message"
+        },
+        {
+          "ordinal": 34,
+          "type": "token_usage_record",
+          "event_type": null
+        },
+        {
+          "ordinal": 35,
+          "type": "event_msg",
+          "event_type": "token_count"
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "agent-turn-complete",
+        "thread-id": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+        "turn-id": "01a1354e-7589-7e42-be65-049a3e9a8abf",
+        "cwd": "/synthetic/capture/project",
+        "client": "coding_memory_capture_probe",
+        "input-messages": [
+          "tools instruction",
+          "later instruction",
+          "resume instruction"
+        ],
+        "last-assistant-message": "resumed answer"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 35,
+          "type": "event_msg",
+          "event_type": "token_count"
+        },
+        {
+          "ordinal": 36,
+          "type": "event_msg",
+          "event_type": "task_complete"
+        },
+        {
+          "ordinal": 37,
+          "type": "event_msg",
+          "event_type": "task_started"
+        }
+      ]
+    },
+    {
+      "event": {
+        "session_id": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+        "turn_id": "01a1354e-75dd-7c03-8262-9ecd57c5ed2d",
+        "transcript_path": "/synthetic/capture/state/sessions/2026/10/13/rollout-2026-10-13T21-48-15-01a1354e-70e0-7220-a0ac-6e6807b5d7d9.jsonl",
+        "cwd": "/synthetic/capture/project",
+        "hook_event_name": "PreCompact",
+        "model": "capture-test",
+        "trigger": "manual"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 35,
+          "type": "event_msg",
+          "event_type": "token_count"
+        },
+        {
+          "ordinal": 36,
+          "type": "event_msg",
+          "event_type": "task_complete"
+        },
+        {
+          "ordinal": 37,
+          "type": "event_msg",
+          "event_type": "task_started"
+        }
+      ]
+    },
+    {
+      "event": {
+        "session_id": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+        "turn_id": "01a1354e-75dd-7c03-8262-9ecd57c5ed2d",
+        "transcript_path": "/synthetic/capture/state/sessions/2026/10/13/rollout-2026-10-13T21-48-15-01a1354e-70e0-7220-a0ac-6e6807b5d7d9.jsonl",
+        "cwd": "/synthetic/capture/project",
+        "hook_event_name": "PostCompact",
+        "model": "capture-test",
+        "trigger": "manual"
+      },
+      "visible_tail": [
+        {
+          "ordinal": 45,
+          "type": "event_msg",
+          "event_type": "thread_settings_applied"
+        },
+        {
+          "ordinal": 46,
+          "type": "event_msg",
+          "event_type": "token_count"
+        },
+        {
+          "ordinal": 47,
+          "type": "event_msg",
+          "event_type": "item_completed"
+        }
+      ]
+    }
+  ],
+  "rollout_metadata": [
+    {
+      "id": "01a1354e-6954-7971-ad6d-ba20620309fb",
+      "cli_version": "0.162.1",
+      "history_mode": "paginated"
+    },
+    {
+      "id": "01a1354e-6cac-7331-879f-771755fc86d4",
+      "cli_version": "0.162.1",
+      "history_mode": "paginated"
+    },
+    {
+      "id": "01a1354e-74e9-7783-8d21-5a83335372e5",
+      "cli_version": "0.162.1",
+      "history_mode": "paginated",
+      "forked_from_id": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+      "forked_from_ordinal_exclusive": 18,
+      "history_base": {
+        "thread_id": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+        "end_ordinal_exclusive": 18,
+        "end_byte_offset": 46003
+      }
+    },
+    {
+      "id": "01a1354e-71e0-77e1-b9bd-4a04ce815830",
+      "cli_version": "0.162.1",
+      "history_mode": "paginated"
+    },
+    {
+      "id": "01a1354e-73c1-7e32-9823-9e81f2b678d4",
+      "cli_version": "0.162.1",
+      "history_mode": "paginated"
+    },
+    {
+      "id": "01a1354e-6d49-71f0-bc57-bd6014c1da04",
+      "cli_version": "0.162.1",
+      "history_mode": "paginated"
+    },
+    {
+      "id": "01a1354e-741b-7500-8be0-ae35f7d98f36",
+      "cli_version": "0.162.1",
+      "history_mode": "paginated"
+    },
+    {
+      "id": "01a1354e-70e0-7220-a0ac-6e6807b5d7d9",
+      "cli_version": "0.162.1",
+      "history_mode": "paginated"
+    },
+    {
+      "id": "01a1354e-6cfb-7572-b889-8af23b378b26",
+      "cli_version": "0.162.1",
+      "history_mode": "paginated"
+    }
+  ]
+}
