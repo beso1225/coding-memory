@@ -2,6 +2,10 @@
 
 Research date: 2026-10-13 (Asia/Tokyo).
 
+This file records the original design investigation. Subsequent installed-binary
+experiments and their remaining App checkpoint are recorded in
+[codex-capture-experiment.md](codex-capture-experiment.md).
+
 This record distinguishes documentation/source inspection from runtime experiments.
 No capture plugin, engine, model extraction, or live integration experiment was
 implemented or executed during design research. Installed version and help output

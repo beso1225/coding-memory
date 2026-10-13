@@ -56,6 +56,7 @@ for the flake and the package URI above for the Pkl schema.
 - pkfire and Pkl for task definitions.
 - nixfmt for the environment definition.
 - actionlint for GitHub Actions workflow validation.
+- Python for standard-library-only capture experiments and offline fixture tests.
 
 The Rust selection comes from `rust-toolchain.toml`, using rust-overlay in Nix.
 It is also understood by rustup users. The editor should inherit the development
@@ -75,7 +76,8 @@ accidental crate publication while the project and its license are being defined
 | `pkf run test` | Run Rust tests and documentation tests |
 | `pkf run build` | Build library and binary targets |
 | `pkf run workflow-lint` | Validate GitHub Actions workflows with actionlint |
-| `pkf run check` | Run format, lint, test, build, and workflow checks |
+| `pkf run capture-fixtures` | Check recorded Codex capture contracts without runtime/model calls |
+| `pkf run check` | Run format, lint, test, build, workflow, and capture fixture checks |
 | `pkf run` | Run the same aggregate checks by default |
 
 Tasks use Cargo's lock file and incremental compilation. pkfire result caching
@@ -85,6 +87,10 @@ toolchain/environment change or a missing build artifact.
 The scaffold has no behavior tests yet. A successful test command confirms that
 the test targets and documentation-test pipeline execute; it does not validate
 the future engine. Add focused regression tests alongside behavior changes.
+
+The separate capture fixture tests validate the observed runtime contracts in
+[the capture experiment](../experiments/codex_capture/README.md). Live experiments
+are opt-in and are never launched by `pkf run check` or CI.
 
 The same Rust checks can be invoked directly inside the environment:
 
