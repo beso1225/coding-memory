@@ -145,6 +145,12 @@ def execute_role(args, role, model, home, work, output, timeout=90):
             e
             for e in events
             if e.get("item", {}).get("type")
-            in ["command_execution", "mcp_tool_call", "web_search"]
+            in [
+                "command_execution",
+                "mcp_tool_call",
+                "web_search",
+                "file_change",
+                "collab_tool_call",
+            ]
         ],
     }

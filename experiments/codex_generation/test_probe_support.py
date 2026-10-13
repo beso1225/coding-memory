@@ -10,6 +10,22 @@ from probe_support import credential_copy, execute_role, install_policy
 
 
 class SupportTests(unittest.TestCase):
+    def test_patch_and_collaboration_attempts_are_recorded(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            events = [
+                {"type": "item.completed", "item": {"type": kind, "status": "failed"}}
+                for kind in ["file_change", "collab_tool_call"]
+            ]
+            with patch(
+                "probe_support.subprocess.run",
+                return_value=subprocess.CompletedProcess(
+                    [], 0, stdout="\n".join(map(json.dumps, events)), stderr=""
+                ),
+            ):
+                result = execute_role([], "review", "model", root, root, root / "out")
+            self.assertEqual(events, result["tool_items"])
+
     def test_policy_writes_real_json_lines_and_denies_every_call(self):
         with tempfile.TemporaryDirectory(prefix="policy space ") as d:
             root = Path(d)
