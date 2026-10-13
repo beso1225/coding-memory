@@ -57,7 +57,8 @@ local workflowLint: Task = new {
 local captureFixtures: Task = new {
   name = "capture-fixtures"
   description = "Check observed Codex capture contracts without runtime or model calls"
-  cmd = "python3 -m unittest discover -s experiments/codex_capture -p 'test_*.py'"
+  cmd =
+    "python3 -m unittest discover -s experiments/codex_capture -p 'test_*.py' && python3 -m unittest discover -s experiments/codex_generation -p 'test_*.py'"
   cache = false
 }
 

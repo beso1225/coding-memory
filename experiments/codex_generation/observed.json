@@ -1,0 +1,688 @@
+{
+  "timeout_outcome": "timeout",
+  "version": "codex-cli 0.162.1",
+  "results": [
+    {
+      "case": "extract",
+      "role": "extraction",
+      "model": "capture-extraction",
+      "thread_id": "01a135d3-c94a-7d03-89af-d946b6a910d4",
+      "exit": 0,
+      "outcome": "success",
+      "final": "{\"role\": \"extraction\", \"items\": [\"synthetic knowledge\"], \"approved\": true}",
+      "internal_live": true,
+      "internal_reconciled": true,
+      "requests": [
+        {
+          "kind": "request",
+          "path": "/v1/responses",
+          "tool_names": [
+            "exec_command",
+            "write_stdin",
+            "request_user_input",
+            "view_image",
+            "multi_agent_v1",
+            "get_goal",
+            "create_goal",
+            "update_goal",
+            null
+          ],
+          "model": "capture-extraction",
+          "response_format": {
+            "format": {
+              "type": "json_schema",
+              "strict": true,
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "extraction",
+                      "consolidation",
+                      "review"
+                    ]
+                  },
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "approved": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "role",
+                  "items",
+                  "approved"
+                ],
+                "additionalProperties": false
+              },
+              "name": "codex_output_schema"
+            }
+          }
+        }
+      ],
+      "tool_items": []
+    },
+    {
+      "case": "empty",
+      "role": "extraction",
+      "model": "capture-extraction",
+      "thread_id": "01a135d3-cc75-7bd2-9c74-ab01d0400953",
+      "exit": 0,
+      "outcome": "empty",
+      "final": "{\"role\": \"extraction\", \"items\": [], \"approved\": true}",
+      "internal_live": true,
+      "internal_reconciled": true,
+      "requests": [
+        {
+          "kind": "request",
+          "path": "/v1/responses",
+          "tool_names": [
+            "exec_command",
+            "write_stdin",
+            "request_user_input",
+            "view_image",
+            "multi_agent_v1",
+            "get_goal",
+            "create_goal",
+            "update_goal",
+            null
+          ],
+          "model": "capture-extraction",
+          "response_format": {
+            "format": {
+              "type": "json_schema",
+              "strict": true,
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "extraction",
+                      "consolidation",
+                      "review"
+                    ]
+                  },
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "approved": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "role",
+                  "items",
+                  "approved"
+                ],
+                "additionalProperties": false
+              },
+              "name": "codex_output_schema"
+            }
+          }
+        }
+      ],
+      "tool_items": []
+    },
+    {
+      "case": "consolidate",
+      "role": "consolidation",
+      "model": "capture-consolidation",
+      "thread_id": "01a135d3-ceff-7a02-a390-6701097770ff",
+      "exit": 0,
+      "outcome": "success",
+      "final": "{\"role\": \"consolidation\", \"items\": [\"synthetic proposal\"], \"approved\": true}",
+      "internal_live": true,
+      "internal_reconciled": true,
+      "requests": [
+        {
+          "kind": "request",
+          "path": "/v1/responses",
+          "tool_names": [
+            "exec_command",
+            "write_stdin",
+            "request_user_input",
+            "view_image",
+            "multi_agent_v1",
+            "get_goal",
+            "create_goal",
+            "update_goal",
+            null
+          ],
+          "model": "capture-consolidation",
+          "response_format": {
+            "format": {
+              "type": "json_schema",
+              "strict": true,
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "extraction",
+                      "consolidation",
+                      "review"
+                    ]
+                  },
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "approved": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "role",
+                  "items",
+                  "approved"
+                ],
+                "additionalProperties": false
+              },
+              "name": "codex_output_schema"
+            }
+          }
+        }
+      ],
+      "tool_items": []
+    },
+    {
+      "case": "review",
+      "role": "review",
+      "model": "capture-review",
+      "thread_id": "01a135d3-d218-7333-b924-1daa1fc9b530",
+      "exit": 0,
+      "outcome": "review_rejected",
+      "final": "{\"role\": \"review\", \"items\": [], \"approved\": false}",
+      "internal_live": true,
+      "internal_reconciled": true,
+      "requests": [
+        {
+          "kind": "request",
+          "path": "/v1/responses",
+          "tool_names": [
+            "exec_command",
+            "write_stdin",
+            "request_user_input",
+            "view_image",
+            "multi_agent_v1",
+            "get_goal",
+            "create_goal",
+            "update_goal",
+            null
+          ],
+          "model": "capture-review",
+          "response_format": {
+            "format": {
+              "type": "json_schema",
+              "strict": true,
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "extraction",
+                      "consolidation",
+                      "review"
+                    ]
+                  },
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "approved": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "role",
+                  "items",
+                  "approved"
+                ],
+                "additionalProperties": false
+              },
+              "name": "codex_output_schema"
+            }
+          }
+        }
+      ],
+      "tool_items": []
+    },
+    {
+      "case": "malformed",
+      "role": "review",
+      "model": "capture-review",
+      "thread_id": "01a135d3-d51e-7392-86f7-0c4ef1da7223",
+      "exit": 0,
+      "outcome": "invalid_output",
+      "final": "not JSON",
+      "internal_live": true,
+      "internal_reconciled": true,
+      "requests": [
+        {
+          "kind": "request",
+          "path": "/v1/responses",
+          "tool_names": [
+            "exec_command",
+            "write_stdin",
+            "request_user_input",
+            "view_image",
+            "multi_agent_v1",
+            "get_goal",
+            "create_goal",
+            "update_goal",
+            null
+          ],
+          "model": "capture-review",
+          "response_format": {
+            "format": {
+              "type": "json_schema",
+              "strict": true,
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "extraction",
+                      "consolidation",
+                      "review"
+                    ]
+                  },
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "approved": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "role",
+                  "items",
+                  "approved"
+                ],
+                "additionalProperties": false
+              },
+              "name": "codex_output_schema"
+            }
+          }
+        }
+      ],
+      "tool_items": []
+    },
+    {
+      "case": "failure",
+      "role": "review",
+      "model": "capture-review",
+      "thread_id": "01a135d3-d85e-7362-896f-1f132a9c2615",
+      "exit": 1,
+      "outcome": "process_failure",
+      "final": "",
+      "internal_live": true,
+      "internal_reconciled": true,
+      "requests": [
+        {
+          "kind": "request",
+          "path": "/v1/responses",
+          "tool_names": [
+            "exec_command",
+            "write_stdin",
+            "request_user_input",
+            "view_image",
+            "multi_agent_v1",
+            "get_goal",
+            "create_goal",
+            "update_goal",
+            null
+          ],
+          "model": "capture-review",
+          "response_format": {
+            "format": {
+              "type": "json_schema",
+              "strict": true,
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "extraction",
+                      "consolidation",
+                      "review"
+                    ]
+                  },
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "approved": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "role",
+                  "items",
+                  "approved"
+                ],
+                "additionalProperties": false
+              },
+              "name": "codex_output_schema"
+            }
+          }
+        }
+      ],
+      "tool_items": []
+    },
+    {
+      "case": "tools",
+      "role": "review",
+      "model": "capture-review",
+      "thread_id": "01a135d3-d8a4-7c02-bc9f-8477f966744f",
+      "exit": 0,
+      "outcome": "success",
+      "final": "{\"role\": \"review\", \"items\": [], \"approved\": true}",
+      "internal_live": true,
+      "internal_reconciled": true,
+      "requests": [
+        {
+          "kind": "request",
+          "path": "/v1/responses",
+          "tool_names": [
+            "exec_command",
+            "write_stdin",
+            "request_user_input",
+            "view_image",
+            "multi_agent_v1",
+            "get_goal",
+            "create_goal",
+            "update_goal",
+            null
+          ],
+          "model": "capture-review",
+          "response_format": {
+            "format": {
+              "type": "json_schema",
+              "strict": true,
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "extraction",
+                      "consolidation",
+                      "review"
+                    ]
+                  },
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "approved": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "role",
+                  "items",
+                  "approved"
+                ],
+                "additionalProperties": false
+              },
+              "name": "codex_output_schema"
+            }
+          }
+        },
+        {
+          "kind": "request",
+          "path": "/v1/responses",
+          "tool_names": [
+            "exec_command",
+            "write_stdin",
+            "request_user_input",
+            "view_image",
+            "multi_agent_v1",
+            "get_goal",
+            "create_goal",
+            "update_goal",
+            null
+          ],
+          "model": "capture-review",
+          "response_format": {
+            "format": {
+              "type": "json_schema",
+              "strict": true,
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "extraction",
+                      "consolidation",
+                      "review"
+                    ]
+                  },
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "approved": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "role",
+                  "items",
+                  "approved"
+                ],
+                "additionalProperties": false
+              },
+              "name": "codex_output_schema"
+            }
+          }
+        }
+      ],
+      "tool_items": [
+        {
+          "type": "item.started",
+          "item": {
+            "id": "item_1",
+            "type": "command_execution",
+            "command": "synthetic printf command",
+            "aggregated_output": "",
+            "exit_code": null,
+            "status": "in_progress"
+          }
+        },
+        {
+          "type": "item.completed",
+          "item": {
+            "id": "item_1",
+            "type": "command_execution",
+            "command": "synthetic printf command",
+            "aggregated_output": "synthetic-generation-tool",
+            "exit_code": 0,
+            "status": "completed"
+          }
+        }
+      ]
+    },
+    {
+      "case": "minimized",
+      "role": "review",
+      "model": "capture-review",
+      "thread_id": "01a135d3-dc0f-72f3-bf18-6874b2554cdc",
+      "exit": 0,
+      "outcome": "success",
+      "final": "{\"role\": \"review\", \"items\": [], \"approved\": true}",
+      "internal_live": true,
+      "internal_reconciled": true,
+      "requests": [
+        {
+          "kind": "request",
+          "path": "/v1/responses",
+          "tool_names": [
+            "exec_command",
+            "write_stdin",
+            "request_user_input",
+            "view_image",
+            "multi_agent_v1",
+            "get_goal",
+            "create_goal",
+            "update_goal",
+            null
+          ],
+          "model": "capture-review",
+          "response_format": {
+            "format": {
+              "type": "json_schema",
+              "strict": true,
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "extraction",
+                      "consolidation",
+                      "review"
+                    ]
+                  },
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "approved": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "role",
+                  "items",
+                  "approved"
+                ],
+                "additionalProperties": false
+              },
+              "name": "codex_output_schema"
+            }
+          }
+        },
+        {
+          "kind": "request",
+          "path": "/v1/responses",
+          "tool_names": [
+            "exec_command",
+            "write_stdin",
+            "request_user_input",
+            "view_image",
+            "multi_agent_v1",
+            "get_goal",
+            "create_goal",
+            "update_goal",
+            null
+          ],
+          "model": "capture-review",
+          "response_format": {
+            "format": {
+              "type": "json_schema",
+              "strict": true,
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "extraction",
+                      "consolidation",
+                      "review"
+                    ]
+                  },
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "approved": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "role",
+                  "items",
+                  "approved"
+                ],
+                "additionalProperties": false
+              },
+              "name": "codex_output_schema"
+            }
+          }
+        }
+      ],
+      "tool_items": [
+        {
+          "type": "item.started",
+          "item": {
+            "id": "item_1",
+            "type": "command_execution",
+            "command": "synthetic printf command",
+            "aggregated_output": "",
+            "exit_code": null,
+            "status": "in_progress"
+          }
+        },
+        {
+          "type": "item.completed",
+          "item": {
+            "id": "item_1",
+            "type": "command_execution",
+            "command": "synthetic printf command",
+            "aggregated_output": "synthetic-generation-tool",
+            "exit_code": 0,
+            "status": "completed"
+          }
+        }
+      ]
+    }
+  ],
+  "hook_log_exists": false,
+  "mcp_started": false,
+  "persisted_rollouts": 9,
+  "persisted_native_ids": [
+    "01a135d3-d85e-7362-896f-1f132a9c2615",
+    "01a135d3-c94a-7d03-89af-d946b6a910d4",
+    "01a135d3-d218-7333-b924-1daa1fc9b530",
+    "01a135d3-df0b-74e3-a682-52f16b5b9a00",
+    "01a135d3-dc0f-72f3-bf18-6874b2554cdc",
+    "01a135d3-ceff-7a02-a390-6701097770ff",
+    "01a135d3-d51e-7392-86f7-0c4ef1da7223",
+    "01a135d3-cc75-7bd2-9c74-ab01d0400953",
+    "01a135d3-d8a4-7c02-bc9f-8477f966744f"
+  ]
+}
