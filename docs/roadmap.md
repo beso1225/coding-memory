@@ -95,6 +95,12 @@ Acceptance criteria:
   execution settings. Unsupported isolation guarantees are documented.
 - Project external-transmission policy is applied before a generation request.
 
+Progress: [the generation isolation experiment](codex-generation-experiment.md)
+records role-separated synthetic exec runs, output/policy tests, and the observed
+remaining tool exposure. A dedicated policy hook denied command execution, and
+three fresh authenticated contexts returned structured results. Broader tool
+coverage and durable ownership remain implementation checks.
+
 Dependencies: none; share identity findings with [#1](https://github.com/beso1225/coding-memory/issues/1).
 
 ### [#3](https://github.com/beso1225/coding-memory/issues/3). Implement durable ingestion and evidence capture

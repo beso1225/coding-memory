@@ -38,6 +38,8 @@ class Provider(http.server.BaseHTTPRequestHandler):
                 "path": self.path,
                 "time": time.monotonic(),
                 "tool_names": [x.get("name") for x in body.get("tools", [])],
+                "model": body.get("model"),
+                "response_format": body.get("text"),
             }
         )
         plan = PLANS.get(timeout=15)
