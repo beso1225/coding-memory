@@ -55,6 +55,7 @@ for the flake and the package URI above for the Pkl schema.
 - SQLite CLI and pkg-config for upcoming storage work.
 - pkfire and Pkl for task definitions.
 - nixfmt for the environment definition.
+- actionlint for GitHub Actions workflow validation.
 
 The Rust selection comes from `rust-toolchain.toml`, using rust-overlay in Nix.
 It is also understood by rustup users. The editor should inherit the development
@@ -73,7 +74,8 @@ accidental crate publication while the project and its license are being defined
 | `pkf run lint` | Run Clippy on all targets/features with warnings denied |
 | `pkf run test` | Run Rust tests and documentation tests |
 | `pkf run build` | Build library and binary targets |
-| `pkf run check` | Run format, lint, test, and build checks |
+| `pkf run workflow-lint` | Validate GitHub Actions workflows with actionlint |
+| `pkf run check` | Run format, lint, test, build, and workflow checks |
 | `pkf run` | Run the same aggregate checks by default |
 
 Tasks use Cargo's lock file and incremental compilation. pkfire result caching
@@ -92,6 +94,19 @@ cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-features
 cargo build --locked --all-targets
 ```
+
+## Continuous integration
+
+[The CI workflow](../.github/workflows/ci.yml) runs on pushes to `main`, pull
+requests, and manual dispatch. It uses the ARM64 `macos-15` runner to match the
+development flake's `aarch64-darwin` target, evaluates the flake with
+`nix flake check --no-build`, and runs `nix develop --command pkf run check`.
+The workflow uses the committed toolchain and Nix lock file. Action versions
+are pinned by commit SHA, and the token has only `contents: read` permission.
+
+CI requires no LLM credentials and does not launch a worker or modify the memory
+vault. Additional platforms and build caching can be added when the engine's
+implementation needs them.
 
 ## Updating tools and keeping state local
 

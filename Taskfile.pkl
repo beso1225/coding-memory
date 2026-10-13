@@ -47,10 +47,17 @@ local build: Task = new {
   cache = false
 }
 
+local workflowLint: Task = new {
+  name = "workflow-lint"
+  description = "Validate GitHub Actions workflows"
+  cmd = "actionlint"
+  cache = false
+}
+
 local check: Task = new {
   name = "check"
-  description = "Run formatting, lint, test, and build checks"
-  deps { fmtCheck; lint; test; build }
+  description = "Run formatting, lint, test, build, and workflow checks"
+  deps { fmtCheck; lint; test; build; workflowLint }
   cache = false
 }
 
@@ -63,4 +70,4 @@ local allChecks: Task = new {
   cache = false
 }
 
-tasks { fmt; fmtCheck; lint; test; build; check; allChecks }
+tasks { fmt; fmtCheck; lint; test; build; workflowLint; check; allChecks }

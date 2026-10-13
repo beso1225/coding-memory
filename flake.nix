@@ -39,6 +39,7 @@
           pkgs.pkg-config
           pkgs.nixfmt
           pkgs.pkl
+          pkgs.actionlint
           pkfire.packages.${system}.default
         ];
 
