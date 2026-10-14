@@ -287,6 +287,9 @@ Exact supported flags and behavior require validation; `read-only` does not mean
 tools are disabled, and `--ephemeral` does not mean hooks are disabled.
 
 Codex backed by OpenAI is subject to the project's external-transmission policy.
+The Engine uses a dedicated persistent `CODEX_HOME` with an independent explicit
+login; it never copies regular Codex credentials. See [extraction.md](extraction.md)
+for the implemented staging contract and tested execution boundary.
 Projects without permission remain held unless an allowed backend is configured;
 the MVP does not silently fall back to an external provider. Ollama Local
 performance is not an MVP prerequisite. Later backends can directly call Ollama

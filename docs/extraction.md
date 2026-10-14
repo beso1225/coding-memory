@@ -1,0 +1,115 @@
+# Evidence-grounded extraction
+
+Issue #4 implements foreground extraction from immutable captured evidence into
+SQLite candidates. It does not publish Markdown. A `ready` candidate has
+structurally eligible evidence; it is not semantically reviewed or exposed through
+MCP. Separate review, consolidation, and Vault application belong to Issue #5.
+
+## Authentication and commands
+
+Use the same private state directory and project ID as ingestion. Substitute
+your paths and project ID below; state must stay outside both repositories.
+
+```sh
+coding-memory --state-dir /path/to/state generation-setup
+CODEX_HOME=/path/to/state/generation/codex-home \
+  codex -c 'cli_auth_credentials_store="file"' login
+coding-memory --state-dir /path/to/state external-policy --project-id PROJECT allow
+coding-memory --state-dir /path/to/state extract --project-id PROJECT \
+  --codex-binary /absolute/path/to/codex --model gpt-6.1-sol --timeout-seconds 300
+coding-memory --state-dir /path/to/state extraction-status --project-id PROJECT
+coding-memory --state-dir /path/to/state candidates --project-id PROJECT
+coding-memory --state-dir /path/to/state external-policy --project-id PROJECT deny
+```
+
+Setup creates an Engine-owned home, installs its deny hook, and marks the store
+excluded before generation starts. Login is an explicit human operation. The
+Engine never reads or copies regular Codex credentials, requires its own regular,
+nonsymlinked `auth.json`, and removes inherited API-key overrides for generation.
+Keep credentials private and out of Git. Refresh/expiry is an operational concern,
+not a reason to borrow another runtime's credentials. Actual authenticated
+generation has not been retested for this implementation.
+
+External transmission defaults to denied per project. The gate precedes Backend
+invocation, home preparation, and authentication checks. Allowing transmission
+requeues policy-held jobs. Revocation prevents subsequent requests and staging
+after an in-flight request completes; it cannot undo a request already sent.
+There is no external fallback.
+
+`extract` enqueues completed captured runs once and drains currently eligible
+jobs. Deferred retries need a later invocation; scheduling and automatic startup
+belong to Issue #7. `extraction-retry STORE THREAD TURN` explicitly requeues a held
+or exhausted job. Inspect and fix its reason first.
+
+## Candidate and persistence contracts
+
+The closed version-1 batch carries role `extraction`, source project ID, and zero
+to twenty candidates. Each records kind (`failure_solution`, `procedure`,
+`constraint`, or `design_decision`), English title/claim, applicability conditions,
+project or explicit global scope, verification (`observed`, `user_stated`, or
+`unverified`), and exact supplied evidence digest/native item IDs.
+
+Unknown fields/kinds, wrong project assignments, foreign/missing locators,
+oversized text, and identical candidates reject the whole batch. Observed
+eligibility requires a referenced completed tool item; user-stated eligibility
+requires a user message. Other support stays held. These mechanical checks cannot
+establish whether the claim follows from the text or a global generalization is
+justified. The prompt excludes progress and speculation; all candidates still
+require independent semantic review before publication.
+
+Job states distinguish `succeeded`, `succeeded_empty`, `held`, retry `queued`, and
+`exhausted`. Invalid/oversized evidence, invalid candidates, missing credentials,
+unsupported runtimes, and tool attempts hold the job. Timeout/process failures
+retry after ten seconds for at most three attempts. Repeated expired leases also
+exhaust after three attempts. No failure becomes an empty success. Candidate
+insertion and completion commit atomically behind a lease token; stale or
+collector-excluded work cannot stage candidates.
+
+Provenance records backend/provider/model, role, Engine and prompt/schema versions,
+evidence digest, and input/schema hashes. Returned Backend output adds output
+hash, native generation thread ID, and runtime version. Failures retain available
+provenance and bounded reasons without recording raw stderr or printing prompts.
+Native sessions and generation artifacts remain private local state; retention
+policy is later operational work.
+
+## Execution boundary and validation
+
+Codex executes in a fresh context/directory per attempt, ignores user configuration
+and rules, disables plugins and legacy notification, and uses a read-only sandbox
+plus a dedicated `PreToolUse` deny hook. The hook always exits with denial, even
+for malformed input, and stores only a hashed session identity rather than tool
+contents. Detected tool attempts reject the batch. Engine-owned exclusion applies
+to both live capture and reconciliation. Symlinked generation directories,
+policy, and output are refused.
+
+Evidence is capped at 256 KiB, final output at 64 KiB, exec stdout at 1 MiB, and
+exec stderr at 256 KiB. Timeout is configurable from one to 600 seconds. Timeout
+or bounded-I/O failure kills the process group owned by that invocation. Supported
+versions are gated using the capture contract.
+The version probe separately caps stdout at 4 KiB and stderr at 16 KiB. Invalid
+CLI timeouts are rejected before opening state or claiming work. Policy holds
+recheck permission inside their state-transition transaction, so a concurrent
+allow cannot strand a job. Captured tool events and denial markers take priority
+over process failure or timeout, preventing a denied attempt from being retried.
+
+Read-only execution still exposes tools. The tested deny hook does not prove
+that future tool families, managed configuration/hooks, or all filesystem/network
+access are isolated. Revalidate supported runtimes before sensitive unattended
+use. The Backend interface separates transmission classification, provenance,
+and generation from validation/persistence for later providers.
+
+```sh
+nix develop -c pkf run check
+nix develop -c python3 experiments/codex_generation/extraction_probe.py \
+  --engine target/debug/coding-memory --codex /absolute/path/to/codex
+```
+
+The opt-in probe creates isolated synthetic source histories and a loopback
+Responses provider. Codex CLI 0.162.1 demonstrated denied transmission before home
+preparation, supported knowledge with retained conditions/locators, empty success,
+actual command denial without its sentinel file being created, and exclusion of
+persisted generation sessions from reconciliation. It performs no login or
+paid-model call. This verifies wiring and controls, not actual LLM quality.
+Offline tests cover malformed output, tool attempts, timeout/process failure,
+invalid scope/locators, held support, permission gating, lease recovery, bounded
+retries, directory protection, and transactional rollback.

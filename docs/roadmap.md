@@ -158,6 +158,12 @@ Acceptance criteria:
 Dependencies: [#2](https://github.com/beso1225/coding-memory/issues/2) and
 [#3](https://github.com/beso1225/coding-memory/issues/3).
 
+Progress: [the extraction implementation](extraction.md) stages candidates with
+exact locators, conditions, and provenance. Dedicated-home execution, permission
+gating, empty success, tool denial, and generation-store exclusion were exercised
+with synthetic loopback responses. Model quality and publication remain separate
+validation boundaries.
+
 ### [#5](https://github.com/beso1225/coding-memory/issues/5). Implement reviewed consolidation and recoverable Vault updates
 
 Problem: candidates can duplicate, qualify, contradict, or replace existing
