@@ -4,8 +4,9 @@ Long-term memory for coding agents, built around a Rust engine and a Markdown
 vault. The engine captures completed runs, extracts reusable knowledge, reviews
 consolidation proposals, and exposes stored memories through MCP.
 
-The development environment and a single Rust package scaffold are available.
-The engine, CLI behavior, and runtime adapters have not been implemented yet.
+The Rust CLI implements project registration, durable run ingestion, bounded
+Codex history capture, and immutable local evidence. Extraction, vault updates,
+MCP retrieval, and login-worker operation are subsequent work.
 
 ## Development
 
@@ -28,6 +29,8 @@ scope of the scaffold.
 ## Documentation
 
 - [Development setup](docs/development.md): environment activation and checks.
+- [Durable ingestion](docs/ingestion.md): collection commands, state recovery,
+  source boundaries, and isolated runtime validation.
 - [Design](docs/design.md): agreed scope, data model, component contracts, and
   persistence behavior.
 - [Runtime and OSS research](docs/runtime-research.md): inspected revisions,

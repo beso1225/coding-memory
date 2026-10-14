@@ -1,9 +1,10 @@
 # Development Setup
 
 The initial environment targets Apple Silicon macOS (`aarch64-darwin`). It uses
-one Cargo package with library and binary entry points. Both entry points are
-scaffolding: the binary currently performs no actions, and the library contains
-no memory-processing implementation. Do not use it as an operational CLI yet.
+one Cargo package with library and binary entry points. The initial CLI provides
+durable ingestion and evidence capture; see [ingestion.md](ingestion.md) for
+explicit project registration and operational boundaries. Memory generation and
+retrieval are subsequent stages.
 
 ## Prerequisites
 
@@ -52,7 +53,7 @@ for the flake and the package URI above for the Pkl schema.
 
 - Rust compiler and Cargo, with Clippy, rustfmt, and standard-library source.
 - rust-analyzer for editor integration.
-- SQLite CLI and pkg-config for upcoming storage work.
+- SQLite CLI and pkg-config for storage development.
 - pkfire and Pkl for task definitions.
 - nixfmt for the environment definition.
 - actionlint for GitHub Actions workflow validation.
@@ -62,7 +63,8 @@ The Rust selection comes from `rust-toolchain.toml`, using rust-overlay in Nix.
 It is also understood by rustup users. The editor should inherit the development
 shell so it finds the selected toolchain and `RUST_SRC_PATH`.
 
-There are currently no third-party Rust dependencies. `publish = false` prevents
+Cargo.lock pins SQLite (bundled through rusqlite), Serde, Tokio, Clap, SHA-256,
+and error handling, with tempfile for tests. `publish = false` prevents
 accidental crate publication while the project and its license are being defined.
 
 ## Tasks
@@ -84,9 +86,9 @@ Tasks use Cargo's lock file and incremental compilation. pkfire result caching
 is disabled for these wrappers so a previous successful check cannot hide a
 toolchain/environment change or a missing build artifact.
 
-The scaffold has no behavior tests yet. A successful test command confirms that
-the test targets and documentation-test pipeline execute; it does not validate
-the future engine. Add focused regression tests alongside behavior changes.
+Rust behavior tests exercise durable queue recovery, worktree identity, evidence
+integrity, and a synthetic stdio reader. Add focused regression tests alongside
+behavior changes. Deterministic tests do not establish LLM extraction quality.
 
 The separate capture fixture tests validate the observed runtime contracts in
 [the capture experiment](../experiments/codex_capture/README.md). Live experiments
@@ -125,8 +127,7 @@ and provider credentials do not belong in either the source repository or the
 development shell definition. The separate memory vault is not modified by
 development setup.
 
-The setup covers the bootstrap portion of
-[issue #3](https://github.com/beso1225/coding-memory/issues/3). Durable ingestion,
-evidence capture, and the integration gates in
-[issues #1](https://github.com/beso1225/coding-memory/issues/1) and
-[#2](https://github.com/beso1225/coding-memory/issues/2) are still pending.
+The setup and ingestion implementation support
+[issue #3](https://github.com/beso1225/coding-memory/issues/3). Capture and generation
+integration gates from #1 and #2 are documented separately; login operation,
+extraction, vault publication, and retrieval remain subsequent issues.

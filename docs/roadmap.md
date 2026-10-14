@@ -130,6 +130,13 @@ Acceptance criteria:
 Dependencies: [#1](https://github.com/beso1225/coding-memory/issues/1).
 Coordinate the internal-run exclusion with [#2](https://github.com/beso1225/coding-memory/issues/2).
 
+Progress: [durable ingestion](ingestion.md) implements the Rust CLI, SQLite queue,
+project/worktree identity, scoped reconciliation, bounded cold-history reading,
+and immutable evidence. Synthetic installed-runtime validation demonstrated
+notification-free discovery and capture. Hook installation remains manual;
+background scheduling belongs to #7. Exact-cwd discovery and local source/size
+limits are explicit operational boundaries.
+
 ### [#4](https://github.com/beso1225/coding-memory/issues/4). Implement evidence-grounded extraction
 
 Problem: a completed run may contain reusable knowledge or nothing worth saving;
