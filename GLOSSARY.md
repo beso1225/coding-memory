@@ -84,3 +84,9 @@ _Avoid_: Minor update, deletion
 A memory whose relationship to another memory is supported by their content and
 applicability. A shared keyword alone is not sufficient to establish the relation.
 _Avoid_: Keyword match, proven dependency
+
+**Retrieval Availability**:
+Whether a memory note can currently be returned for reuse. A note can be withheld
+while its publication or refresh remains unresolved, independently of its evidence
+support and active or superseded status.
+_Avoid_: Verification state, deletion

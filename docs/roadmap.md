@@ -217,6 +217,12 @@ Acceptance criteria:
 Dependencies: storage/domain bootstrap from [#3](https://github.com/beso1225/coding-memory/issues/3);
 extraction is not required.
 
+Progress: [scoped retrieval](retrieval.md) implements versioned Markdown metadata,
+a separate rebuildable FTS database, shared CLI/MCP search and read, file revision
+checks, and durable per-note publication barriers. Deterministic stdio tests and
+an isolated installed Codex probe confirmed actual sample-note retrieval. Model
+query selection and cross-session knowledge application remain #7 quality checks.
+
 ### [#7](https://github.com/beso1225/coding-memory/issues/7). Integrate background operation and validate cross-session reuse
 
 Problem: the end-to-end system must work in normal local development without a

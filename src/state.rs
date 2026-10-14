@@ -44,6 +44,7 @@ impl State {
         ensure!(version == 1, "Unsupported state schema {version}");
         db.execute_batch("CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, repository TEXT NOT NULL UNIQUE, enabled_at INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS owned_stores(id TEXT PRIMARY KEY);
+            CREATE TABLE IF NOT EXISTS pending_notes(note_id TEXT PRIMARY KEY, reason TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS exclusions(store TEXT, thread TEXT, turn TEXT, reason TEXT NOT NULL, PRIMARY KEY(store,thread,turn));
             CREATE TABLE IF NOT EXISTS runs(store TEXT, thread TEXT, turn TEXT, project TEXT NOT NULL REFERENCES projects(id), cwd TEXT NOT NULL,
                 state TEXT NOT NULL DEFAULT 'queued', outcome TEXT, reason TEXT, evidence TEXT, available_at INTEGER NOT NULL,
@@ -205,5 +206,21 @@ impl State {
                 })
             })?
             .collect::<rusqlite::Result<_>>()?)
+    }
+    /// Publication must establish this barrier before changing a note file.
+    pub fn mark_note_pending(&mut self, id: &str, reason: &str) -> Result<()> {
+        crate::notes::identity(id)?;
+        ensure!(
+            !reason.is_empty() && reason.len() <= 256,
+            "Invalid pending-note reason"
+        );
+        self.db.execute("INSERT INTO pending_notes VALUES(?1,?2) ON CONFLICT(note_id) DO UPDATE SET reason=excluded.reason",params![id,reason])?;
+        Ok(())
+    }
+    /// Clear only after application finalization and search refresh are complete.
+    pub fn clear_note_pending(&mut self, id: &str) -> Result<()> {
+        self.db
+            .execute("DELETE FROM pending_notes WHERE note_id=?1", [id])?;
+        Ok(())
     }
 }
