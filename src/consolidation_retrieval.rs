@@ -1,7 +1,7 @@
 //! Bounded lexical neighbors for consolidation; public MCP queries remain literal AND.
 use crate::{
     extraction::Candidate,
-    search::{Hit, Scope, Search},
+    search::{Hit, MAX_QUERY_BYTES, Scope, Search},
 };
 use anyhow::{Result, ensure};
 use std::collections::{HashMap, HashSet};
@@ -17,32 +17,37 @@ fn terms(text: &str) -> impl Iterator<Item = String> + '_ {
             s.trim_matches(|c: char| !c.is_alphanumeric())
                 .to_lowercase()
         })
-        .filter(|s| s.len() >= 3 && !STOPWORDS.split_whitespace().any(|w| w == s))
+        .filter(|s| {
+            (3..=MAX_QUERY_BYTES).contains(&s.len())
+                && !STOPWORDS.split_whitespace().any(|w| w == s)
+        })
 }
 fn queries(candidate: &Candidate) -> Vec<String> {
     let mut queries = Vec::new();
-    if terms(&candidate.title).next().is_some() {
-        queries.push(
-            candidate
-                .title
-                .split_whitespace()
-                .filter(|chunk| chunk.chars().any(char::is_alphanumeric))
-                .take(8)
-                .map(str::to_lowercase)
-                .collect::<Vec<_>>()
-                .join(" "),
-        );
+    let title = candidate
+        .title
+        .split_whitespace()
+        .filter(|chunk| chunk.chars().any(char::is_alphanumeric))
+        .take(8)
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>()
+        .join(" ");
+    if !title.is_empty() && title.len() <= MAX_QUERY_BYTES {
+        queries.push(title);
     }
     let mut seen = HashSet::new();
     // Field quotas keep a verbose title from hiding a technical term in the claim.
-    for term in terms(&candidate.title)
-        .take(4)
-        .chain(terms(&candidate.claim).take(3))
-        .chain(candidate.conditions.iter().flat_map(|c| terms(c)).take(1))
-    {
-        if seen.insert(term.clone()) && !queries.contains(&term) {
-            queries.push(term);
-        }
+    let conditions = candidate.conditions.join(" ");
+    for (text, quota) in [
+        (&candidate.title, 4),
+        (&candidate.claim, 3),
+        (&conditions, 1),
+    ] {
+        let selected: Vec<_> = terms(text)
+            .filter(|term| seen.insert(term.clone()) && !queries.contains(term))
+            .take(quota)
+            .collect();
+        queries.extend(selected);
     }
     queries
 }

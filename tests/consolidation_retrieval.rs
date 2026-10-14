@@ -199,3 +199,62 @@ fn neighbor_limits_and_round_robin_preserve_space_for_other_candidates() -> Resu
     assert!(neighbors(&search, "alpha", &candidates).is_err());
     Ok(())
 }
+
+fn fixture_search() -> Result<(tempfile::TempDir, Search)> {
+    let d = tempdir()?;
+    let vault = d.path().join("vault");
+    fs::create_dir(&vault)?;
+    State::open(&d.path().join("state.sqlite"))?;
+    write(
+        &vault,
+        "reader",
+        "Avoid reader starvation",
+        "Prevent reader starvation.",
+        MemoryScope::Global,
+    )?;
+    write(&vault, "go", "Use Go", "Use Go.", MemoryScope::Global)?;
+    let search = Search::new(d.path(), &vault)?;
+    search.rebuild()?;
+    Ok((d, search))
+}
+#[test]
+fn oversized_claim_terms_do_not_hold_neighbor_retrieval() -> Result<()> {
+    let (_d, search) = fixture_search()?;
+    for blob in ["x".repeat(1025), "İ".repeat(400)] {
+        let mut c = candidate("Unknown behavior", &format!("{blob} reader starvation"));
+        c.conditions.clear();
+        assert!(
+            neighbors(&search, "alpha", &[c])?
+                .iter()
+                .any(|h| h.metadata.id == "reader")
+        );
+    }
+    Ok(())
+}
+#[test]
+fn short_title_terms_keep_the_exact_title_query() -> Result<()> {
+    let (_d, search) = fixture_search()?;
+    let mut c = candidate("Use Go", "Use Go.");
+    c.conditions.clear();
+    assert!(
+        neighbors(&search, "alpha", &[c])?
+            .iter()
+            .any(|h| h.metadata.id == "go")
+    );
+    Ok(())
+}
+#[test]
+fn repeated_title_terms_do_not_consume_the_claim_quota() -> Result<()> {
+    let (_d, search) = fixture_search()?;
+    let mut c = candidate(
+        "SQLite WAL checkpoint",
+        "SQLite WAL checkpoint prevents reader starvation",
+    );
+    c.conditions.clear();
+    assert!(
+        neighbors(&search, "alpha", &[c])?
+            .iter()
+            .any(|h| h.metadata.id == "reader")
+    );
+    Ok(())
+}

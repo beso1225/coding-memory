@@ -64,8 +64,12 @@ Separate semantic review is required but is not a proof of correctness.
 Existing/related candidates come from bounded scoped FTS retrieval. In addition
 to the first eight searchable title chunks, the Engine searches individual terms
 from title (up to four), claim (up to three), and applicability conditions (up to
-one). Terms are lowercased, common English function words and tokens shorter than
-three bytes are omitted, and identifier/path punctuation is retained. Repeated
+one). The title query retains short words, including titles such as `Use Go`.
+Supplemental terms are lowercased; common English function words, tokens shorter
+than three bytes and terms exceeding the 1024-byte query limit after normalization
+are omitted without truncating identifiers. Duplicate terms are removed before
+each field quota is counted, so a claim repeating its title can still contribute
+new terms. Identifier/path punctuation is retained. Repeated
 queries are cached within the batch. Each query returns at most five hits, with at
 most nine searches per candidate and 180 per twenty-candidate batch.
 
