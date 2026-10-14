@@ -30,7 +30,9 @@ admission alone does not admit a new extraction/consolidation executable.
 ## Worker and Actions verification
 
 The Worker observes configured readers on collection cycles and queues a check for
-a new executable hash, a changed fixture, or a result older than seven days. A
+a new executable hash, a changed fixture, or a result older than seven days. The fixture ID covers all Rust sources, build
+configuration/lockfile, compiler, target and enabled features, so transitive changes
+and newly added modules invalidate prior verification. A
 backward clock change also queues revalidation. Continuous workers execute checks
 in a separate asynchronous job using durable, token-fenced SQLite leases. Normal
 collection can continue during a pending check. `worker --once` queues checks but

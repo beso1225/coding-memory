@@ -19,16 +19,10 @@ const HASH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 pub fn fixture_id() -> &'static str {
     static ID: OnceLock<String> = OnceLock::new();
     ID.get_or_init(|| {
-        hash(
-            &[
-                include_bytes!("runtime_probe.rs").as_slice(),
-                include_bytes!("codex.rs").as_slice(),
-                include_bytes!("generation.rs").as_slice(),
-                include_bytes!("compatibility.rs").as_slice(),
-                include_bytes!("../Cargo.lock").as_slice(),
-            ]
-            .concat(),
-        )
+        hash(include_bytes!(concat!(
+            env!("OUT_DIR"),
+            "/capture-fixture-inputs"
+        )))
     })
 }
 #[derive(Clone, Debug)]

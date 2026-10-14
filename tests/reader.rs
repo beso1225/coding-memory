@@ -112,14 +112,27 @@ async fn reconciled_and_live_runs_share_capture_and_cold_reader_is_bounded() -> 
     );
     changed["cursor"] = json!("repeated");
     fs::write(home.join("fake.json"), serde_json::to_vec(&changed)?)?;
-    assert!(
-        client
-            .pages(
-                "thread/items/list",
-                json!({"threadId":"thread","turnId":"turn"})
-            )
-            .await
-            .is_err()
+    let error = client
+        .pages(
+            "thread/items/list",
+            json!({"threadId":"thread","turnId":"turn"}),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error.downcast_ref::<coding_memory::codex::ReadFailure>(),
+        Some(coding_memory::codex::ReadFailure::Unsupported(
+            coding_memory::codex::UnsupportedReason::PageCursor
+        ))
+    ));
+    let root2 = evidence::private_directory(&d.path().join("duplicate-cursor-state"))?;
+    let mut pending = State::open(&root2.join("state.sqlite"))?;
+    pending.register_project(&p.id, p.repository.to_str().unwrap(), 10)?;
+    pending.enqueue(&status[0].key, &p.id, repo.to_str().unwrap(), 11)?;
+    assert!(ingestion::capture_one(&mut pending, &mut client, &home, &root2).await?);
+    assert_eq!(
+        pending.status()?[0].reason.as_deref(),
+        Some("invalid_history_page_cursor")
     );
     assert!(client.call("thread/resume", json!({})).await.is_err());
     client.close().await?;

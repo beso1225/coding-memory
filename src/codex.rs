@@ -380,7 +380,9 @@ impl Client {
             match page.get("nextCursor") {
                 Some(Value::Null) => return Ok(data),
                 Some(Value::String(cursor)) => {
-                    ensure!(cursors.insert(cursor.clone()), "Repeated page cursor");
+                    if !cursors.insert(cursor.clone()) {
+                        return Err(ReadFailure::Unsupported(UnsupportedReason::PageCursor).into());
+                    }
                     params["cursor"] = json!(cursor);
                 }
                 _ => return Err(ReadFailure::Unsupported(UnsupportedReason::PageCursor).into()),
