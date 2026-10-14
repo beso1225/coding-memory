@@ -77,6 +77,14 @@ impl State {
         if let Some(c) = &claim {
             tx.execute("UPDATE extraction_jobs SET state='running',lease_until=?4,token=?5,attempts=attempts+1 WHERE store=?1 AND thread=?2 AND turn=?3",params![c.key.store,c.key.thread,c.key.turn,until,c.token])?;
         }
+        if self.worker_owner.is_some()
+            && let Some(c) = &claim
+        {
+            tx.execute(
+                "INSERT OR REPLACE INTO worker_claims VALUES('extraction',?1,?2,?3,?4,?5,NULL)",
+                params![c.key.id(), c.key.store, c.key.thread, c.key.turn, c.token],
+            )?;
+        }
         tx.commit()?;
         Ok(claim)
     }

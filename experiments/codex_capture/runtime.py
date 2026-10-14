@@ -50,6 +50,8 @@ class Provider(http.server.BaseHTTPRequestHandler):
                 b'{"error":{"message":"synthetic failure","type":"invalid_request_error"}}'
             )
             return
+        if callable(plan):
+            plan = plan(body)
         delay = plan.get("delay", 0)
         if delay:
             time.sleep(delay)

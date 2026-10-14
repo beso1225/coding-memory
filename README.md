@@ -8,7 +8,9 @@ The Rust CLI implements project registration, durable run ingestion, bounded
 Codex history capture, immutable local evidence, scoped FTS retrieval, and read-only
 MCP tools, evidence-grounded candidate extraction, reviewed consolidation, and
 recoverable Vault updates with independently authenticated Codex execution.
-Automatic background operation and cross-session quality validation are subsequent work.
+A bounded background worker and explicit macOS LaunchAgent configuration connect
+the pipeline. An initial synthetic real-model evaluation demonstrated separate-session
+MCP retrieval and knowledge application; broader quality assessment remains ongoing.
 
 ## Development
 
@@ -39,6 +41,10 @@ scope of the scaffold.
   transmission policy, independent login, retry handling, and execution limits.
 - [Reviewed consolidation](docs/consolidation.md): triggers, independent review,
   Wikilinks, durable Vault application/recovery, and opt-in evidence cleanup.
+- [Background worker](docs/worker.md): explicit configuration, macOS startup,
+  singleton ownership, status and recovery.
+- [Initial quality evaluation](docs/quality-evaluation.md): real-model synthetic
+  corpus, separate-session reuse and observed limitations.
 - [Design](docs/design.md): agreed scope, data model, component contracts, and
   persistence behavior.
 - [Runtime and OSS research](docs/runtime-research.md): inspected revisions,

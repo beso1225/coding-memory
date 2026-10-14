@@ -17,6 +17,7 @@ pub struct SearchArgs {
     /// Literal English terms, code identifiers, or paths. FTS operators are not accepted as syntax.
     pub query: String,
     #[serde(default = "default_limit")]
+    #[schemars(range(min = 1, max = 10))]
     pub limit: usize,
     #[serde(default)]
     pub other_projects: Vec<String>,

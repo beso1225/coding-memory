@@ -21,3 +21,7 @@ pub mod consolidation;
 pub mod consolidation_worker;
 
 pub mod retention;
+
+pub mod worker;
+
+pub mod service;

@@ -176,23 +176,7 @@ impl CodexExec {
                 return Err(Failure::AuthUnavailable);
             }
         }
-        let mut probe = Command::new(&self.binary);
-        probe
-            .arg("--version")
-            .env("CODEX_HOME", &home)
-            .env_remove("OPENAI_API_KEY")
-            .env_remove("CODEX_API_KEY")
-            .env_remove("OPENAI_BASE_URL");
-        let probe = run_command(probe, Vec::new(), Duration::from_secs(5), 4096, 16384).await?;
-        if let Some(failure) = probe.failure {
-            return Err(failure);
-        }
-        let version = std::str::from_utf8(&probe.stdout)
-            .map_err(|_| Failure::UnsupportedRuntime)?
-            .trim()
-            .strip_prefix("codex-cli ")
-            .ok_or(Failure::UnsupportedRuntime)?
-            .to_owned();
+        let version = version(&self.binary, &home).await?;
         if !crate::codex::supported(&version) {
             return Err(Failure::UnsupportedRuntime);
         }
@@ -352,6 +336,36 @@ impl Backend for CodexExec {
         self.execute(request)
     }
 }
+pub(crate) async fn version(binary: &Path, home: &Path) -> std::result::Result<String, Failure> {
+    let mut probe = Command::new(binary);
+    probe
+        .arg("--version")
+        .env("CODEX_HOME", home)
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("CODEX_API_KEY")
+        .env_remove("OPENAI_BASE_URL");
+    let result = run_command(probe, Vec::new(), Duration::from_secs(5), 4096, 16384).await?;
+    if let Some(failure) = result.failure {
+        return Err(failure);
+    }
+    Ok(std::str::from_utf8(&result.stdout)
+        .map_err(|_| Failure::UnsupportedRuntime)?
+        .trim()
+        .strip_prefix("codex-cli ")
+        .ok_or(Failure::UnsupportedRuntime)?
+        .to_owned())
+}
+struct ProcessGroup {
+    pid: u32,
+    armed: bool,
+}
+impl Drop for ProcessGroup {
+    fn drop(&mut self) {
+        if self.armed {
+            terminate_group(self.pid);
+        }
+    }
+}
 struct ProcessOutput {
     stdout: Vec<u8>,
     failure: Option<Failure>,
@@ -373,6 +387,7 @@ async fn run_command(
     command.process_group(0);
     let mut child = command.spawn().map_err(|_| Failure::ProcessFailure)?;
     let pid = child.id().ok_or(Failure::ProcessFailure)?;
+    let mut group = ProcessGroup { pid, armed: true };
     let mut stdin = child.stdin.take().ok_or(Failure::ProcessFailure)?;
     let stdout = child.stdout.take().ok_or(Failure::ProcessFailure)?;
     let stderr = child.stderr.take().ok_or(Failure::ProcessFailure)?;
@@ -412,6 +427,7 @@ async fn run_command(
         let _ = child.kill().await;
         let _ = child.wait().await;
     }
+    group.armed = false;
     Ok(ProcessOutput {
         stdout: out,
         failure,

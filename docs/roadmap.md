@@ -266,6 +266,15 @@ Dependencies: [#1](https://github.com/beso1225/coding-memory/issues/1),
 
 ## Validation strategy
 
+Issue #7 progress: [background operation](worker.md) implements foreground cycles,
+explicit LaunchAgent generation, singleton ownership, worker-specific recovery,
+bounded retries and grouped operational status. An isolated installed-runtime
+probe exercised the pipeline and temporary launchd startup. The
+[initial quality evaluation](quality-evaluation.md) used real-model extraction,
+independent review and a separate coding session that applied retrieved memory.
+It reports FTS query failures and the limited three-case corpus; broader support,
+conflict and semantic-link quality remain further evaluation work.
+
 Use TDD for behavior changes where a focused regression test is practical.
 Separate deterministic tests from provider/runtime experiments:
 

@@ -111,6 +111,9 @@ impl State {
                 [&c.id],
             )?;
         }
+        if self.worker_owner.is_some() {
+            tx.execute("INSERT OR REPLACE INTO worker_claims VALUES('consolidation',?1,NULL,NULL,NULL,NULL,?2)",params![id.to_string(),id])?;
+        }
         tx.commit()?;
         Ok(Some(Batch {
             id,
@@ -119,11 +122,28 @@ impl State {
         }))
     }
     pub fn hold_batch(&mut self, batch: i64, reason: &str, provenance: &Value) -> Result<()> {
+        self.hold_batch_at(batch, reason, provenance, crate::ingestion::now())
+    }
+    pub fn hold_batch_at(
+        &mut self,
+        batch: i64,
+        reason: &str,
+        provenance: &Value,
+        now: i64,
+    ) -> Result<()> {
         let tx = self
             .db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         ensure!(tx.execute("UPDATE consolidation_jobs SET state='held',reason=?2,provenance=?3 WHERE id=?1 AND state='generating'",params![batch,reason,provenance.to_string()])?==1,"Batch no longer generating");
         tx.execute("UPDATE candidates SET state='held' WHERE id IN (SELECT candidate FROM batch_candidates WHERE batch=?1)",[batch])?;
+        tx.execute(
+            "INSERT OR REPLACE INTO consolidation_retry VALUES(?1,?2)",
+            params![
+                batch,
+                now.checked_add(10)
+                    .ok_or_else(|| anyhow::anyhow!("Retry deadline overflow"))?
+            ],
+        )?;
         tx.commit()?;
         Ok(())
     }
@@ -198,7 +218,7 @@ impl State {
         let tx = self
             .db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        ensure!(tx.execute("UPDATE consolidation_jobs SET state='abandoned' WHERE id=?1 AND (state='held' OR (state='generating' AND lease_until<=?2))",params![id,now])?==1,"Only held or expired generation batches can retry; application uses recovery");
+        ensure!(tx.execute("UPDATE consolidation_jobs SET state='abandoned' WHERE id=?1 AND (state IN ('held','exhausted') OR (state='generating' AND lease_until<=?2))",params![id,now])?==1,"Only held or expired generation batches can retry; application uses recovery");
         tx.execute("UPDATE candidates SET state='ready' WHERE id IN (SELECT candidate FROM batch_candidates WHERE batch=?1) AND state IN ('reserved','held')",[id])?;
         tx.commit()?;
         Ok(())

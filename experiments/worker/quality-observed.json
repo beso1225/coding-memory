@@ -1,0 +1,114 @@
+{
+  "runtime_version": "codex-cli 0.162.1",
+  "model": "gpt-6.1-sol",
+  "corpus": [
+    {
+      "case": "supported",
+      "job_state": "succeeded",
+      "reason": null,
+      "candidate_count": 2,
+      "ready_count": 2,
+      "expected_ready": true,
+      "expectation_met": true
+    },
+    {
+      "case": "progress_only",
+      "job_state": "succeeded_empty",
+      "reason": null,
+      "candidate_count": 0,
+      "ready_count": 0,
+      "expected_ready": false,
+      "expectation_met": true
+    },
+    {
+      "case": "unsupported",
+      "job_state": "succeeded_empty",
+      "reason": null,
+      "candidate_count": 0,
+      "ready_count": 0,
+      "expected_ready": false,
+      "expectation_met": true
+    }
+  ],
+  "batches": [
+    {
+      "id": 1,
+      "state": "applied",
+      "reason": null,
+      "review": {
+        "decisions": [
+          {
+            "decision": "accept",
+            "operation": "op1",
+            "rationale": "The cited user message directly supports all acknowledgment requirements and the project-only applicability condition. This independent durable constraint preserves exact evidence and user_stated verification. No conflicts, existing notes, supersession, links, or dependencies require resolution."
+          },
+          {
+            "decision": "accept",
+            "operation": "op2",
+            "rationale": "The cited user message directly supports the exact increment of seven, its protocol rationale, and the project-only applicability condition. This independent durable constraint preserves exact evidence and user_stated verification without generalization. No conflicts, existing notes, supersession, links, or dependencies require resolution."
+          }
+        ],
+        "role": "review",
+        "schema_version": 1
+      }
+    }
+  ],
+  "published_count": 2,
+  "token_rule_preserved": true,
+  "sqlite_wal_condition_preserved": true,
+  "reuse": {
+    "attempted": true,
+    "agent_exit": 0,
+    "mcp_tools": [
+      "memory_search",
+      "memory_search",
+      "memory_search",
+      "memory_search",
+      "memory_search",
+      "memory_read",
+      "memory_read"
+    ],
+    "successful_search_and_read": true,
+    "protocol_tests_passed": true,
+    "file_backed_wal_tests_passed": true,
+    "searches": [
+      {
+        "status": "completed",
+        "hits": 0,
+        "error": null
+      },
+      {
+        "status": "failed",
+        "hits": 0,
+        "error": null
+      },
+      {
+        "status": "failed",
+        "hits": 0,
+        "error": null
+      },
+      {
+        "status": "completed",
+        "hits": 0,
+        "error": null
+      },
+      {
+        "status": "completed",
+        "hits": 2,
+        "error": null
+      }
+    ]
+  },
+  "limitations": [
+    "Three synthetic cases; not a statistical quality estimate.",
+    "Source CLI outputs are controlled, while extraction/consolidation/review and consumer decisions use a real model.",
+    "No multi-note semantic-link quality estimate; links are validated in deterministic fixtures.",
+    "Consumer uses the dedicated Engine login sequentially with its own fresh context; generation deny hooks remain enabled for memory-processing calls.",
+    "Only explicit user-stated knowledge was evaluated with a real model; observed-tool support, ambiguous contradictions and semantic links need a broader corpus."
+  ],
+  "offline_revalidation": {
+    "semantic_token_rule": true,
+    "wal_applicability_condition": true,
+    "matching_published_rule_searched_then_read": true
+  }
+}

@@ -167,3 +167,31 @@ fn hook_denies_even_invalid_input_and_records_no_tool_contents() -> Result<()> {
     assert_eq!(result.status.code(), Some(2));
     Ok(())
 }
+#[tokio::test]
+async fn cancelling_generation_terminates_its_owned_process_group() -> Result<()> {
+    let d = tempdir()?;
+    let pidfile = d.path().join("child.pid");
+    let body = format!("echo $$ > '{}'\nsleep 30", pidfile.display());
+    let backend = fixture(d.path(), &body)?;
+    let task = tokio::spawn(async move { backend.generate(request()).await });
+    for _ in 0..300 {
+        if pidfile.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(pidfile.exists(), "Synthetic child never started");
+    task.abort();
+    let _ = task.await;
+    let pid: i32 = fs::read_to_string(pidfile)?.trim().parse()?;
+    let mut ended = false;
+    for _ in 0..20 {
+        if unsafe { libc::kill(pid, 0) } != 0 {
+            ended = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(ended, "Cancelled generation remained alive");
+    Ok(())
+}

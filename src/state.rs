@@ -6,6 +6,7 @@ use std::{path::Path, time::Duration};
 
 pub struct State {
     pub(crate) db: Connection,
+    pub(crate) worker_owner: Option<std::sync::Arc<crate::worker::LockFile>>,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum Enqueue {
@@ -48,6 +49,9 @@ impl State {
             CREATE TABLE IF NOT EXISTS project_policy(project TEXT PRIMARY KEY REFERENCES projects(id), allow_external INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS extraction_jobs(store TEXT,thread TEXT,turn TEXT,project TEXT NOT NULL REFERENCES projects(id),evidence TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'queued',reason TEXT,available_at INTEGER NOT NULL,lease_until INTEGER,token INTEGER NOT NULL DEFAULT 0,attempts INTEGER NOT NULL DEFAULT 0,provenance TEXT,finished_at INTEGER,PRIMARY KEY(store,thread,turn),FOREIGN KEY(store,thread,turn) REFERENCES runs(store,thread,turn));
             CREATE TABLE IF NOT EXISTS candidates(id TEXT PRIMARY KEY,store TEXT,thread TEXT,turn TEXT,project TEXT NOT NULL,state TEXT NOT NULL,candidate TEXT NOT NULL,created_at INTEGER NOT NULL,FOREIGN KEY(store,thread,turn) REFERENCES extraction_jobs(store,thread,turn));
+            CREATE TABLE IF NOT EXISTS consolidation_retry(batch INTEGER PRIMARY KEY REFERENCES consolidation_jobs(id),available_at INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS worker_claims(stage TEXT,id TEXT,store TEXT,thread TEXT,turn TEXT,token INTEGER,batch INTEGER,PRIMARY KEY(stage,id));
+            CREATE TABLE IF NOT EXISTS worker_report(id INTEGER PRIMARY KEY CHECK(id=1),report TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS evidence_cleanup(digest TEXT PRIMARY KEY,deleted_at INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS consolidation_jobs(id INTEGER PRIMARY KEY AUTOINCREMENT,project TEXT NOT NULL REFERENCES projects(id),state TEXT NOT NULL,reason TEXT,created_at INTEGER NOT NULL,lease_until INTEGER NOT NULL,vault TEXT,provenance TEXT,consumed TEXT);
             CREATE TABLE IF NOT EXISTS batch_candidates(batch INTEGER REFERENCES consolidation_jobs(id),candidate TEXT REFERENCES candidates(id),PRIMARY KEY(batch,candidate));
@@ -56,7 +60,10 @@ impl State {
             CREATE TABLE IF NOT EXISTS runs(store TEXT, thread TEXT, turn TEXT, project TEXT NOT NULL REFERENCES projects(id), cwd TEXT NOT NULL,
                 state TEXT NOT NULL DEFAULT 'queued', outcome TEXT, reason TEXT, evidence TEXT, available_at INTEGER NOT NULL,
                 lease_until INTEGER, token INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(store,thread,turn));")?;
-        Ok(Self { db })
+        Ok(Self {
+            db,
+            worker_owner: None,
+        })
     }
     pub fn register_project(&mut self, id: &str, repository: &str, enabled: i64) -> Result<()> {
         self.db.execute(
@@ -133,6 +140,14 @@ impl State {
         let claim=tx.query_row("SELECT store,thread,turn,project,cwd,token+1,attempts+1 FROM runs WHERE ((state='queued' AND available_at<=?1) OR (state='capturing' AND lease_until<=?1)) AND (?2 IS NULL OR store=?2) ORDER BY available_at,store,thread,turn LIMIT 1",params![now,store],|r|Ok(Claim {key:RunKey{store:r.get(0)?,thread:r.get(1)?,turn:r.get(2)?},project:r.get(3)?,cwd:r.get(4)?,token:r.get(5)?,attempts:r.get(6)?})).optional()?;
         if let Some(c) = &claim {
             tx.execute("UPDATE runs SET state='capturing',lease_until=?4,token=?5,attempts=attempts+1 WHERE store=?1 AND thread=?2 AND turn=?3",params![c.key.store,c.key.thread,c.key.turn,until,c.token])?;
+        }
+        if self.worker_owner.is_some()
+            && let Some(c) = &claim
+        {
+            tx.execute(
+                "INSERT OR REPLACE INTO worker_claims VALUES('capture',?1,?2,?3,?4,?5,NULL)",
+                params![c.key.id(), c.key.store, c.key.thread, c.key.turn, c.token],
+            )?;
         }
         tx.commit()?;
         Ok(claim)

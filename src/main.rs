@@ -72,6 +72,23 @@ mod tests {
 }
 #[derive(Subcommand)]
 enum Commands {
+    Worker {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        once: bool,
+    },
+    WorkerStatus,
+    ServicePlist {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        executable: Option<PathBuf>,
+        #[arg(long, default_value = "com.beso1225.coding-memory")]
+        label: String,
+    },
     Consolidate {
         #[arg(long)]
         vault: PathBuf,
@@ -239,6 +256,30 @@ async fn main() -> Result<()> {
     let root = evidence::private_directory(&cli.state_dir)?;
     let mut state = State::open(&root.join("state.sqlite"))?;
     match cli.command {
+        Commands::Worker { config, once } => {
+            coding_memory::worker::run(
+                &mut state,
+                &root,
+                &coding_memory::worker::Config::load(&config)?,
+                &std::env::current_exe()?,
+                once,
+            )
+            .await?
+        }
+        Commands::WorkerStatus => {
+            println!("{}", serde_json::to_string_pretty(&state.worker_status()?)?)
+        }
+        Commands::ServicePlist {
+            config,
+            output,
+            executable,
+            label,
+        } => {
+            let executable = executable.unwrap_or(std::env::current_exe()?);
+            let plist = coding_memory::service::plist(&root, &config, &executable, &label)?;
+            coding_memory::service::write(&output, &plist)?;
+            println!("{}", output.display());
+        }
         Commands::Consolidate {
             vault,
             project_id,
