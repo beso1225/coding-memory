@@ -31,44 +31,44 @@ fn verification_jobs_are_deduplicated_fenced_and_expire_weekly() -> anyhow::Resu
     state.observe_runtime(&identity, 10)?;
     let job = state.claim_runtime_check(10)?.unwrap();
     assert!(state.claim_runtime_check(10)?.is_none());
-    let newer = state.claim_runtime_check(130)?.unwrap();
+    let newer = state.claim_runtime_check(190)?.unwrap();
     assert!(newer.token > job.token);
-    assert!(state.finish_runtime_check(&job, true, 131).is_err());
-    state.finish_runtime_check(&newer, true, 131)?;
+    assert!(state.finish_runtime_check(&job, true, 191).is_err());
+    state.finish_runtime_check(&newer, true, 191)?;
     assert_eq!(
-        state.observe_runtime(&identity, 132)?.validation,
+        state.observe_runtime(&identity, 192)?.validation,
         "verified"
     );
-    assert!(state.claim_runtime_check(132)?.is_none());
+    assert!(state.claim_runtime_check(192)?.is_none());
     assert_eq!(
-        state.observe_runtime(&identity, 131 + INTERVAL)?.validation,
+        state.observe_runtime(&identity, 191 + INTERVAL)?.validation,
         "provisional"
     );
-    let job = state.claim_runtime_check(131 + INTERVAL)?.unwrap();
-    state.finish_runtime_check(&job, false, 132 + INTERVAL)?;
+    let job = state.claim_runtime_check(191 + INTERVAL)?.unwrap();
+    state.finish_runtime_check(&job, false, 192 + INTERVAL)?;
     assert_eq!(
-        state.observe_runtime(&identity, 133 + INTERVAL)?.validation,
+        state.observe_runtime(&identity, 193 + INTERVAL)?.validation,
         "failed"
     );
-    assert!(state.claim_runtime_check(133 + INTERVAL)?.is_none());
-    state.retry_runtime_check(&identity.digest, 134 + INTERVAL)?;
+    assert!(state.claim_runtime_check(193 + INTERVAL)?.is_none());
+    state.retry_runtime_check(&identity.digest, 194 + INTERVAL)?;
     assert_eq!(
-        state.observe_runtime(&identity, 134 + INTERVAL)?.validation,
+        state.observe_runtime(&identity, 194 + INTERVAL)?.validation,
         "failed"
     );
-    let job = state.claim_runtime_check(134 + INTERVAL)?.unwrap();
-    state.finish_runtime_check(&job, true, 135 + INTERVAL)?;
+    let job = state.claim_runtime_check(194 + INTERVAL)?.unwrap();
+    state.finish_runtime_check(&job, true, 195 + INTERVAL)?;
     assert_eq!(
-        state.observe_runtime(&identity, 136 + INTERVAL)?.validation,
+        state.observe_runtime(&identity, 196 + INTERVAL)?.validation,
         "verified"
     );
     let mut changed = identity.clone();
     changed.digest = "b".repeat(64);
     assert_eq!(
-        state.observe_runtime(&changed, 137 + INTERVAL)?.validation,
+        state.observe_runtime(&changed, 197 + INTERVAL)?.validation,
         "provisional"
     );
-    assert!(state.claim_runtime_check(137 + INTERVAL)?.is_some());
+    assert!(state.claim_runtime_check(197 + INTERVAL)?.is_some());
     Ok(())
 }
 
@@ -92,5 +92,44 @@ fn a_fixture_change_rechecks_but_does_not_erase_a_known_failure() -> anyhow::Res
     state.finish_runtime_check(&job, true, 12)?;
     assert_eq!(state.observe_runtime(&identity, 13)?.validation, "verified");
     assert!(state.claim_runtime_check(13)?.is_none());
+    Ok(())
+}
+
+#[test]
+fn moving_identical_binary_refreshes_queued_and_failed_check_paths() -> anyhow::Result<()> {
+    use coding_memory::{compatibility::Identity, state::State};
+    let d = tempfile::tempdir()?;
+    let path = d.path().join("state.sqlite");
+    let mut state = State::open(&path)?;
+    let old = d.path().join("old");
+    let new = d.path().join("new");
+    std::fs::write(&old, b"identical synthetic executable")?;
+    let mut identity = Identity {
+        digest: coding_memory::compatibility::fingerprint(&old)?,
+        binary: old.clone(),
+        version: "0.162.1".into(),
+    };
+    state.observe_runtime(&identity, 10)?;
+    std::fs::rename(&old, &new)?;
+    identity.binary = new.clone();
+    state.observe_runtime(&identity, 11)?;
+    let job = state.claim_runtime_check(11)?.unwrap();
+    assert_eq!(job.binary, new.to_str().unwrap());
+    assert_eq!(
+        coding_memory::compatibility::fingerprint(std::path::Path::new(&job.binary))?,
+        job.digest
+    );
+    state.finish_runtime_check(&job, false, 12)?;
+    let final_path = d.path().join("final");
+    std::fs::rename(&new, &final_path)?;
+    identity.binary = final_path.clone();
+    identity.version = "0.162.1+relocated".into();
+    assert_eq!(state.observe_runtime(&identity, 13)?.validation, "failed");
+    state.retry_runtime_check(&identity.digest, 13)?;
+    let job = state.claim_runtime_check(13)?.unwrap();
+    assert_eq!(job.binary, final_path.to_str().unwrap());
+    assert_eq!(job.version, identity.version);
+    state.finish_runtime_check(&job, true, 14)?;
+    assert_eq!(state.observe_runtime(&identity, 15)?.validation, "verified");
     Ok(())
 }

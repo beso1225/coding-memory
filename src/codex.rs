@@ -120,9 +120,15 @@ pub struct Client {
 }
 impl Client {
     pub async fn open(binary: &Path, home: &Path, cwd: &Path) -> Result<Self> {
-        Self::open_mode(binary, home, cwd, false).await
+        Self::open_mode(binary, home, cwd, false, false).await
     }
-    async fn open_mode(binary: &Path, home: &Path, cwd: &Path, fixture: bool) -> Result<Self> {
+    async fn open_mode(
+        binary: &Path,
+        home: &Path,
+        cwd: &Path,
+        isolated: bool,
+        fixture: bool,
+    ) -> Result<Self> {
         let identity = crate::compatibility::identify(binary, home).await?;
         let version = identity.version.clone();
         let binary = identity.binary.as_path();
@@ -150,7 +156,7 @@ impl Client {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true);
-        if fixture {
+        if isolated {
             command
                 .env_clear()
                 .env("CODEX_HOME", home)
@@ -237,16 +243,14 @@ impl Client {
         self.exchange(method, params).await
     }
     pub(crate) async fn open_fixture(binary: &Path, home: &Path, cwd: &Path) -> Result<Self> {
-        Self::open_mode(binary, home, cwd, true).await
+        Self::open_mode(binary, home, cwd, true, true).await
     }
     pub(crate) async fn open_isolated_reader(
         binary: &Path,
         home: &Path,
         cwd: &Path,
     ) -> Result<Self> {
-        let mut reader = Self::open_mode(binary, home, cwd, true).await?;
-        reader.fixture = false;
-        Ok(reader)
+        Self::open_mode(binary, home, cwd, true, false).await
     }
     fn fixture_notification(&mut self, value: &Value) {
         if self.fixture
@@ -607,4 +611,39 @@ pub async fn capture(
         );
     }
     Ok(decoded)
+}
+
+#[cfg(test)]
+mod cold_initialization_tests {
+    use super::*;
+    #[tokio::test]
+    async fn isolated_reader_rejects_thread_started_during_initialize() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir()?;
+        let binary = d.path().join("server.py");
+        std::fs::write(
+            &binary,
+            r#"#!/usr/bin/env python3
+import sys,json
+if '--version' in sys.argv:
+    print('codex-cli 0.162.1')
+    sys.exit(0)
+for line in sys.stdin:
+    request=json.loads(line)
+    if request.get('method')=='initialize':
+        print(json.dumps({'method':'thread/started','params':{}}), flush=True)
+        print(json.dumps({'id':request['id'],'result':{}}), flush=True)
+"#,
+        )?;
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700))?;
+        assert!(Client::open(&binary, d.path(), d.path()).await.is_err());
+        assert!(
+            Client::open_isolated_reader(&binary, d.path(), d.path())
+                .await
+                .is_err()
+        );
+        let producer = Client::open_fixture(&binary, d.path(), d.path()).await?;
+        producer.close().await?;
+        Ok(())
+    }
 }

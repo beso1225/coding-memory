@@ -41,7 +41,9 @@ A failed check blocks new reconciliation/capture by that reader, with
 extraction, consolidation and retrieval remain available. A known failure remains
 blocking across fixture changes until a new check passes. Failures can be retried
 manually, or when next due after seven days. Interruption leaves a recoverable
-120-second lease; each synthetic probe has a 90-second deadline.
+180-second lease. The complete check, including fingerprints, has a 150-second
+deadline; each fingerprint is bounded to 30 seconds and the synthetic probe to
+90 seconds. Hashing runs outside the async collection executor.
 
 ```sh
 coding-memory --state-dir /absolute/engine-state runtime-check-status

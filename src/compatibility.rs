@@ -13,7 +13,9 @@ use std::{
     sync::OnceLock,
 };
 pub const INTERVAL: i64 = 7 * 24 * 60 * 60;
-const LEASE: i64 = 120;
+const LEASE: i64 = 180;
+const CHECK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(150);
+const HASH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 pub fn fixture_id() -> &'static str {
     static ID: OnceLock<String> = OnceLock::new();
     ID.get_or_init(|| {
@@ -88,7 +90,7 @@ pub async fn identify(binary: &Path, home: &Path) -> Result<Identity> {
         "Reader below minimum version"
     );
     Ok(Identity {
-        digest: fingerprint(&binary)?,
+        digest: fingerprint_bounded(&binary).await?,
         binary,
         version,
     })
@@ -106,7 +108,7 @@ impl State {
         let tx = self
             .db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        tx.execute("INSERT OR IGNORE INTO runtime_checks(digest,fixture,binary,version,state,available_at) VALUES(?1,?2,?3,?4,'queued',?5)",params![identity.digest,fixture_id(),identity.binary.to_str().ok_or_else(||anyhow::anyhow!("Non-UTF8 binary"))?,identity.version,now])?;
+        tx.execute("INSERT INTO runtime_checks(digest,fixture,binary,version,state,available_at) VALUES(?1,?2,?3,?4,'queued',?5) ON CONFLICT(digest,fixture) DO UPDATE SET binary=excluded.binary,version=excluded.version",params![identity.digest,fixture_id(),identity.binary.to_str().ok_or_else(||anyhow::anyhow!("Non-UTF8 binary"))?,identity.version,now])?;
         tx.execute("UPDATE runtime_checks SET state='queued',available_at=?3 WHERE digest=?1 AND fixture=?2 AND state='complete' AND (checked_at>?3 OR checked_at<=?4)",params![identity.digest,fixture_id(),now,now.saturating_sub(INTERVAL)])?;
         let (result, checked): (Option<String>, Option<i64>) = tx.query_row(
             "SELECT last_result,checked_at FROM runtime_checks WHERE digest=?1 AND fixture=?2",
@@ -162,21 +164,42 @@ pub async fn process_one(root: &Path) -> Result<bool> {
     let Some(job) = state.claim_runtime_check(crate::ingestion::now())? else {
         return Ok(false);
     };
-    let passed = if job.fixture == fixture_id()
-        && fingerprint(Path::new(&job.binary)).is_ok_and(|d| d == job.digest)
-    {
-        match crate::runtime_probe::run(Path::new(&job.binary), root).await {
-            Ok(()) => fingerprint(Path::new(&job.binary)).is_ok_and(|d| d == job.digest),
-            Err(error) => {
-                eprintln!("Synthetic runtime verification failed: {error}");
-                false
-            }
-        }
-    } else {
-        false
-    };
-    state.finish_runtime_check(&job, passed, crate::ingestion::now())?;
+    finish_check(&mut state, &job, check(&job, root), CHECK_DEADLINE).await?;
     Ok(true)
+}
+async fn fingerprint_bounded(binary: &Path) -> Result<String> {
+    let path = binary.to_owned();
+    // File I/O must not prevent the async deadline or collection task from progressing.
+    tokio::time::timeout(
+        HASH_DEADLINE,
+        tokio::task::spawn_blocking(move || fingerprint(&path)),
+    )
+    .await??
+}
+async fn check(job: &Job, root: &Path) -> Result<bool> {
+    if job.fixture != fixture_id()
+        || !fingerprint_bounded(Path::new(&job.binary))
+            .await
+            .is_ok_and(|d| d == job.digest)
+    {
+        return Ok(false);
+    }
+    if let Err(error) = crate::runtime_probe::run(Path::new(&job.binary), root).await {
+        eprintln!("Synthetic runtime verification failed: {error}");
+        return Ok(false);
+    }
+    Ok(fingerprint_bounded(Path::new(&job.binary))
+        .await
+        .is_ok_and(|d| d == job.digest))
+}
+async fn finish_check(
+    state: &mut State,
+    job: &Job,
+    check: impl std::future::Future<Output = Result<bool>>,
+    deadline: std::time::Duration,
+) -> Result<()> {
+    let passed = matches!(tokio::time::timeout(deadline, check).await, Ok(Ok(true)));
+    state.finish_runtime_check(job, passed, crate::ingestion::now())
 }
 pub struct Runner(tokio::task::JoinHandle<()>);
 impl Drop for Runner {
@@ -193,4 +216,47 @@ pub fn start(root: PathBuf) -> Runner {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
     }))
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+    #[tokio::test]
+    async fn stalled_check_records_failure_before_its_lease_expires() -> Result<()> {
+        let d = tempfile::tempdir()?;
+        let mut state = State::open(&d.path().join("state.sqlite"))?;
+        let identity = Identity {
+            binary: "/usr/bin/true".into(),
+            digest: "e".repeat(64),
+            version: "0.162.1".into(),
+        };
+        let now = crate::ingestion::now();
+        state.observe_runtime(&identity, now)?;
+        let job = state.claim_runtime_check(now)?.unwrap();
+        let lease: i64 = state.db.query_row(
+            "SELECT lease_until FROM runtime_checks WHERE digest=?1",
+            [&identity.digest],
+            |r| r.get(0),
+        )?;
+        assert!(now + (CHECK_DEADLINE.as_secs() as i64) < lease);
+        finish_check(
+            &mut state,
+            &job,
+            std::future::pending(),
+            std::time::Duration::from_millis(5),
+        )
+        .await?;
+        assert_eq!(
+            state
+                .observe_runtime(&identity, crate::ingestion::now())?
+                .validation,
+            "failed"
+        );
+        assert!(
+            state
+                .claim_runtime_check(crate::ingestion::now())?
+                .is_none()
+        );
+        Ok(())
+    }
 }
