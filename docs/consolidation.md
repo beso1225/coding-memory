@@ -49,6 +49,11 @@ accepts/rejects/holds it with a reason. Invalid review output authorizes nothing
 Rejected or held operations and dependencies on them do not publish. Operation
 dependencies must refer to earlier operations, avoiding dependency cycles.
 Review acceptance remains separate from observed/user-stated verification.
+All supporting claims must retain the same verification category as the draft;
+mixed categories must be separated or held. Minor updates also retain the
+existing note's category. Unrelated observed evidence cannot upgrade a
+user-stated claim. A successor describes newly supported knowledge while its
+predecessor retains its original category.
 
 Independent Engine checks enforce scope, exact supplied evidence locators,
 eligible verification, retained conditions, allowed targets, and note schema

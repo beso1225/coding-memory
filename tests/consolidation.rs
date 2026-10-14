@@ -602,3 +602,125 @@ async fn empty_and_disallowed_batches_never_invoke_generation() -> Result<()> {
     assert!(!root.join("generation").exists());
     Ok(())
 }
+#[test]
+fn merged_claims_and_minor_updates_cannot_upgrade_verification() -> Result<()> {
+    use coding_memory::consolidation::{self, Proposal};
+    let (dir, _s, mut batch, mut bundles, existing) = knowledge_fixture()?;
+    let mut observed_bundle = bundles.values().next().unwrap().clone();
+    observed_bundle.items.push(json!({"id":"T","type":"commandExecution","status":"completed","exitCode":0,"aggregatedOutput":"PASS"}));
+    let digest = evidence::save(dir.path(), &observed_bundle)?;
+    bundles.insert(digest.clone(), observed_bundle);
+    let mut observed = batch.candidates[0].candidate.clone();
+    observed.verification = notes::Verification::Observed;
+    observed.evidence = vec![notes::Reference {
+        bundle: digest,
+        item: "T".into(),
+    }];
+    batch
+        .candidates
+        .push(coding_memory::extraction_state::StagedCandidate {
+            id: "observed".into(),
+            state: "ready".into(),
+            candidate: observed,
+            created_at: 10,
+        });
+    let mut p = proposal(&batch, "create", None);
+    p["operations"][0]["candidates"] = json!([batch.candidates[0].id, "observed"]);
+    p["operations"][0]["draft"]["verification"] = json!("observed");
+    p["operations"][0]["draft"]["evidence"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::to_value(
+            &batch.candidates[1].candidate.evidence[0],
+        )?);
+    assert!(
+        consolidation::validate(
+            &serde_json::from_value::<Proposal>(p)?,
+            &batch,
+            std::slice::from_ref(&existing),
+            &bundles
+        )
+        .is_err()
+    );
+    // All new claims are observed, but updating the existing user-stated note cannot upgrade it.
+    batch.candidates.remove(0);
+    let mut p = proposal(&batch, "update", Some("queue-leases"));
+    p["operations"][0]["draft"]["evidence"]
+        .as_array_mut()
+        .unwrap()
+        .extend(
+            serde_json::to_value(notes::parse(&existing.markdown)?.metadata.evidence)?
+                .as_array()
+                .unwrap()
+                .iter()
+                .cloned(),
+        );
+    assert!(
+        consolidation::validate(
+            &serde_json::from_value::<Proposal>(p)?,
+            &batch,
+            std::slice::from_ref(&existing),
+            &bundles
+        )
+        .is_err()
+    );
+    // Newly observed claims may form a successor; the predecessor retains its own category.
+    let mut p = proposal(&batch, "supersede", Some("queue-leases"));
+    p["operations"][0]["draft"]["summary"] =
+        json!("A newly observed procedure under recorded conditions");
+    consolidation::validate(
+        &serde_json::from_value::<Proposal>(p)?,
+        &batch,
+        std::slice::from_ref(&existing),
+        &bundles,
+    )?;
+    Ok(())
+}
+#[test]
+fn exclusions_are_durable_when_no_batch_is_selected() -> Result<()> {
+    for trigger_met in [true, false] {
+        let d = tempdir()?;
+        let mut s = State::open(&d.path().join("state.sqlite"))?;
+        s.register_project("alpha", "/repo", 1)?;
+        candidate(&mut s, d.path(), 0, 10)?;
+        if !trigger_met {
+            candidate(&mut s, d.path(), 1, 10)?;
+        }
+        s.exclude(
+            &RunKey {
+                store: "fixture".into(),
+                thread: "t0".into(),
+                turn: "r".into(),
+            },
+            "fixture",
+        )?;
+        assert!(s.reserve_batch("alpha", 11, trigger_met)?.is_none());
+        drop(s);
+        let s = State::open(&d.path().join("state.sqlite"))?;
+        assert_eq!(
+            s.candidates("alpha")?
+                .iter()
+                .filter(|c| c.state == "held")
+                .count(),
+            1
+        );
+    }
+    Ok(())
+}
+#[test]
+fn self_related_updates_are_rejected_during_proposal_validation() -> Result<()> {
+    use coding_memory::consolidation::{self, Proposal};
+    let (_d, _s, batch, bundles, existing) = knowledge_fixture()?;
+    let mut p = proposal(&batch, "update", Some("queue-leases"));
+    p["operations"][0]["draft"]["related"] = json!(["queue-leases"]);
+    assert!(
+        consolidation::validate(
+            &serde_json::from_value::<Proposal>(p)?,
+            &batch,
+            std::slice::from_ref(&existing),
+            &bundles
+        )
+        .is_err()
+    );
+    Ok(())
+}

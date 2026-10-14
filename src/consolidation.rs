@@ -175,6 +175,11 @@ pub fn validate(
                 );
                 if matches!(op.action, Action::Update) {
                     ensure!(
+                        d.verification == old.metadata.verification,
+                        "Minor updates must retain the existing verification category"
+                    );
+                    ensure!(!d.related.contains(&old.metadata.id), "Self-related update");
+                    ensure!(
                         old.metadata
                             .conditions
                             .iter()
@@ -185,6 +190,11 @@ pub fn validate(
                 }
             }
             for c in support {
+                // These categories describe different support; they are not interchangeable.
+                ensure!(
+                    d.verification == c.verification,
+                    "Consolidation must preserve every claim's verification category; separate or hold mixed support"
+                );
                 ensure!(
                     c.conditions.iter().all(|c| d.conditions.contains(c))
                         && c.evidence.iter().all(|r| d.evidence.contains(r)),

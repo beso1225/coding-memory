@@ -60,6 +60,7 @@ impl State {
         tx.execute("UPDATE candidates SET state='held' WHERE state='ready' AND (EXISTS(SELECT 1 FROM owned_stores WHERE id=candidates.store) OR EXISTS(SELECT 1 FROM exclusions e WHERE e.store=candidates.store AND e.thread=candidates.thread AND e.turn=candidates.turn))",[])?;
         let busy:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM consolidation_jobs WHERE project=?1 AND state IN ('generating','applying','conflict'))",[project],|r|r.get(0))?;
         if busy {
+            tx.commit()?;
             return Ok(None);
         }
         let (count, oldest): (i64, Option<i64>) = tx.query_row(
@@ -72,6 +73,7 @@ impl State {
                 && count < trigger.min_ready
                 && oldest.is_none_or(|t| now.saturating_sub(t) < trigger.max_age_seconds))
         {
+            tx.commit()?;
             return Ok(None);
         }
         let rows = {
