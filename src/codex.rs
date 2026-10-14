@@ -20,10 +20,84 @@ use tokio::{
 
 pub const MAX_BYTES: usize = 8 * 1024 * 1024;
 const MAX_PAGES: usize = 100;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnsupportedReason {
+    MissingHistoryVersion,
+    HistoryVersion,
+    UnsupportedMethod,
+    PageData,
+    PageCursor,
+    TurnIdentity,
+    TurnStatus,
+    StartedAt,
+    Timestamps,
+    ItemIdentity,
+    TurnContext,
+    SourcePath,
+    TurnCwd,
+    ConflictingTurnContext,
+    ItemProjection,
+    ItemTurn,
+}
+impl UnsupportedReason {
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::MissingHistoryVersion => "missing_history_version",
+            Self::HistoryVersion => "unsupported_history_version",
+            Self::UnsupportedMethod => "unsupported_history_method",
+            Self::PageData => "invalid_history_page_data",
+            Self::PageCursor => "invalid_history_page_cursor",
+            Self::TurnIdentity => "invalid_turn_identity",
+            Self::TurnStatus => "unsupported_turn_status",
+            Self::StartedAt => "missing_turn_start",
+            Self::Timestamps => "invalid_turn_timestamps",
+            Self::ItemIdentity => "invalid_item_identity",
+            Self::TurnContext => "missing_turn_context",
+            Self::SourcePath => "missing_source_path",
+            Self::TurnCwd => "missing_turn_cwd",
+            Self::ConflictingTurnContext => "conflicting_turn_context",
+            Self::ItemProjection => "missing_item_projection",
+            Self::ItemTurn => "item_turn_mismatch",
+        }
+    }
+}
+/// Thread creation version is independent of the selected reader executable.
+pub fn history_version(thread: &Value) -> std::result::Result<&str, UnsupportedReason> {
+    let version = thread["cliVersion"]
+        .as_str()
+        .ok_or(UnsupportedReason::MissingHistoryVersion)?;
+    if supported(version) {
+        Ok(version)
+    } else {
+        Err(UnsupportedReason::HistoryVersion)
+    }
+}
+#[derive(Debug, serde::Serialize)]
+pub struct HistoryDiagnostics {
+    pub reader_version: String,
+    pub history_creation_version: Option<String>,
+    pub history_version_supported: bool,
+    pub reason: Option<&'static str>,
+}
+pub fn version_diagnostics(reader_version: &str, thread: &Value) -> HistoryDiagnostics {
+    let version = thread["cliVersion"].as_str().filter(|v| {
+        v.len() <= 128
+            && !v.is_empty()
+            && v.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+'))
+    });
+    let result = history_version(thread);
+    HistoryDiagnostics {
+        reader_version: reader_version.into(),
+        history_creation_version: version.map(str::to_owned),
+        history_version_supported: result.is_ok(),
+        reason: result.err().map(UnsupportedReason::reason),
+    }
+}
 #[derive(Debug)]
 pub enum ReadFailure {
     Missing,
-    Unsupported,
+    Unsupported(UnsupportedReason),
     OverLimit,
 }
 impl std::fmt::Display for ReadFailure {
@@ -37,6 +111,7 @@ pub struct Client {
     input: ChildStdin,
     output: BufReader<ChildStdout>,
     next: u64,
+    version: String,
 }
 impl Client {
     pub async fn open(binary: &Path, home: &Path, cwd: &Path) -> Result<Self> {
@@ -70,12 +145,27 @@ impl Client {
             input,
             output,
             next: 0,
+            version,
         };
         client.call("initialize",json!({"clientInfo":{"name":"coding_memory_reader","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await?;
         client
             .send(json!({"method":"initialized","params":{}}))
             .await?;
         Ok(client)
+    }
+    /// Metadata only: no turn/item read, resume, capture, generation or queue mutation.
+    pub async fn diagnose_thread(&mut self, thread: &str) -> Result<HistoryDiagnostics> {
+        ensure!(
+            !thread.is_empty() && thread.len() <= 256,
+            "Invalid diagnostic thread ID"
+        );
+        let response = self
+            .call(
+                "thread/read",
+                json!({"threadId":thread,"includeTurns":false}),
+            )
+            .await?;
+        Ok(version_diagnostics(&self.version, &response["thread"]))
     }
     async fn send(&mut self, value: Value) -> Result<()> {
         self.input.write_all(&serde_json::to_vec(&value)?).await?;
@@ -120,7 +210,10 @@ impl Client {
                             return Err(ReadFailure::Missing.into());
                         }
                         if e["code"] == -32601 {
-                            return Err(ReadFailure::Unsupported.into());
+                            return Err(ReadFailure::Unsupported(
+                                UnsupportedReason::UnsupportedMethod,
+                            )
+                            .into());
                         }
                         bail!("Codex RPC error: {}", e.get("code").unwrap_or(&Value::Null));
                     }
@@ -155,7 +248,7 @@ impl Client {
             data.extend(
                 page.get("data")
                     .and_then(Value::as_array)
-                    .ok_or(ReadFailure::Unsupported)?
+                    .ok_or(ReadFailure::Unsupported(UnsupportedReason::PageData))?
                     .iter()
                     .cloned(),
             );
@@ -165,7 +258,7 @@ impl Client {
                     ensure!(cursors.insert(cursor.clone()), "Repeated page cursor");
                     params["cursor"] = json!(cursor);
                 }
-                _ => return Err(ReadFailure::Unsupported.into()),
+                _ => return Err(ReadFailure::Unsupported(UnsupportedReason::PageCursor).into()),
             }
         }
         Err(ReadFailure::OverLimit.into())
@@ -194,7 +287,7 @@ pub enum Capture {
     Ready(Box<Evidence>),
     Pending,
     Missing,
-    Unsupported,
+    Unsupported(UnsupportedReason),
     OverLimit,
     Excluded,
     WrongProject,
@@ -209,7 +302,7 @@ pub fn turn_cwd(home: &Path, metadata: &Value, turn: &str) -> Result<Option<Path
     let path = metadata
         .get("path")
         .and_then(Value::as_str)
-        .ok_or_else(|| anyhow::anyhow!("Missing source artifact"))?;
+        .ok_or(ReadFailure::Unsupported(UnsupportedReason::SourcePath))?;
     let source = Path::new(path).canonicalize().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             anyhow::Error::from(ReadFailure::Missing)
@@ -238,13 +331,14 @@ pub fn turn_cwd(home: &Path, metadata: &Value, turn: &str) -> Result<Option<Path
             let next = PathBuf::from(
                 record["payload"]["cwd"]
                     .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("Missing turn cwd"))?,
+                    .ok_or(ReadFailure::Unsupported(UnsupportedReason::TurnCwd))?,
             )
             .canonicalize()?;
-            ensure!(
-                cwd.as_ref().is_none_or(|p| *p == next),
-                "Ambiguous turn project"
-            );
+            if cwd.as_ref().is_some_and(|p| *p != next) {
+                return Err(
+                    ReadFailure::Unsupported(UnsupportedReason::ConflictingTurnContext).into(),
+                );
+            }
             cwd = Some(next);
         }
     }
@@ -257,30 +351,33 @@ pub fn decode(
     turn: &Value,
     items: Vec<Value>,
 ) -> Capture {
-    if !supported(version) || turn["id"] != key.turn {
-        return Capture::Unsupported;
+    if !supported(version) {
+        return Capture::Unsupported(UnsupportedReason::HistoryVersion);
+    }
+    if turn["id"] != key.turn {
+        return Capture::Unsupported(UnsupportedReason::TurnIdentity);
     }
     let outcome = match turn["status"].as_str() {
         Some("completed") => "completed",
         Some("failed") => "failed",
         Some("interrupted") => "interrupted",
         Some("inProgress") => return Capture::Pending,
-        _ => return Capture::Unsupported,
+        _ => return Capture::Unsupported(UnsupportedReason::TurnStatus),
     };
     let Some(completed) = turn["completedAt"].as_i64() else {
         return Capture::Pending;
     };
     let Some(started) = turn["startedAt"].as_i64() else {
-        return Capture::Unsupported;
+        return Capture::Unsupported(UnsupportedReason::StartedAt);
     };
     if completed < started {
-        return Capture::Unsupported;
+        return Capture::Unsupported(UnsupportedReason::Timestamps);
     }
     let mut ids = HashSet::new();
     if items.iter().any(|i| {
         i["id"].as_str().is_none_or(|id| !ids.insert(id.to_owned())) || i["type"].as_str().is_none()
     }) {
-        return Capture::Unsupported;
+        return Capture::Unsupported(UnsupportedReason::ItemIdentity);
     }
     if !items.iter().any(|i| i["type"] == "userMessage")
         || turn["rootTurnId"]
@@ -324,12 +421,10 @@ pub async fn capture(
         )
         .await?;
     let thread = &metadata["thread"];
-    let Some(version) = thread["cliVersion"].as_str() else {
-        return Ok(Capture::Unsupported);
+    let version = match history_version(thread) {
+        Ok(version) => version,
+        Err(reason) => return Ok(Capture::Unsupported(reason)),
     };
-    if !supported(version) {
-        return Ok(Capture::Unsupported);
-    }
     if !thread["parentThreadId"].is_null()
         || thread["source"]
             .as_str()
@@ -347,7 +442,7 @@ pub async fn capture(
     // Fork prefix turns have no turn_context in the child artifact. Reject them.
     let Some(cwd) = turn_cwd(home, thread, &key.turn)? else {
         return Ok(if thread["forkedFromId"].is_null() {
-            Capture::Unsupported
+            Capture::Unsupported(UnsupportedReason::TurnContext)
         } else {
             Capture::Excluded
         });
@@ -363,12 +458,14 @@ pub async fn capture(
         .await?;
     let mut items = Vec::new();
     for entry in entries {
-        ensure!(entry["turnId"] == key.turn, "Item belongs to another turn");
+        if entry["turnId"] != key.turn {
+            return Ok(Capture::Unsupported(UnsupportedReason::ItemTurn));
+        }
         items.push(
             entry
                 .get("item")
                 .cloned()
-                .ok_or_else(|| anyhow::anyhow!("Missing item projection"))?,
+                .ok_or(ReadFailure::Unsupported(UnsupportedReason::ItemProjection))?,
         );
     }
     let mut decoded = decode(key, project_id, version, turn, items);

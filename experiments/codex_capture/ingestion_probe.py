@@ -12,6 +12,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--engine", type=Path, required=True)
     parser.add_argument("--codex", default=shutil.which("codex"))
+    parser.add_argument("--turns", type=int, choices=range(1, 5), default=1)
     args = parser.parse_args()
     # The probe runtime creates a fresh private directory and synthetic provider.
     import runtime as rt
@@ -50,20 +51,31 @@ def main():
                 "approvalPolicy": "never",
             },
         )["thread"]["id"]
-        turn = client.call(
-            "turn/start",
-            {
-                "threadId": thread,
-                "input": [{"type": "text", "text": "synthetic ingestion fixture only"}],
-            },
-        )["turn"]["id"]
-        client.terminal(turn)
-        assert run("reconcile").strip() == "1"
-        assert run("reconcile").strip() == "0"
-        run("capture")
-        rows = json.loads(run("status", runtime=False))
-        assert len(rows) == 1 and rows[0]["state"] == "ready", rows
-        assert rows[0]["key"]["turn"] == turn
+        expected = {}
+        for sequence in range(args.turns):
+            if sequence:
+                rt.PLANS.put({"text": "bounded synthetic knowledge " + str(sequence)})
+            turn = client.call(
+                "turn/start",
+                {
+                    "threadId": thread,
+                    "input": [{"type": "text", "text": "synthetic ingestion fixture " + str(sequence)}],
+                },
+            )["turn"]["id"]
+            client.terminal(turn)
+            assert run("reconcile").strip() == "1"
+            assert run("reconcile").strip() == "0"
+            run("capture")
+            rows = json.loads(run("status", runtime=False))
+            expected[turn] = "synthetic ingestion fixture " + str(sequence)
+            assert len(rows) == sequence + 1 and all(r["state"] == "ready" for r in rows), rows
+            assert {r["key"]["turn"] for r in rows} == set(expected)
+            for row in rows:
+                evidence = json.loads((state / "evidence" / (row["evidence"] + ".json")).read_text())
+                assert evidence["run"]["turn"] == row["key"]["turn"]
+                users = [i for i in evidence["items"] if i["type"] == "userMessage"]
+                assert len(users) == 1
+                assert users[0]["content"][0]["text"] == expected[row["key"]["turn"]]
         print(json.dumps({"state_directory": str(state), "runs": rows}, indent=2))
     finally:
         client.close()

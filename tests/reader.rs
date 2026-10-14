@@ -35,11 +35,14 @@ for line in sys.stdin:
     fixture=json.loads((Path(os.environ['CODEX_HOME'])/'fake.json').read_text())
     method=request['method']
     params=request['params']
+    if fixture.get('unsupported_method') == method:
+        print(json.dumps({'id':request['id'],'error':{'code':-32601,'message':'synthetic'}}),flush=True)
+        continue
     if method=='initialize': result={}
     elif method=='thread/list': result={'data':fixture['threads'] if not params.get('archived') else [], 'nextCursor':None}
     elif method=='thread/read': result={'thread':fixture['threads'][0]}
     elif method=='thread/turns/list': result={'data':fixture['turns'], 'nextCursor':None}
-    elif method=='thread/items/list': result={'data':fixture['items'], 'nextCursor':fixture.get('cursor')}
+    elif method=='thread/items/list': result=fixture.get('item_page', {'data':fixture.get('items',[]), 'nextCursor':fixture.get('cursor')})
     else: raise AssertionError(method)
     print(json.dumps({'id':request['id'],'result':result}),flush=True)
 "#).unwrap();
@@ -147,5 +150,111 @@ fn inherited_and_ambiguous_context_cannot_be_attributed_to_current_cwd() -> Resu
         turn: "child".into(),
     };
     assert_eq!(key.id().len(), 64);
+    Ok(())
+}
+
+#[tokio::test]
+async fn old_app_creation_version_has_a_specific_hold_reason_without_reading_turns() -> Result<()> {
+    let d = tempdir()?;
+    let repo = d.path().join("repo");
+    repository(&repo);
+    let home = d.path().join("home");
+    fs::create_dir(&home)?;
+    fs::write(
+        home.join("fake.json"),
+        serde_json::to_vec(&json!({"threads":[{"id":"old-app","cliVersion":"0.162.0-alpha.2"}]}))?,
+    )?;
+    let root = evidence::private_directory(&d.path().join("engine"))?;
+    let mut s = State::open(&root.join("state.sqlite"))?;
+    let p = project::resolve(&repo)?;
+    s.register_project(&p.id, p.repository.to_str().unwrap(), 1)?;
+    let key = RunKey {
+        store: ingestion::store_id(&home)?,
+        thread: "old-app".into(),
+        turn: "new-turn".into(),
+    };
+    s.enqueue(&key, &p.id, repo.to_str().unwrap(), 2)?;
+    let binary = fake_server(d.path());
+    let output = Command::new(env!("CARGO_BIN_EXE_coding-memory"))
+        .arg("--state-dir")
+        .arg(&root)
+        .arg("capture-diagnose")
+        .arg("--codex-binary")
+        .arg(&binary)
+        .arg("--codex-home")
+        .arg(&home)
+        .arg("--project")
+        .arg(&repo)
+        .args(["--thread", "old-app"])
+        .output()?;
+    assert!(output.status.success());
+    let diagnostics: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(diagnostics["history_creation_version"], "0.162.0-alpha.2");
+    assert_eq!(diagnostics["reader_version"], "0.162.1");
+    assert_eq!(diagnostics["history_version_supported"], false);
+    assert_eq!(s.status()?[0].state, "queued");
+    assert!(!root.join("generation").exists());
+    let mut client = Client::open(&fake_server(d.path()), &home, &repo).await?;
+    assert!(ingestion::capture_one(&mut s, &mut client, &home, &root).await?);
+    let row = &s.status()?[0];
+    assert_eq!(row.state, "held");
+    assert_eq!(row.reason.as_deref(), Some("unsupported_history_version"));
+    assert!(row.evidence.is_none());
+    client.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn paging_and_source_failures_persist_distinct_safe_reasons() -> Result<()> {
+    for reason in [
+        "missing_source_path",
+        "missing_turn_context",
+        "unsupported_history_method",
+        "invalid_history_page_data",
+        "invalid_history_page_cursor",
+    ] {
+        let d = tempdir()?;
+        let repo = d.path().join("repo");
+        repository(&repo);
+        let home = d.path().join("home");
+        fs::create_dir(&home)?;
+        let source = home.join("rollout.jsonl");
+        fs::write(
+            &source,
+            format!(
+                "{}\n",
+                json!({"type":"turn_context","payload":{"turn_id":"turn","cwd":repo}})
+            ),
+        )?;
+        let mut fixture = json!({"threads":[{"id":"thread","cliVersion":"0.162.0-alpha.17.2","path":source}],"turns":[{"id":"turn","startedAt":11,"completedAt":12,"status":"completed"}],"items":[]});
+        match reason {
+            "missing_source_path" => fixture["threads"][0]["path"] = json!(null),
+            "missing_turn_context" => fs::write(&source, "")?,
+            "unsupported_history_method" => {
+                fixture["unsupported_method"] = json!("thread/turns/list")
+            }
+            "invalid_history_page_data" => {
+                fixture["item_page"] = json!({"data":null,"nextCursor":null})
+            }
+            "invalid_history_page_cursor" => fixture["item_page"] = json!({"data":[]}),
+            _ => unreachable!(),
+        }
+        fs::write(home.join("fake.json"), serde_json::to_vec(&fixture)?)?;
+        let root = evidence::private_directory(&d.path().join("engine"))?;
+        let mut state = State::open(&root.join("state.sqlite"))?;
+        let p = project::resolve(&repo)?;
+        state.register_project(&p.id, p.repository.to_str().unwrap(), 1)?;
+        let key = RunKey {
+            store: ingestion::store_id(&home)?,
+            thread: "thread".into(),
+            turn: "turn".into(),
+        };
+        state.enqueue(&key, &p.id, repo.to_str().unwrap(), 2)?;
+        let mut client = Client::open(&fake_server(d.path()), &home, &repo).await?;
+        ingestion::capture_one(&mut state, &mut client, &home, &root).await?;
+        assert_eq!(state.status()?[0].reason.as_deref(), Some(reason));
+        assert!(state.status()?[0].evidence.is_none());
+        client.close().await?;
+    }
     Ok(())
 }

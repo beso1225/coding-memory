@@ -78,6 +78,9 @@ and analytics are disabled for that invocation. Normal runtime configuration is
 otherwise read: exec-only `--ignore-user-config`/`--ignore-rules` flags are not
 supported by app-server. No model call is requested by this reader.
 
+See [App capture diagnostics](app-capture.md) for detailed hold reasons and the
+distinction between installed reader and thread creation versions.
+
 History support is gated to the tested `0.162.1` and `0.162.0-alpha.17.2` creation
 versions. Other versions are held, rather than guessed compatible. The selected
 executable must implement the corresponding experimental paging contract. Paged

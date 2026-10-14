@@ -195,7 +195,7 @@ pub async fn capture_one(
         }
         Ok(Capture::Pending) => state.defer(&claim, "history_pending", now(), 10)?,
         Ok(Capture::Missing) => state.hold(&claim, "history_missing", now())?,
-        Ok(Capture::Unsupported) => state.hold(&claim, "unsupported_format", now())?,
+        Ok(Capture::Unsupported(reason)) => state.hold(&claim, reason.reason(), now())?,
         Ok(Capture::OverLimit) => state.hold(&claim, "history_over_limit", now())?,
         Ok(Capture::Excluded) => state.hold(&claim, "excluded_inherited_or_nonhuman", now())?,
         Ok(Capture::WrongProject) => state.hold(&claim, "project_mismatch", now())?,
@@ -203,7 +203,7 @@ pub async fn capture_one(
             &claim,
             match error.downcast_ref::<codex::ReadFailure>() {
                 Some(codex::ReadFailure::Missing) => "history_missing",
-                Some(codex::ReadFailure::Unsupported) => "unsupported_format",
+                Some(codex::ReadFailure::Unsupported(reason)) => reason.reason(),
                 Some(codex::ReadFailure::OverLimit) => "history_over_limit",
                 None => "reader_failure",
             },

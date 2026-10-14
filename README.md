@@ -35,6 +35,8 @@ scope of the scaffold.
 - [Development setup](docs/development.md): environment activation and checks.
 - [Durable ingestion](docs/ingestion.md): collection commands, state recovery,
   source boundaries, and isolated runtime validation.
+- [Local App capture diagnostics](docs/app-capture.md): creation-version boundaries,
+  metadata-only diagnosis and specific held reasons.
 - [Scoped retrieval](docs/retrieval.md): Markdown schema, index rebuilding,
   scoped search/read, MCP setup, and runtime validation.
 - [Evidence-grounded extraction](docs/extraction.md): candidate staging, external

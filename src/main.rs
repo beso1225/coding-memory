@@ -79,6 +79,12 @@ enum Commands {
         once: bool,
     },
     WorkerStatus,
+    CaptureDiagnose {
+        #[command(flatten)]
+        runtime: Runtime,
+        #[arg(long)]
+        thread: String,
+    },
     ServicePlist {
         #[arg(long)]
         config: PathBuf,
@@ -256,6 +262,13 @@ async fn main() -> Result<()> {
     let root = evidence::private_directory(&cli.state_dir)?;
     let mut state = State::open(&root.join("state.sqlite"))?;
     match cli.command {
+        Commands::CaptureDiagnose { runtime, thread } => {
+            let mut client =
+                Client::open(&runtime.codex_binary, &runtime.codex_home, &runtime.project).await?;
+            let diagnostics = client.diagnose_thread(&thread).await;
+            client.close().await?;
+            println!("{}", serde_json::to_string_pretty(&diagnostics?)?);
+        }
         Commands::Worker { config, once } => {
             coding_memory::worker::run(
                 &mut state,
