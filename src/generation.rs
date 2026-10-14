@@ -176,20 +176,18 @@ impl CodexExec {
                 return Err(Failure::AuthUnavailable);
             }
         }
-        let version = timeout(
-            Duration::from_secs(5),
-            Command::new(&self.binary)
-                .arg("--version")
-                .kill_on_drop(true)
-                .output(),
-        )
-        .await
-        .map_err(|_| Failure::Timeout)?
-        .map_err(|_| Failure::ProcessFailure)?;
-        if !version.status.success() {
-            return Err(Failure::UnsupportedRuntime);
+        let mut probe = Command::new(&self.binary);
+        probe
+            .arg("--version")
+            .env("CODEX_HOME", &home)
+            .env_remove("OPENAI_API_KEY")
+            .env_remove("CODEX_API_KEY")
+            .env_remove("OPENAI_BASE_URL");
+        let probe = run_command(probe, Vec::new(), Duration::from_secs(5), 4096, 16384).await?;
+        if let Some(failure) = probe.failure {
+            return Err(failure);
         }
-        let version = std::str::from_utf8(&version.stdout)
+        let version = std::str::from_utf8(&probe.stdout)
             .map_err(|_| Failure::UnsupportedRuntime)?
             .trim()
             .strip_prefix("codex-cli ")
@@ -261,56 +259,29 @@ impl CodexExec {
             }
             command.args(["-c","model_provider=\"memory_loopback\"","-c"]).arg(format!("model_providers.memory_loopback={{name=\"Synthetic loopback\",base_url=\"http://{address}/v1\",wire_api=\"responses\",requires_openai_auth=false,request_max_retries=0,stream_max_retries=0}}"));
         }
-        #[cfg(unix)]
-        command.process_group(0);
-        let mut child = command.spawn().map_err(|_| Failure::ProcessFailure)?;
-        let pid = child.id().ok_or(Failure::ProcessFailure)?;
-        let mut input = child.stdin.take().ok_or(Failure::ProcessFailure)?;
-        let stdout = child.stdout.take().ok_or(Failure::ProcessFailure)?;
-        let stderr = child.stderr.take().ok_or(Failure::ProcessFailure)?;
-        let run = async {
-            let send = async move {
-                input
-                    .write_all(request.prompt.as_bytes())
-                    .await
-                    .map_err(|_| Failure::ProcessFailure)?;
-                input
-                    .shutdown()
-                    .await
-                    .map_err(|_| Failure::ProcessFailure)?;
-                drop(input);
-                Ok(())
-            };
-            let (stdout, _, _, status) = tokio::try_join!(
-                bounded(stdout, 1024 * 1024),
-                bounded(stderr, 256 * 1024),
-                send,
-                async { child.wait().await.map_err(|_| Failure::ProcessFailure) }
-            )?;
-            if !status.success() {
-                return Err(Failure::ProcessFailure);
-            }
-            Ok(stdout)
-        };
-        let bytes = match timeout(self.timeout, run).await {
-            Ok(Ok(bytes)) => bytes,
-            Ok(Err(failure)) => {
-                terminate_group(pid);
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-                return Err(failure);
-            }
-            Err(_) => {
-                terminate_group(pid);
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-                return Err(Failure::Timeout);
-            }
-        };
+        let process = run_command(
+            command,
+            request.prompt.into_bytes(),
+            self.timeout,
+            1024 * 1024,
+            256 * 1024,
+        )
+        .await?;
         let mut thread = None;
         let mut tool = false;
-        for line in bytes.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
-            let event: Value = serde_json::from_slice(line).map_err(|_| Failure::InvalidOutput)?;
+        let mut malformed = false;
+        for line in process
+            .stdout
+            .split(|b| *b == b'\n')
+            .filter(|l| !l.is_empty())
+        {
+            let event: Value = match serde_json::from_slice(line) {
+                Ok(event) => event,
+                Err(_) => {
+                    malformed = true;
+                    continue;
+                }
+            };
             if event["type"] == "thread.started" {
                 thread = event["thread_id"].as_str().map(str::to_owned);
             }
@@ -334,6 +305,12 @@ impl CodexExec {
             })
         {
             return Err(Failure::ToolAttempt);
+        }
+        if let Some(failure) = process.failure {
+            return Err(failure);
+        }
+        if malformed {
+            return Err(Failure::InvalidOutput);
         }
         if !thread
             .as_ref()
@@ -375,11 +352,76 @@ impl Backend for CodexExec {
         self.execute(request)
     }
 }
+struct ProcessOutput {
+    stdout: Vec<u8>,
+    failure: Option<Failure>,
+}
+/// Retain bounded partial stdout even on timeout/failure so denial evidence wins.
+async fn run_command(
+    mut command: Command,
+    input: Vec<u8>,
+    duration: Duration,
+    stdout_limit: usize,
+    stderr_limit: usize,
+) -> std::result::Result<ProcessOutput, Failure> {
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    command.process_group(0);
+    let mut child = command.spawn().map_err(|_| Failure::ProcessFailure)?;
+    let pid = child.id().ok_or(Failure::ProcessFailure)?;
+    let mut stdin = child.stdin.take().ok_or(Failure::ProcessFailure)?;
+    let stdout = child.stdout.take().ok_or(Failure::ProcessFailure)?;
+    let stderr = child.stderr.take().ok_or(Failure::ProcessFailure)?;
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let run = async {
+        let send = async move {
+            stdin
+                .write_all(&input)
+                .await
+                .map_err(|_| Failure::ProcessFailure)?;
+            stdin
+                .shutdown()
+                .await
+                .map_err(|_| Failure::ProcessFailure)?;
+            drop(stdin);
+            Ok(())
+        };
+        let (_, _, _, status) = tokio::try_join!(
+            bounded(stdout, &mut out, stdout_limit),
+            bounded(stderr, &mut err, stderr_limit),
+            send,
+            async { child.wait().await.map_err(|_| Failure::ProcessFailure) }
+        )?;
+        if !status.success() {
+            return Err(Failure::ProcessFailure);
+        }
+        Ok(())
+    };
+    let failure = match timeout(duration, run).await {
+        Ok(Ok(())) => None,
+        Ok(Err(failure)) => Some(failure),
+        Err(_) => Some(Failure::Timeout),
+    };
+    if failure.is_some() {
+        terminate_group(pid);
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+    }
+    Ok(ProcessOutput {
+        stdout: out,
+        failure,
+    })
+}
 async fn bounded(
     mut stream: impl AsyncRead + Unpin,
+    bytes: &mut Vec<u8>,
     limit: usize,
-) -> std::result::Result<Vec<u8>, Failure> {
-    let mut bytes = Vec::new();
+) -> std::result::Result<(), Failure> {
     let mut chunk = [0; 8192];
     loop {
         let n = stream
@@ -387,12 +429,13 @@ async fn bounded(
             .await
             .map_err(|_| Failure::ProcessFailure)?;
         if n == 0 {
-            return Ok(bytes);
+            return Ok(());
         }
-        if bytes.len() + n > limit {
+        let remaining = limit - bytes.len();
+        bytes.extend_from_slice(&chunk[..n.min(remaining)]);
+        if n > remaining {
             return Err(Failure::OutputLimit);
         }
-        bytes.extend_from_slice(&chunk[..n]);
     }
 }
 fn terminate_group(pid: u32) {

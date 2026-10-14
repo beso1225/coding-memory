@@ -86,6 +86,11 @@ Evidence is capped at 256 KiB, final output at 64 KiB, exec stdout at 1 MiB, and
 exec stderr at 256 KiB. Timeout is configurable from one to 600 seconds. Timeout
 or bounded-I/O failure kills the process group owned by that invocation. Supported
 versions are gated using the capture contract.
+The version probe separately caps stdout at 4 KiB and stderr at 16 KiB. Invalid
+CLI timeouts are rejected before opening state or claiming work. Policy holds
+recheck permission inside their state-transition transaction, so a concurrent
+allow cannot strand a job. Captured tool events and denial markers take priority
+over process failure or timeout, preventing a denied attempt from being retried.
 
 Read-only execution still exposes tools. The tested deny hook does not prove
 that future tool families, managed configuration/hooks, or all filesystem/network

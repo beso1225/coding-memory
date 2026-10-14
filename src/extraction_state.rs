@@ -135,15 +135,31 @@ impl State {
         provenance: &Value,
         now: i64,
     ) -> Result<()> {
-        let state = if retryable && c.attempts < 3 {
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let policy_allowed = reason == "held_external_policy"
+            && tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM project_policy WHERE project=?1 AND allow_external=1)",
+                [&c.project],
+                |r| r.get::<_, bool>(0),
+            )?;
+        let state = if policy_allowed || (retryable && c.attempts < 3) {
             "queued"
         } else if retryable {
             "exhausted"
         } else {
             "held"
         };
-        let n=self.db.execute("UPDATE extraction_jobs SET state=?4,reason=?5,lease_until=NULL,available_at=?6,provenance=?7 WHERE store=?1 AND thread=?2 AND turn=?3 AND state='running' AND token=?8 AND lease_until>?9",params![c.key.store,c.key.thread,c.key.turn,state,reason,now.checked_add(10).ok_or_else(||anyhow::anyhow!("Retry delay overflow"))?,provenance.to_string(),c.token,now])?;
+        let available = if policy_allowed {
+            now
+        } else {
+            now.checked_add(10)
+                .ok_or_else(|| anyhow::anyhow!("Retry delay overflow"))?
+        };
+        let n=tx.execute("UPDATE extraction_jobs SET state=?4,reason=?5,lease_until=NULL,available_at=?6,provenance=?7,attempts=CASE WHEN ?10 THEN 0 ELSE attempts END WHERE store=?1 AND thread=?2 AND turn=?3 AND state='running' AND token=?8 AND lease_until>?9",params![c.key.store,c.key.thread,c.key.turn,state,if policy_allowed {None}else{Some(reason)},available,provenance.to_string(),c.token,now,policy_allowed])?;
         ensure!(n == 1, "Stale extraction claim");
+        tx.commit()?;
         Ok(())
     }
     pub fn retry_extraction(&mut self, key: &RunKey, now: i64) -> Result<()> {

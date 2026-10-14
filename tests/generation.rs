@@ -35,6 +35,52 @@ fn request() -> Request {
     }
 }
 #[tokio::test]
+async fn version_probe_is_bounded_on_both_streams() -> Result<()> {
+    for stream in ["", " >&2"] {
+        let d = tempdir()?;
+        let backend = fixture(d.path(), "")?;
+        fs::write(
+            &backend.binary,
+            format!("#!/bin/sh\ndd if=/dev/zero bs=65536 count=2{stream} 2>/dev/null\n"),
+        )?;
+        assert_eq!(
+            backend.generate(request()).await.err(),
+            Some(Failure::OutputLimit)
+        );
+    }
+    Ok(())
+}
+#[tokio::test]
+async fn tool_denials_override_process_failure_and_timeout() -> Result<()> {
+    for ending in ["exit 1", "sleep 10"] {
+        let d = tempdir()?;
+        let marker = coding_memory::domain::hash(b"fixture");
+        let body = format!(
+            "echo '{{\"type\":\"thread.started\",\"thread_id\":\"fixture\"}}'\nprintf 'denied' > \"$CODEX_HOME/tool-attempts/{marker}\"\n{ending}"
+        );
+        let mut backend = fixture(d.path(), &body)?;
+        backend.timeout = Duration::from_millis(500);
+        assert_eq!(
+            backend.generate(request()).await.err(),
+            Some(Failure::ToolAttempt)
+        );
+    }
+    // Native tool events must also win without a marker, including on timeout.
+    for ending in ["exit 1", "sleep 10"] {
+        let d = tempdir()?;
+        let body = format!(
+            "echo '{{\"type\":\"thread.started\",\"thread_id\":\"fixture\"}}'\necho '{{\"type\":\"item.started\",\"item\":{{\"type\":\"command_execution\"}}}}'\n{ending}"
+        );
+        let mut backend = fixture(d.path(), &body)?;
+        backend.timeout = Duration::from_millis(500);
+        assert_eq!(
+            backend.generate(request()).await.err(),
+            Some(Failure::ToolAttempt)
+        );
+    }
+    Ok(())
+}
+#[tokio::test]
 async fn exec_requires_native_identity_and_rejects_tools_and_malformed_streams() -> Result<()> {
     for (body, expected) in [
         (

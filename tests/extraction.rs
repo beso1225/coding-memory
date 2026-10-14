@@ -308,6 +308,24 @@ fn revoked_permission_prevents_candidate_insertion_at_commit() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn concurrent_allow_cannot_leave_a_job_policy_held() -> Result<()> {
+    let d = tempdir()?;
+    let (mut state, _) = captured(d.path())?;
+    let c = state.claim_extraction("alpha", 10, 10)?.unwrap();
+    assert!(!state.external_allowed("alpha")?);
+    // Another CLI changes policy between the worker's read and hold transition.
+    let mut admin = State::open(&d.path().join("state.sqlite"))?;
+    admin.set_external_policy("alpha", true)?;
+    state.fail_extraction(&c, "held_external_policy", false, &json!({}), 11)?;
+    assert_eq!(state.extraction_status("alpha")?[0].state, "queued");
+    assert_eq!(
+        state.claim_extraction("alpha", 11, 10)?.unwrap().attempts,
+        1
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn missing_evidence_is_held_before_backend_invocation() -> Result<()> {
     let d = tempdir()?;

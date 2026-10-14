@@ -35,6 +35,40 @@ mod tests {
     fn command_definition_is_valid() {
         Cli::command().debug_assert();
     }
+    #[test]
+    fn invalid_timeouts_are_rejected_during_parsing() {
+        use clap::Parser;
+        for value in ["0", "601", "18446744073709551615"] {
+            assert!(
+                Cli::try_parse_from([
+                    "coding-memory",
+                    "--state-dir",
+                    "/unused",
+                    "extract",
+                    "--project-id",
+                    "alpha",
+                    "--timeout-seconds",
+                    value
+                ])
+                .is_err()
+            );
+        }
+        for value in ["1", "600"] {
+            assert!(
+                Cli::try_parse_from([
+                    "coding-memory",
+                    "--state-dir",
+                    "/unused",
+                    "extract",
+                    "--project-id",
+                    "alpha",
+                    "--timeout-seconds",
+                    value
+                ])
+                .is_ok()
+            );
+        }
+    }
 }
 #[derive(Subcommand)]
 enum Commands {
@@ -59,7 +93,7 @@ enum Commands {
         codex_binary: PathBuf,
         #[arg(long, default_value = "gpt-6.1-sol")]
         model: String,
-        #[arg(long, default_value_t = 300)]
+        #[arg(long, default_value_t = 300, value_parser=clap::value_parser!(u64).range(1..=600))]
         timeout_seconds: u64,
         /// Synthetic validation only; must be a loopback address.
         #[arg(long, hide = true)]
