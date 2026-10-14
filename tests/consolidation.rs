@@ -11,6 +11,16 @@ use serde_json::json;
 use std::fs;
 use tempfile::tempdir;
 fn candidate(state: &mut State, root: &std::path::Path, n: usize, now: i64) -> Result<()> {
+    candidate_with_text(state, root, n, now, "Use leased jobs", "Use leased jobs.")
+}
+fn candidate_with_text(
+    state: &mut State,
+    root: &std::path::Path,
+    n: usize,
+    now: i64,
+    title: &str,
+    claim: &str,
+) -> Result<()> {
     let b = Evidence {
         schema_version: 1,
         run: RunKey {
@@ -26,7 +36,7 @@ fn candidate(state: &mut State, root: &std::path::Path, n: usize, now: i64) -> R
         cwd: None,
         terminal_error: None,
         coverage: vec![],
-        items: vec![json!({"id":"U","type":"userMessage","text":"Use leased jobs."})],
+        items: vec![json!({"id":"U","type":"userMessage","text":claim})],
     };
     let digest = evidence::save(root, &b)?;
     state.enqueue(&b.run, "alpha", "/repo", 2)?;
@@ -36,7 +46,7 @@ fn candidate(state: &mut State, root: &std::path::Path, n: usize, now: i64) -> R
     let c = state.claim_extraction("alpha", 6, 100)?.unwrap();
     let v = extraction::decode(
         &serde_json::to_vec(
-            &json!({"schema_version":1,"role":"extraction","project_id":"alpha","candidates":[{"kind":"constraint","title":"Use leased jobs","claim":"Use leased jobs.","scope":{"kind":"project","project_id":"alpha"},"conditions":["SQLite"],"verification":"user_stated","evidence":[{"bundle":digest,"item":"U"}]}]}),
+            &json!({"schema_version":1,"role":"extraction","project_id":"alpha","candidates":[{"kind":"constraint","title":title,"claim":claim,"scope":{"kind":"project","project_id":"alpha"},"conditions":["SQLite"],"verification":"user_stated","evidence":[{"bundle":digest,"item":"U"}]}]}),
         )?,
         &b,
         &digest,
@@ -722,5 +732,175 @@ fn self_related_updates_are_rejected_during_proposal_validation() -> Result<()> 
         )
         .is_err()
     );
+    Ok(())
+}
+
+struct NeighborModel {
+    role: &'static str,
+    action: &'static str,
+}
+impl coding_memory::generation::Backend for NeighborModel {
+    fn external(&self) -> bool {
+        false
+    }
+    fn provenance(&self) -> serde_json::Value {
+        json!({"backend":"fixture","model":self.role})
+    }
+    async fn generate(
+        &self,
+        r: coding_memory::generation::Request,
+    ) -> std::result::Result<coding_memory::generation::Output, coding_memory::generation::Failure>
+    {
+        let input: serde_json::Value =
+            serde_json::from_str(r.prompt.split_once("INPUT_JSON\n").unwrap().1).unwrap();
+        let context = if self.role == "review" {
+            &input["context"]
+        } else {
+            &input
+        };
+        assert_eq!(context["existing"].as_array().unwrap().len(), 1);
+        assert_eq!(context["existing"][0]["id"], "queue-leases");
+        let output = if self.role == "review" {
+            json!({"schema_version":1,"role":"review","decisions":[{"operation":"op1","decision":"accept","rationale":"Synthetic support and applicability preserved"}]})
+        } else {
+            let batch = serde_json::from_value(context["batch"].clone()).unwrap();
+            let mut p = proposal(
+                &batch,
+                self.action,
+                if self.action == "create" {
+                    None
+                } else {
+                    Some("queue-leases")
+                },
+            );
+            if self.action == "skip" {
+                p["operations"][0]["draft"] = json!(null);
+            }
+            if self.action == "update" {
+                let old =
+                    notes::parse(context["existing"][0]["markdown"].as_str().unwrap()).unwrap();
+                let refs = p["operations"][0]["draft"]["evidence"]
+                    .as_array_mut()
+                    .unwrap();
+                for reference in old.metadata.evidence {
+                    let reference = serde_json::to_value(reference).unwrap();
+                    if !refs.contains(&reference) {
+                        refs.push(reference);
+                    }
+                }
+            }
+            if self.action == "create" {
+                p["operations"][0]["draft"]["related"] = json!(["queue-leases"]);
+            }
+            p
+        };
+        Ok(coding_memory::generation::Output {
+            bytes: serde_json::to_vec(&output).unwrap(),
+            thread_id: Some(self.role.into()),
+            runtime_version: "fixture".into(),
+        })
+    }
+}
+#[tokio::test]
+async fn retrieved_paraphrases_reach_both_roles_for_update_skip_and_distinct_related_creation()
+-> Result<()> {
+    for action in ["update", "skip", "create"] {
+        let d = tempdir()?;
+        let vault = d.path().join("vault");
+        fs::create_dir(&vault)?;
+        let mut s = State::open(&d.path().join("state.sqlite"))?;
+        s.register_project("alpha", "/repo", 1)?;
+        candidate_with_text(
+            &mut s,
+            d.path(),
+            0,
+            10,
+            if action == "create" {
+                "Track failures for queued jobs"
+            } else {
+                "Use leased jobs"
+            },
+            if action == "create" {
+                "Record job failures separately."
+            } else {
+                "Use leased jobs."
+            },
+        )?;
+        let c = s.candidates("alpha")?[0].candidate.clone();
+        let mut old = notes::parse(include_str!("fixtures/vault/queue.md"))?;
+        old.metadata.title = "Recover token-fenced jobs".into();
+        old.metadata.summary = "Allocate jobs with leases.".into();
+        old.body = old.metadata.summary.clone();
+        old.metadata.conditions = c.conditions.clone();
+        let mut old_bundle = evidence::load(d.path(), &c.evidence[0].bundle)?;
+        old_bundle.run.thread = "existing-support".into();
+        old_bundle.items =
+            vec![json!({"id":"U","type":"userMessage","text":"Allocate jobs with leases."})];
+        old.metadata.evidence = vec![notes::Reference {
+            bundle: evidence::save(d.path(), &old_bundle)?,
+            item: "U".into(),
+        }];
+        let old_refs = old.metadata.evidence.clone();
+        old.metadata.verification = c.verification.clone();
+        fs::write(vault.join("queue.md"), notes::render(&old)?)?;
+        let search = Search::new(d.path(), &vault)?;
+        search.rebuild()?;
+        assert!(
+            search
+                .search(&c.title, &Scope::new("alpha"), 3)?
+                .results
+                .is_empty()
+        );
+        let id = coding_memory::consolidation_worker::consolidate(
+            &mut s,
+            d.path(),
+            &vault,
+            "alpha",
+            true,
+            &NeighborModel {
+                role: "consolidation",
+                action,
+            },
+            &NeighborModel {
+                role: "review",
+                action,
+            },
+        )
+        .await?
+        .unwrap();
+        assert_eq!(
+            s.consolidation_status()?
+                .iter()
+                .find(|j| j.id == id)
+                .unwrap()
+                .state,
+            "applied"
+        );
+        assert_eq!(s.candidates("alpha")?[0].state, "consumed");
+        let files: Vec<_> = fs::read_dir(&vault)?.map(|e| e.unwrap().path()).collect();
+        assert_eq!(files.len(), if action == "create" { 2 } else { 1 });
+        if action == "create" {
+            assert!(files.iter().any(|p| {
+                fs::read_to_string(p)
+                    .unwrap()
+                    .contains("[[queue|queue-leases]]")
+            }));
+        }
+        let stored = notes::parse(&fs::read_to_string(vault.join("queue.md"))?)?;
+        assert_eq!(stored.metadata.conditions, c.conditions);
+        assert_eq!(stored.metadata.verification, c.verification);
+        assert!(
+            old_refs
+                .iter()
+                .all(|e| stored.metadata.evidence.contains(e))
+        );
+        if action == "update" {
+            assert!(
+                c.evidence
+                    .iter()
+                    .all(|e| stored.metadata.evidence.contains(e))
+            );
+        }
+    }
     Ok(())
 }

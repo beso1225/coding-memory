@@ -14,6 +14,7 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+pub const MAX_QUERY_BYTES: usize = 1024;
 
 #[derive(Debug, Clone)]
 pub struct Scope {
@@ -389,7 +390,7 @@ impl Search {
 /// Human input is literal text, never FTS expressions or interpolated SQL.
 pub fn literal_query(query: &str) -> Result<String> {
     ensure!(
-        query.len() <= 1024 && !query.contains('\0'),
+        query.len() <= MAX_QUERY_BYTES && !query.contains('\0'),
         "Invalid or oversized search query"
     );
     let terms = query

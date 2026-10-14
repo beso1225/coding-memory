@@ -61,13 +61,45 @@ bounds. They cannot prove a semantic inference, useful granularity, or valid
 general applicability. Fresh model contexts can still share correlated mistakes.
 Separate semantic review is required but is not a proof of correctness.
 
-Existing/related candidates come from scoped FTS retrieval (up to three hits per
-candidate title, ten distinct existing notes total). The model proposes a relation;
-the reviewer checks it. Links must name supplied accepted notes. The Engine
-renders `[[path-without-extension|stable-id]]`, accommodating existing filenames
-that differ from IDs. Draft bodies cannot inject their own Wikilinks. Ambiguous
-relations should be omitted. Lexical title retrieval can miss duplicate/related
-knowledge; semantic recall and actual model quality remain evaluation work.
+Existing/related candidates come from bounded scoped FTS retrieval. In addition
+to the first eight searchable title chunks, the Engine searches individual terms
+from title (up to four), claim (up to three), and applicability conditions (up to
+one). The title query retains short words, including titles such as `Use Go`.
+Supplemental terms are lowercased; common English function words, tokens shorter
+than three bytes and terms exceeding the 1024-byte query limit after normalization
+are omitted without truncating identifiers. Duplicate terms are removed before
+each field quota is counted, so a claim repeating its title can still contribute
+new terms. Identifier/path punctuation is retained. Repeated
+queries are cached within the batch. Each query returns at most five hits, with at
+most nine searches per candidate and 180 per twenty-candidate batch.
+
+Results are ranked per candidate by reciprocal-rank fusion: each query contributes
+`1_000_000 / (60 + zero_based_rank)`, with stable-ID tie breaking. Raw BM25 values
+from different queries are not added. The top three neighbors per candidate are
+combined round-robin into at most ten distinct existing notes, giving later
+candidates space before earlier candidates receive their second/third neighbors.
+The same existing-note context reaches the proposer and independent reviewer.
+Project/global scope, historical exclusion, revision checks, publication barriers,
+and combined evidence/prompt limits still apply. No additional model call is used.
+
+The model proposes a relation; the reviewer checks it. Links must name supplied
+accepted notes. The Engine renders `[[path-without-extension|stable-id]]`,
+accommodating existing filenames that differ from IDs. Draft bodies cannot inject
+their own Wikilinks. Ambiguous relations should be omitted.
+
+This improves paraphrases sharing technical terms; it does not provide embeddings,
+synonyms, stemming, Japanese segmentation or guaranteed semantic recall.
+Common-term hit limits and field quotas can still miss neighbors. Retrieval alone
+does not authorize merging independent knowledge or prove a model will deduplicate
+it correctly. The public CLI/MCP search contract remains literal AND; only
+consolidation performs these multiple searches.
+
+Issue #15's offline fixtures reproduce a legacy title-query miss, retrieve
+paraphrased/related notes, preserve scope and availability boundaries, exercise
+identifier queries/rank fusion and bound per-candidate/batch results. Scripted
+proposal/review integration covers update, skip and distinct related creation
+without private histories or paid-model requests. Personal Vault cleanup and
+test-example Wikilinks in frontmatter are separate follow-up concerns.
 
 ## Durability, conflicts, and recovery
 

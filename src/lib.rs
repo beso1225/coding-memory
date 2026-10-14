@@ -18,6 +18,7 @@ pub mod vault;
 
 pub mod consolidation;
 
+pub mod consolidation_retrieval;
 pub mod consolidation_worker;
 
 pub mod retention;
