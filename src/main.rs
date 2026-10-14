@@ -79,6 +79,13 @@ enum Commands {
         once: bool,
     },
     WorkerStatus,
+    RuntimeCheckStatus,
+    RuntimeVerify {
+        #[arg(long)]
+        binary: PathBuf,
+        #[arg(long)]
+        retry: bool,
+    },
     CaptureDiagnose {
         #[command(flatten)]
         runtime: Runtime,
@@ -262,6 +269,27 @@ async fn main() -> Result<()> {
     let root = evidence::private_directory(&cli.state_dir)?;
     let mut state = State::open(&root.join("state.sqlite"))?;
     match cli.command {
+        Commands::RuntimeCheckStatus => println!(
+            "{}",
+            serde_json::to_string_pretty(&state.runtime_check_status()?)?
+        ),
+        Commands::RuntimeVerify { binary, retry } => {
+            let identity = coding_memory::compatibility::identify(&binary, &root).await?;
+            state.observe_runtime(&identity, ingestion::now())?;
+            if retry {
+                state.retry_runtime_check(&identity.digest, ingestion::now())?;
+            }
+            while coding_memory::compatibility::process_one(&root).await? {}
+            let audit = state.observe_runtime(&identity, ingestion::now())?;
+            ensure!(
+                audit.validation == "verified",
+                "Runtime verification did not pass"
+            );
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&state.runtime_check_status()?)?
+            );
+        }
         Commands::CaptureDiagnose { runtime, thread } => {
             let mut client =
                 Client::open(&runtime.codex_binary, &runtime.codex_home, &runtime.project).await?;

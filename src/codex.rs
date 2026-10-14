@@ -66,7 +66,7 @@ pub fn history_version(thread: &Value) -> std::result::Result<&str, UnsupportedR
     let version = thread["cliVersion"]
         .as_str()
         .ok_or(UnsupportedReason::MissingHistoryVersion)?;
-    if supported(version) {
+    if history_supported(version) {
         Ok(version)
     } else {
         Err(UnsupportedReason::HistoryVersion)
@@ -107,19 +107,27 @@ impl std::fmt::Display for ReadFailure {
 }
 impl std::error::Error for ReadFailure {}
 pub struct Client {
+    group: crate::generation::ProcessGroup,
     child: Child,
     input: ChildStdin,
     output: BufReader<ChildStdout>,
     next: u64,
     version: String,
+    binary: PathBuf,
+    fixture: bool,
+    identity: crate::compatibility::Identity,
+    fixture_terminals: std::collections::HashMap<String, String>,
 }
 impl Client {
     pub async fn open(binary: &Path, home: &Path, cwd: &Path) -> Result<Self> {
-        let version = crate::generation::version(binary, home)
-            .await
-            .map_err(|e| anyhow::anyhow!("{}", e.reason()))?;
-        ensure!(supported(&version), "Unsupported Codex reader executable");
-        let mut child = Command::new(binary)
+        Self::open_mode(binary, home, cwd, false).await
+    }
+    async fn open_mode(binary: &Path, home: &Path, cwd: &Path, fixture: bool) -> Result<Self> {
+        let identity = crate::compatibility::identify(binary, home).await?;
+        let version = identity.version.clone();
+        let binary = identity.binary.as_path();
+        let mut command = Command::new(binary);
+        command
             .args([
                 "-c",
                 "notify=[]",
@@ -132,20 +140,45 @@ impl Client {
                 "app-server",
             ])
             .env("CODEX_HOME", home)
+            .env_remove("OPENAI_API_KEY")
+            .env_remove("CODEX_API_KEY")
+            .env_remove("OPENAI_BASE_URL")
+            .env_remove("CODEX_ACCESS_TOKEN")
+            .env_remove("OPENAI_IDENTITY_TOKEN_FILE")
             .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .spawn()?;
+            .kill_on_drop(true);
+        if fixture {
+            command
+                .env_clear()
+                .env("CODEX_HOME", home)
+                .env("HOME", home)
+                .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+                .env("LANG", "C.UTF-8");
+        }
+        #[cfg(unix)]
+        command.process_group(0);
+        let mut child = command.spawn()?;
+        let group = crate::generation::ProcessGroup::new(
+            child
+                .id()
+                .ok_or_else(|| anyhow::anyhow!("Missing reader process ID"))?,
+        );
         let input = child.stdin.take().expect("piped stdin");
         let output = BufReader::new(child.stdout.take().expect("piped stdout"));
         let mut client = Self {
+            group,
             child,
             input,
             output,
             next: 0,
             version,
+            binary: binary.into(),
+            fixture,
+            identity,
+            fixture_terminals: std::collections::HashMap::new(),
         };
         client.call("initialize",json!({"clientInfo":{"name":"coding_memory_reader","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await?;
         client
@@ -185,6 +218,82 @@ impl Client {
             .contains(&method),
             "Read-only method allowlist"
         );
+        self.exchange(method, params).await
+    }
+    pub fn reader_version(&self) -> &str {
+        &self.version
+    }
+    pub fn binary(&self) -> &Path {
+        &self.binary
+    }
+    pub fn identity(&self) -> &crate::compatibility::Identity {
+        &self.identity
+    }
+    pub(crate) async fn fixture_call(&mut self, method: &str, params: Value) -> Result<Value> {
+        ensure!(
+            self.fixture && ["thread/start", "turn/start"].contains(&method),
+            "Fixture-only method"
+        );
+        self.exchange(method, params).await
+    }
+    pub(crate) async fn open_fixture(binary: &Path, home: &Path, cwd: &Path) -> Result<Self> {
+        Self::open_mode(binary, home, cwd, true).await
+    }
+    pub(crate) async fn open_isolated_reader(
+        binary: &Path,
+        home: &Path,
+        cwd: &Path,
+    ) -> Result<Self> {
+        let mut reader = Self::open_mode(binary, home, cwd, true).await?;
+        reader.fixture = false;
+        Ok(reader)
+    }
+    fn fixture_notification(&mut self, value: &Value) {
+        if self.fixture
+            && value["method"] == "turn/completed"
+            && let (Some(id), Some(status)) = (
+                value["params"]["turn"]["id"].as_str(),
+                value["params"]["turn"]["status"].as_str(),
+            )
+            && id.len() <= 256
+            && status.len() <= 32
+            && self.fixture_terminals.len() < 4
+        {
+            self.fixture_terminals.insert(id.into(), status.into());
+        }
+    }
+    pub(crate) async fn wait_fixture_turn(&mut self, turn: &str) -> Result<()> {
+        ensure!(self.fixture, "Fixture-only lifecycle wait");
+        timeout(Duration::from_secs(30), async {
+            let mut consumed = 0;
+            while !self.fixture_terminals.contains_key(turn) {
+                let mut line = Vec::new();
+                let n = (&mut self.output)
+                    .take((MAX_BYTES + 1) as u64)
+                    .read_until(b'\n', &mut line)
+                    .await?;
+                consumed += n;
+                ensure!(
+                    n > 0 && consumed <= MAX_BYTES,
+                    "Fixture notification stream unavailable"
+                );
+                let value: Value = serde_json::from_slice(&line)?;
+                ensure!(
+                    value.get("id").is_none(),
+                    "Unexpected fixture server request"
+                );
+                self.fixture_notification(&value);
+            }
+            ensure!(
+                self.fixture_terminals.remove(turn).as_deref() == Some("completed"),
+                "Synthetic fixture turn failed"
+            );
+            Ok::<_, anyhow::Error>(())
+        })
+        .await??;
+        Ok(())
+    }
+    async fn exchange(&mut self, method: &str, params: Value) -> Result<Value> {
         self.next += 1;
         let id = self.next;
         timeout(Duration::from_secs(30), async {
@@ -222,12 +331,14 @@ impl Client {
                         .cloned()
                         .ok_or_else(|| anyhow::anyhow!("Missing RPC result"));
                 }
+                self.fixture_notification(&value);
                 ensure!(
                     value.get("id").is_none(),
                     "Unexpected server request or reply"
                 );
                 ensure!(
-                    value.get("method").and_then(Value::as_str) != Some("thread/started"),
+                    self.fixture
+                        || value.get("method").and_then(Value::as_str) != Some("thread/started"),
                     "Cold reader unexpectedly started a thread"
                 );
             }
@@ -278,7 +389,9 @@ impl Client {
         Ok(result)
     }
     pub async fn close(mut self) -> Result<()> {
-        self.child.kill().await?;
+        self.group.terminate();
+        let _ = self.child.kill().await;
+        self.child.wait().await?;
         Ok(())
     }
 }
@@ -293,7 +406,23 @@ pub enum Capture {
     WrongProject,
 }
 
+pub const MIN_READER_VERSION: &str = "0.162.0-alpha.17.2";
+pub const MIN_HISTORY_VERSION: &str = "0.162.0-alpha.2";
+fn admitted(version: &str, minimum: &str) -> bool {
+    version.len() <= 128
+        && semver::Version::parse(version).is_ok_and(|v| {
+            v.cmp_precedence(&semver::Version::parse(minimum).expect("constant version"))
+                != std::cmp::Ordering::Less
+        })
+}
 pub fn supported(version: &str) -> bool {
+    admitted(version, MIN_READER_VERSION)
+}
+pub fn history_supported(version: &str) -> bool {
+    admitted(version, MIN_HISTORY_VERSION)
+}
+// Capture compatibility does not certify generation's deny-hook/isolation contract.
+pub fn generation_supported(version: &str) -> bool {
     matches!(version, "0.162.1" | "0.162.0-alpha.17.2")
 }
 /// Read only turn_context identity/cwd from the bounded local source artifact.
@@ -351,7 +480,7 @@ pub fn decode(
     turn: &Value,
     items: Vec<Value>,
 ) -> Capture {
-    if !supported(version) {
+    if !history_supported(version) {
         return Capture::Unsupported(UnsupportedReason::HistoryVersion);
     }
     if turn["id"] != key.turn {
@@ -394,6 +523,7 @@ pub fn decode(
         run: key.clone(),
         project: project.into(),
         runtime_version: version.into(),
+        capture_runtime: None,
         outcome: outcome.into(),
         completed_at: completed,
         started_at: started,

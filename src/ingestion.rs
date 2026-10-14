@@ -171,6 +171,9 @@ pub async fn capture_one(
     home: &Path,
     root: &Path,
 ) -> Result<bool> {
+    let identity = client.identity().clone();
+    let audit = state.observe_runtime(&identity, now())?;
+    ensure!(audit.validation != "failed", "runtime_validation_failed");
     let store = store_id(home)?;
     let Some(claim) = state.claim_store(Some(&store), now(), 3600)? else {
         return Ok(false);
@@ -181,7 +184,8 @@ pub async fn capture_one(
     }
     let result = codex::capture(client, home, &claim.key, &claim.project).await;
     match result {
-        Ok(Capture::Ready(bundle)) => {
+        Ok(Capture::Ready(mut bundle)) => {
+            bundle.capture_runtime = Some(audit);
             let epoch = state.project_epoch(&claim.project)?;
             if bundle.started_at <= epoch {
                 state.hold(&claim, "before_enablement_or_unknown_start", now())?;

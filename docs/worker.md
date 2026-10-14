@@ -69,11 +69,19 @@ or ten-minute consolidation trigger remains per project. Processing time and
 backlog add latency; ten minutes is a trigger, not a publication deadline. A
 reader failure does not prevent processing already captured evidence.
 
+Continuous workers also execute independent, durable reader verification jobs.
+New binary/fixture hashes and seven-day expiry queue a synthetic compatibility
+check; collection is allowed provisionally while pending. A failed check blocks
+new collection by that reader until a check passes. `--once` only queues this work.
+Use `runtime-check-status` or `runtime-verify --binary BINARY [--retry]` for manual
+inspection and verification. See [App capture](app-capture.md) for the admission
+floors, failure policy, audit fields and weekly Actions coverage.
+
 ## Inspection and recovery
 
 `worker-status` returns actual lock activity, the last cycle report, grouped
 counts for runs/extraction jobs/candidates/consolidation jobs, and bounded grouped
-failure reasons. Cycle counters count attempts, not successful memories. Use
+failure reasons, plus `runtime_checks` metadata. Cycle counters count attempts, not successful memories. Use
 `status`, `extraction-status --project-id PROJECT`, `candidates --project-id PROJECT`
 and `consolidation-status` to inspect individual records.
 

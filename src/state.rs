@@ -43,7 +43,8 @@ impl State {
         )?;
         let version: i64 = db.query_row("SELECT version FROM schema_version", [], |r| r.get(0))?;
         ensure!(version == 1, "Unsupported state schema {version}");
-        db.execute_batch("CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, repository TEXT NOT NULL UNIQUE, enabled_at INTEGER NOT NULL);
+        db.execute_batch("CREATE TABLE IF NOT EXISTS runtime_checks(digest TEXT NOT NULL,fixture TEXT NOT NULL,binary TEXT NOT NULL,version TEXT NOT NULL,state TEXT NOT NULL,last_result TEXT,checked_at INTEGER,available_at INTEGER NOT NULL,lease_until INTEGER,token INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(digest,fixture));
+            CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, repository TEXT NOT NULL UNIQUE, enabled_at INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS owned_stores(id TEXT PRIMARY KEY);
             CREATE TABLE IF NOT EXISTS pending_notes(note_id TEXT PRIMARY KEY, reason TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS project_policy(project TEXT PRIMARY KEY REFERENCES projects(id), allow_external INTEGER NOT NULL);

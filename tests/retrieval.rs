@@ -147,6 +147,7 @@ fn local_evidence_availability_checks_hash_and_native_item_locator() -> Result<(
         },
         project: "alpha".into(),
         runtime_version: "fixture".into(),
+        capture_runtime: None,
         outcome: "completed".into(),
         completed_at: 2,
         started_at: 1,

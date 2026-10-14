@@ -67,7 +67,7 @@ async fn reconciled_and_live_runs_share_capture_and_cold_reader_is_bounded() -> 
             json!({"type":"turn_context","payload":{"turn_id":"turn","cwd":repo}})
         ),
     )?;
-    let fixture = json!({"threads":[{"id":"thread","cliVersion":"0.162.1","path":source,"cwd":repo,"parentThreadId":null,"forkedFromId":null}],"turns":[{"id":"turn","rootTurnId":"turn","startedAt":11,"completedAt":12,"status":"completed"}],"items":[{"turnId":"turn","item":{"id":"u","type":"userMessage","content":[{"type":"text","text":"fixture"}]}},{"turnId":"turn","item":{"id":"t","type":"commandExecution","aggregatedOutput":"PASS","exitCode":0}}]});
+    let fixture = json!({"threads":[{"id":"thread","cliVersion":"0.162.0-alpha.2","path":source,"cwd":repo,"parentThreadId":null,"forkedFromId":null}],"turns":[{"id":"turn","rootTurnId":"turn","startedAt":11,"completedAt":12,"status":"completed"}],"items":[{"turnId":"turn","item":{"id":"u","type":"userMessage","content":[{"type":"text","text":"fixture"}]}},{"turnId":"turn","item":{"id":"t","type":"commandExecution","aggregatedOutput":"PASS","exitCode":0}}]});
     fs::write(home.join("fake.json"), serde_json::to_vec(&fixture)?)?;
     let binary = fake_server(d.path());
     let mut client = Client::open(&binary, &home, &repo).await?;
@@ -94,6 +94,10 @@ async fn reconciled_and_live_runs_share_capture_and_cold_reader_is_bounded() -> 
     let status = state.status()?;
     assert_eq!(status[0].state, "ready");
     let evidence = evidence::load(&root, status[0].evidence.as_deref().unwrap())?;
+    let audit = evidence.capture_runtime.as_ref().unwrap();
+    assert_eq!(audit.validation, "provisional");
+    assert_eq!(audit.reader_version, "0.162.1");
+    assert_eq!(audit.binary_sha256.len(), 64);
     assert_eq!(evidence.items[1]["aggregatedOutput"], "PASS");
     let mut changed = fixture.clone();
     changed["items"][1]["item"]["aggregatedOutput"] = json!("later mutable history");
@@ -154,7 +158,7 @@ fn inherited_and_ambiguous_context_cannot_be_attributed_to_current_cwd() -> Resu
 }
 
 #[tokio::test]
-async fn old_app_creation_version_has_a_specific_hold_reason_without_reading_turns() -> Result<()> {
+async fn below_minimum_history_has_a_specific_hold_reason_without_reading_turns() -> Result<()> {
     let d = tempdir()?;
     let repo = d.path().join("repo");
     repository(&repo);
@@ -162,7 +166,7 @@ async fn old_app_creation_version_has_a_specific_hold_reason_without_reading_tur
     fs::create_dir(&home)?;
     fs::write(
         home.join("fake.json"),
-        serde_json::to_vec(&json!({"threads":[{"id":"old-app","cliVersion":"0.162.0-alpha.2"}]}))?,
+        serde_json::to_vec(&json!({"threads":[{"id":"old-app","cliVersion":"0.162.0-alpha.1"}]}))?,
     )?;
     let root = evidence::private_directory(&d.path().join("engine"))?;
     let mut s = State::open(&root.join("state.sqlite"))?;
@@ -189,7 +193,7 @@ async fn old_app_creation_version_has_a_specific_hold_reason_without_reading_tur
         .output()?;
     assert!(output.status.success());
     let diagnostics: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-    assert_eq!(diagnostics["history_creation_version"], "0.162.0-alpha.2");
+    assert_eq!(diagnostics["history_creation_version"], "0.162.0-alpha.1");
     assert_eq!(diagnostics["reader_version"], "0.162.1");
     assert_eq!(diagnostics["history_version_supported"], false);
     assert_eq!(s.status()?[0].state, "queued");
@@ -256,5 +260,41 @@ async fn paging_and_source_failures_persist_distinct_safe_reasons() -> Result<()
         assert!(state.status()?[0].evidence.is_none());
         client.close().await?;
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_runtime_verification_blocks_capture_without_claiming_work() -> Result<()> {
+    let d = tempdir()?;
+    let repo = d.path().join("repo");
+    repository(&repo);
+    let home = d.path().join("home");
+    fs::create_dir(&home)?;
+    fs::write(home.join("fake.json"), b"{}")?;
+    let root = evidence::private_directory(&d.path().join("engine"))?;
+    let mut state = State::open(&root.join("state.sqlite"))?;
+    let project = project::resolve(&repo)?;
+    state.register_project(&project.id, project.repository.to_str().unwrap(), 1)?;
+    let key = RunKey {
+        store: ingestion::store_id(&home)?,
+        thread: "fixture".into(),
+        turn: "turn".into(),
+    };
+    state.enqueue(&key, &project.id, repo.to_str().unwrap(), 2)?;
+    let mut client = Client::open(&fake_server(d.path()), &home, &repo).await?;
+    let identity = client.identity().clone();
+    let now = ingestion::now();
+    state.observe_runtime(&identity, now)?;
+    let job = state.claim_runtime_check(now)?.unwrap();
+    state.finish_runtime_check(&job, false, now + 1)?;
+    assert!(
+        ingestion::capture_one(&mut state, &mut client, &home, &root)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("runtime_validation_failed")
+    );
+    assert_eq!(state.status()?[0].state, "queued");
+    client.close().await?;
     Ok(())
 }

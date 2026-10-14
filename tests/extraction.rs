@@ -18,6 +18,7 @@ fn bundle() -> Evidence {
         },
         project: "alpha".into(),
         runtime_version: "fixture".into(),
+        capture_runtime: None,
         outcome: "completed".into(),
         started_at: 10,
         completed_at: 11,

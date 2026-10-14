@@ -95,6 +95,7 @@ fn worktrees_share_identity_and_evidence_is_immutable() -> anyhow::Result<()> {
         run: key(),
         project: "project".into(),
         runtime_version: "0.162.1".into(),
+        capture_runtime: None,
         outcome: "completed".into(),
         completed_at: 11,
         started_at: 10,
@@ -251,7 +252,7 @@ fn capture_reports_specific_shape_failures_without_source_content() {
         "0.162.1",
         &serde_json::json!({"cliVersion":"0.162.0-alpha.2","preview":"private preview"}),
     );
-    assert_eq!(old.reason, Some("unsupported_history_version"));
+    assert_eq!(old.reason, None);
     assert_eq!(
         old.history_creation_version.as_deref(),
         Some("0.162.0-alpha.2")

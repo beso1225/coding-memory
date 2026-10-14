@@ -177,7 +177,7 @@ impl CodexExec {
             }
         }
         let version = version(&self.binary, &home).await?;
-        if !crate::codex::supported(&version) {
+        if !crate::codex::generation_supported(&version) {
             return Err(Failure::UnsupportedRuntime);
         }
         crate::notes::identity(&request.attempt).map_err(|_| Failure::IsolationUnavailable)?;
@@ -355,9 +355,20 @@ pub(crate) async fn version(binary: &Path, home: &Path) -> std::result::Result<S
         .ok_or(Failure::UnsupportedRuntime)?
         .to_owned())
 }
-struct ProcessGroup {
+pub(crate) struct ProcessGroup {
     pid: u32,
     armed: bool,
+}
+impl ProcessGroup {
+    pub(crate) fn new(pid: u32) -> Self {
+        Self { pid, armed: true }
+    }
+    pub(crate) fn terminate(&mut self) {
+        if self.armed {
+            terminate_group(self.pid);
+            self.armed = false;
+        }
+    }
 }
 impl Drop for ProcessGroup {
     fn drop(&mut self) {

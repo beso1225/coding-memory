@@ -87,7 +87,9 @@ policy, and output are refused.
 Evidence is capped at 256 KiB, final output at 64 KiB, exec stdout at 1 MiB, and
 exec stderr at 256 KiB. Timeout is configurable from one to 600 seconds. Timeout
 or bounded-I/O failure kills the process group owned by that invocation. Supported
-versions are gated using the capture contract.
+generation versions remain exactly gated to `0.162.1` and `0.162.0-alpha.17.2`.
+Capture admission and its periodic fixture do not validate tool-denial isolation
+for newer generation runtimes.
 The version probe separately caps stdout at 4 KiB and stderr at 16 KiB. Invalid
 CLI timeouts are rejected before opening state or claiming work. Policy holds
 recheck permission inside their state-transition transaction, so a concurrent

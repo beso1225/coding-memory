@@ -1,0 +1,54 @@
+name: Runtime compatibility
+
+on:
+  pull_request:
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  capture-contract:
+    name: Latest Codex CLI capture contract
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Nix
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: Obtain latest official CLI release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          runtime_dir="$RUNNER_TEMP/codex-capture-runtime"
+          mkdir -p "$runtime_dir"
+          runtime_tag=$(gh release view --repo openai/codex --json tagName --jq .tagName)
+          gh release download "$runtime_tag" --repo openai/codex \
+            --pattern codex-aarch64-apple-darwin.tar.gz --dir "$runtime_dir"
+          tar -xzf "$runtime_dir/codex-aarch64-apple-darwin.tar.gz" -C "$runtime_dir"
+          test -x "$runtime_dir/codex-aarch64-apple-darwin"
+          printf 'Official release: %s\n' "$runtime_tag" >> "$GITHUB_STEP_SUMMARY"
+      - name: Run the same isolated fixture as the local Worker
+        run: |
+          nix develop --command cargo build --locked
+          target/debug/coding-memory --state-dir "$RUNNER_TEMP/capture-contract-state" \
+            runtime-verify --binary "$RUNNER_TEMP/codex-capture-runtime/codex-aarch64-apple-darwin"
+      - name: Report local verification result
+        if: always()
+        run: |
+          if test -x target/debug/coding-memory; then
+            target/debug/coding-memory --state-dir "$RUNNER_TEMP/capture-contract-state" runtime-check-status
+          fi

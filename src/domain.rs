@@ -23,11 +23,21 @@ pub fn hash(bytes: &[u8]) -> String {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeAudit {
+    pub binary_sha256: String,
+    pub reader_version: String,
+    pub fixture: String,
+    pub validation: String,
+    pub checked_at: Option<i64>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Evidence {
     pub schema_version: u32,
     pub run: RunKey,
     pub project: String,
     pub runtime_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_runtime: Option<RuntimeAudit>,
     pub outcome: String,
     pub completed_at: i64,
     pub started_at: i64,
