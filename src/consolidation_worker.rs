@@ -41,26 +41,19 @@ fn context(
 ) -> Result<(Vec<Existing>, HashMap<String, Evidence>)> {
     let scope = Scope::new(&batch.project);
     let mut existing = Vec::new();
-    let mut seen = HashSet::new();
-    for candidate in &batch.candidates {
-        let query = candidate
-            .candidate
-            .title
-            .split_whitespace()
-            .take(8)
-            .collect::<Vec<_>>()
-            .join(" ");
-        for hit in search.search(&query, &scope, 3)?.results {
-            if seen.insert(hit.metadata.id.clone()) && existing.len() < 10 {
-                let read = search.read(&hit.metadata.id, &scope)?;
-                existing.push(Existing {
-                    id: read.metadata.id,
-                    path: search.location(&hit.metadata.id, &scope)?,
-                    revision: read.revision,
-                    markdown: read.markdown,
-                });
-            }
-        }
+    let candidates: Vec<_> = batch
+        .candidates
+        .iter()
+        .map(|c| c.candidate.clone())
+        .collect();
+    for hit in crate::consolidation_retrieval::neighbors(search, &batch.project, &candidates)? {
+        let read = search.read(&hit.metadata.id, &scope)?;
+        existing.push(Existing {
+            id: read.metadata.id,
+            path: search.location(&hit.metadata.id, &scope)?,
+            revision: read.revision,
+            markdown: read.markdown,
+        });
     }
     let mut digests = HashSet::new();
     for c in &batch.candidates {
