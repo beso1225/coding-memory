@@ -197,6 +197,12 @@ Dependencies: [#3](https://github.com/beso1225/coding-memory/issues/3),
 [#4](https://github.com/beso1225/coding-memory/issues/4), and the search service from
 [#6](https://github.com/beso1225/coding-memory/issues/6).
 
+Progress: [reviewed consolidation](consolidation.md) implements foreground
+proposal/review, validated links, stable note identities, recoverable per-file
+application and publication barriers, plus conservative opt-in evidence cleanup.
+Offline tests and a synthetic installed-Codex round trip validate integration;
+automatic operation and real model-quality assessment remain #7.
+
 ### [#6](https://github.com/beso1225/coding-memory/issues/6). Implement scoped FTS retrieval and MCP tools
 
 Problem: the agent needs bounded, applicable memory results rather than a vault

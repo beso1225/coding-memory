@@ -5,7 +5,7 @@ use crate::{
 };
 use anyhow::{Result, ensure};
 use rusqlite::{OptionalExtension, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Debug)]
@@ -24,7 +24,7 @@ pub struct ExtractionStatus {
     pub attempts: i64,
     pub provenance: Option<String>,
 }
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct StagedCandidate {
     pub id: String,
     pub state: String,

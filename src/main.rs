@@ -72,6 +72,45 @@ mod tests {
 }
 #[derive(Subcommand)]
 enum Commands {
+    Consolidate {
+        #[arg(long)]
+        vault: PathBuf,
+        #[arg(long)]
+        project_id: String,
+        #[arg(long)]
+        force: bool,
+        #[arg(long,default_value_t=5,value_parser=clap::value_parser!(i64).range(1..=20))]
+        min_ready: i64,
+        #[arg(long,default_value_t=600,value_parser=clap::value_parser!(i64).range(1..=86400))]
+        max_age_seconds: i64,
+        #[arg(long, default_value = "codex")]
+        codex_binary: PathBuf,
+        #[arg(long, default_value = "gpt-6.1-sol")]
+        model: String,
+        #[arg(long, default_value = "gpt-6.1-sol")]
+        review_model: String,
+        #[arg(long,default_value_t=300,value_parser=clap::value_parser!(u64).range(1..=600))]
+        timeout_seconds: u64,
+        #[arg(long, hide = true)]
+        loopback: Option<std::net::SocketAddr>,
+    },
+    ConsolidationStatus,
+    ConsolidationRetry {
+        batch: i64,
+    },
+    VaultRecover {
+        #[arg(long)]
+        vault: PathBuf,
+        batch: i64,
+    },
+    EvidenceCleanup {
+        #[arg(long)]
+        vault: PathBuf,
+        #[arg(long,default_value_t=30,value_parser=clap::value_parser!(u64).range(30..=36500))]
+        retention_days: u64,
+        #[arg(long)]
+        apply: bool,
+    },
     /// Prepare an engine-owned Codex home; login remains an explicit human operation.
     GenerationSetup,
     /// Internal PreToolUse hook. Always exits with a deny status.
@@ -194,12 +233,79 @@ async fn main() -> Result<()> {
             .take(65537)
             .read_to_end(&mut bytes)
             .and_then(|_| generation::deny_tool(marker_dir, &bytes).map_err(io::Error::other));
-        eprintln!("Tool use is disabled for memory extraction.");
+        eprintln!("Tool use is disabled for memory generation.");
         std::process::exit(2);
     }
     let root = evidence::private_directory(&cli.state_dir)?;
     let mut state = State::open(&root.join("state.sqlite"))?;
     match cli.command {
+        Commands::Consolidate {
+            vault,
+            project_id,
+            force,
+            min_ready,
+            max_age_seconds,
+            codex_binary,
+            model,
+            review_model,
+            timeout_seconds,
+            loopback,
+        } => {
+            let proposer = CodexExec {
+                root: root.clone(),
+                binary: codex_binary,
+                guard_binary: std::env::current_exe()?,
+                model,
+                timeout: std::time::Duration::from_secs(timeout_seconds),
+                loopback,
+            };
+            let reviewer = CodexExec {
+                model: review_model,
+                ..proposer.clone()
+            };
+            let batch = coding_memory::consolidation_worker::consolidate(
+                &mut state,
+                &root,
+                &vault,
+                &project_id,
+                coding_memory::consolidation_state::Trigger {
+                    force,
+                    min_ready,
+                    max_age_seconds,
+                },
+                &proposer,
+                &reviewer,
+            )
+            .await?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({"batch":batch}))?
+            );
+        }
+        Commands::ConsolidationStatus => println!(
+            "{}",
+            serde_json::to_string_pretty(&state.consolidation_status()?)?
+        ),
+        Commands::ConsolidationRetry { batch } => state.retry_batch(batch, ingestion::now())?,
+        Commands::VaultRecover { vault, batch } => println!(
+            "{}",
+            coding_memory::vault::apply(&mut state, &root, &vault, batch, |_| Ok(()))?
+        ),
+        Commands::EvidenceCleanup {
+            vault,
+            retention_days,
+            apply,
+        } => println!(
+            "{}",
+            serde_json::to_string_pretty(&coding_memory::retention::cleanup(
+                &mut state,
+                &root,
+                &vault,
+                ingestion::now(),
+                retention_days,
+                apply
+            )?)?
+        ),
         Commands::GenerationSetup => {
             let backend = CodexExec {
                 root: root.clone(),
