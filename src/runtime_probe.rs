@@ -81,11 +81,11 @@ async fn provider() -> Result<(Server, std::net::SocketAddr)> {
     });
     Ok((Server(task), addr))
 }
-pub async fn run(binary: &Path, root: &Path) -> Result<()> {
-    tokio::time::timeout(Duration::from_secs(90), run_fixture(binary, root)).await??;
+pub async fn run(identity: &crate::compatibility::Identity, root: &Path) -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(90), run_fixture(identity, root)).await??;
     Ok(())
 }
-async fn run_fixture(binary: &Path, root: &Path) -> Result<()> {
+async fn run_fixture(identity: &crate::compatibility::Identity, root: &Path) -> Result<()> {
     let checks = crate::evidence::private_directory(&root.join("runtime-fixtures"))?;
     let directory = tempfile::Builder::new()
         .prefix("check-")
@@ -109,7 +109,7 @@ async fn run_fixture(binary: &Path, root: &Path) -> Result<()> {
         ),
     )?;
     State::open(&root.join("state.sqlite"))?.own_store(&ingestion::store_id(&home)?)?;
-    let mut source = Client::open_fixture(binary, &home, &work).await?;
+    let mut source = Client::open_fixture(identity, &home, &work).await?;
     let thread = source
         .fixture_call(
             "thread/start",
@@ -138,7 +138,7 @@ async fn run_fixture(binary: &Path, root: &Path) -> Result<()> {
             thread: thread.clone(),
             turn,
         };
-        let mut reader = Client::open_isolated_reader(binary, &home, &work).await?;
+        let mut reader = Client::open_isolated_reader(identity, &home, &work).await?;
         let Capture::Ready(bundle) = codex::capture(&mut reader, &home, &key, &project.id).await?
         else {
             anyhow::bail!("Fixture capture rejected");

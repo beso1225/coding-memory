@@ -27,6 +27,10 @@ fn fake_server(root: &Path) -> std::path::PathBuf {
 import json, os, sys
 from pathlib import Path
 if "--version" in sys.argv:
+    (Path(os.environ['CODEX_HOME'])/'version-environment.json').write_text(json.dumps({
+        'home_is_isolated':os.environ.get('HOME')==os.environ['CODEX_HOME'],
+        'credentials_present':any(k in os.environ for k in ['OPENAI_API_KEY','CODEX_API_KEY','OPENAI_BASE_URL','CODEX_ACCESS_TOKEN','OPENAI_IDENTITY_TOKEN_FILE','SYNTHETIC_CREDENTIAL'])
+    }))
     print("codex-cli 0.162.1")
     sys.exit(0)
 for line in sys.stdin:
@@ -294,7 +298,56 @@ async fn failed_runtime_verification_blocks_capture_without_claiming_work() -> R
             .to_string()
             .contains("runtime_validation_failed")
     );
+    assert!(
+        ingestion::reconcile(&mut state, &mut client, &home, &repo)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("runtime_validation_failed")
+    );
+    assert_eq!(state.status()?.len(), 1);
     assert_eq!(state.status()?[0].state, "queued");
     client.close().await?;
+    Ok(())
+}
+
+#[test]
+fn diagnostic_version_probe_clears_inherited_credentials() -> Result<()> {
+    let d = tempdir()?;
+    let home = d.path().join("home");
+    fs::create_dir(&home)?;
+    let repo = d.path().join("repo");
+    repository(&repo);
+    fs::write(
+        home.join("fake.json"),
+        serde_json::to_vec(&json!({"threads":[{"cliVersion":"0.162.1"}]}))?,
+    )?;
+    let output = Command::new(env!("CARGO_BIN_EXE_coding-memory"))
+        .args(["--state-dir"])
+        .arg(d.path().join("engine"))
+        .arg("capture-diagnose")
+        .arg("--codex-home")
+        .arg(&home)
+        .arg("--codex-binary")
+        .arg(fake_server(d.path()))
+        .arg("--project")
+        .arg(&repo)
+        .args(["--thread", "synthetic"])
+        .env("CODEX_ACCESS_TOKEN", "synthetic-test-token")
+        .env("OPENAI_IDENTITY_TOKEN_FILE", "/synthetic-token-file")
+        .env("OPENAI_API_KEY", "synthetic-api-key")
+        .env("CODEX_API_KEY", "synthetic-api-key")
+        .env("OPENAI_BASE_URL", "https://synthetic.invalid")
+        .env("SYNTHETIC_CREDENTIAL", "synthetic")
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let recorded: serde_json::Value =
+        serde_json::from_slice(&fs::read(home.join("version-environment.json"))?)?;
+    assert_eq!(recorded["credentials_present"], false);
+    assert_eq!(recorded["home_is_isolated"], true);
     Ok(())
 }

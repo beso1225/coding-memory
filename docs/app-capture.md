@@ -43,7 +43,10 @@ blocking across fixture changes until a new check passes. Failures can be retrie
 manually, or when next due after seven days. Interruption leaves a recoverable
 180-second lease. The complete check, including fingerprints, has a 150-second
 deadline; each fingerprint is bounded to 30 seconds and the synthetic probe to
-90 seconds. Hashing runs outside the async collection executor.
+90 seconds. The fixture reuses the pinned, prechecked identity for its producer
+and readers; executable fingerprints surround it rather than being repeated inside
+it. Hashing runs outside the async collection executor. Version probes also use a
+cleared environment and the selected temporary HOME during synthetic checks.
 
 ```sh
 coding-memory --state-dir /absolute/engine-state runtime-check-status
@@ -136,6 +139,10 @@ and generation protections.
 The Rust `runtime-verify` fixture passed locally on CLI `0.162.1` and the App-bundled
 `0.162.0-alpha.17.2`. The isolated Worker probe also checks continued cycles during
 background verification and SIGTERM ownership release. Earlier human-run App GUI
-checks established approved hooks and cold reads for fresh App histories. A fresh
-GUI daily-use confirmation of this policy and capture of the diagnosed personal
-old chat remain operator checks; synthetic runs do not claim those outcomes.
+checks established approved hooks and cold reads for fresh App histories. A
+subsequent human-run fresh App GUI directory-check turn was captured as
+`ready`/`completed` at creation version `0.162.0-alpha.17.2`, and extraction finished
+`succeeded_empty`, as expected for a transient directory report. This used the
+existing production Engine, so it confirms the fresh-chat route rather than the
+new provisional policy. Capture of the diagnosed old chat after installing this
+update remains an operator check.

@@ -23,6 +23,7 @@ pub fn fixture_id() -> &'static str {
             &[
                 include_bytes!("runtime_probe.rs").as_slice(),
                 include_bytes!("codex.rs").as_slice(),
+                include_bytes!("generation.rs").as_slice(),
                 include_bytes!("compatibility.rs").as_slice(),
                 include_bytes!("../Cargo.lock").as_slice(),
             ]
@@ -117,7 +118,9 @@ impl State {
         )?;
         let latest: Option<String> = tx.query_row("SELECT last_result FROM runtime_checks WHERE digest=?1 AND last_result IS NOT NULL ORDER BY checked_at DESC,(fixture=?2) DESC LIMIT 1",params![identity.digest,fixture_id()],|r|r.get(0)).optional()?;
         tx.commit()?;
-        let status = if result.as_deref() == Some("failed") || latest.as_deref() == Some("failed") {
+        let status = if result.as_deref() == Some("failed")
+            || (result.is_none() && latest.as_deref() == Some("failed"))
+        {
             "failed"
         } else if result.as_deref() == Some("passed")
             && checked.is_some_and(|t| t <= now && now - t < INTERVAL)
@@ -184,7 +187,16 @@ async fn check(job: &Job, root: &Path) -> Result<bool> {
     {
         return Ok(false);
     }
-    if let Err(error) = crate::runtime_probe::run(Path::new(&job.binary), root).await {
+    if let Err(error) = crate::runtime_probe::run(
+        &Identity {
+            binary: job.binary.clone().into(),
+            digest: job.digest.clone(),
+            version: job.version.clone(),
+        },
+        root,
+    )
+    .await
+    {
         eprintln!("Synthetic runtime verification failed: {error}");
         return Ok(false);
     }

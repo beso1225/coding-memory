@@ -266,3 +266,15 @@ fn capture_reports_specific_shape_failures_without_source_content() {
     assert!(bad.history_creation_version.is_none());
     assert!(!serde_json::to_string(&old).unwrap().contains("private"));
 }
+
+#[test]
+fn diagnostic_withholds_non_semver_alphanumeric_values() {
+    for version in ["private", "SECRET123", "0.162", "01.162.1"] {
+        let diagnostic = coding_memory::codex::version_diagnostics(
+            "0.162.1",
+            &serde_json::json!({"cliVersion": version}),
+        );
+        assert!(diagnostic.history_creation_version.is_none());
+        assert_eq!(diagnostic.reason, Some("unsupported_history_version"));
+    }
+}

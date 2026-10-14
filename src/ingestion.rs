@@ -123,6 +123,8 @@ pub async fn reconcile(
     home: &Path,
     path: &Path,
 ) -> Result<usize> {
+    let audit = state.observe_runtime(client.identity(), now())?;
+    ensure!(audit.validation != "failed", "runtime_validation_failed");
     let p = project::resolve(path)?;
     let epoch = state.project_epoch(&p.id)?;
     let mut count = 0;

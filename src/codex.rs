@@ -80,12 +80,9 @@ pub struct HistoryDiagnostics {
     pub reason: Option<&'static str>,
 }
 pub fn version_diagnostics(reader_version: &str, thread: &Value) -> HistoryDiagnostics {
-    let version = thread["cliVersion"].as_str().filter(|v| {
-        v.len() <= 128
-            && !v.is_empty()
-            && v.bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+'))
-    });
+    let version = thread["cliVersion"]
+        .as_str()
+        .filter(|v| v.len() <= 128 && semver::Version::parse(v).is_ok());
     let result = history_version(thread);
     HistoryDiagnostics {
         reader_version: reader_version.into(),
@@ -130,6 +127,15 @@ impl Client {
         fixture: bool,
     ) -> Result<Self> {
         let identity = crate::compatibility::identify(binary, home).await?;
+        Self::open_identified(identity, home, cwd, isolated, fixture).await
+    }
+    async fn open_identified(
+        identity: crate::compatibility::Identity,
+        home: &Path,
+        cwd: &Path,
+        isolated: bool,
+        fixture: bool,
+    ) -> Result<Self> {
         let version = identity.version.clone();
         let binary = identity.binary.as_path();
         let mut command = Command::new(binary);
@@ -242,15 +248,19 @@ impl Client {
         );
         self.exchange(method, params).await
     }
-    pub(crate) async fn open_fixture(binary: &Path, home: &Path, cwd: &Path) -> Result<Self> {
-        Self::open_mode(binary, home, cwd, true, true).await
-    }
-    pub(crate) async fn open_isolated_reader(
-        binary: &Path,
+    pub(crate) async fn open_fixture(
+        identity: &crate::compatibility::Identity,
         home: &Path,
         cwd: &Path,
     ) -> Result<Self> {
-        Self::open_mode(binary, home, cwd, true, false).await
+        Self::open_identified(identity.clone(), home, cwd, true, true).await
+    }
+    pub(crate) async fn open_isolated_reader(
+        identity: &crate::compatibility::Identity,
+        home: &Path,
+        cwd: &Path,
+    ) -> Result<Self> {
+        Self::open_identified(identity.clone(), home, cwd, true, false).await
     }
     fn fixture_notification(&mut self, value: &Value) {
         if self.fixture
@@ -637,13 +647,49 @@ for line in sys.stdin:
         )?;
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700))?;
         assert!(Client::open(&binary, d.path(), d.path()).await.is_err());
+        let identity = crate::compatibility::identify(&binary, d.path()).await?;
         assert!(
-            Client::open_isolated_reader(&binary, d.path(), d.path())
+            Client::open_isolated_reader(&identity, d.path(), d.path())
                 .await
                 .is_err()
         );
-        let producer = Client::open_fixture(&binary, d.path(), d.path()).await?;
+        let producer = Client::open_fixture(&identity, d.path(), d.path()).await?;
         producer.close().await?;
+        Ok(())
+    }
+    #[tokio::test]
+    async fn fixture_clients_reuse_the_already_verified_identity() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir()?;
+        let binary = d.path().join("server.py");
+        std::fs::write(
+            &binary,
+            r#"#!/usr/bin/env python3
+import sys,json
+if '--version' in sys.argv:
+    sys.exit(9)
+for line in sys.stdin:
+    request=json.loads(line)
+    if request.get('method')=='initialize':
+        print(json.dumps({'id':request['id'],'result':{}}), flush=True)
+"#,
+        )?;
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700))?;
+        let identity = crate::compatibility::Identity {
+            binary: binary.clone(),
+            digest: crate::compatibility::fingerprint(&binary)?,
+            version: "0.162.1".into(),
+        };
+        Client::open_fixture(&identity, d.path(), d.path())
+            .await?
+            .close()
+            .await?;
+        for _ in 0..2 {
+            Client::open_isolated_reader(&identity, d.path(), d.path())
+                .await?
+                .close()
+                .await?;
+        }
         Ok(())
     }
 }

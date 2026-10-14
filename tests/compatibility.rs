@@ -84,7 +84,7 @@ fn a_fixture_change_rechecks_but_does_not_erase_a_known_failure() -> anyhow::Res
         version: "0.163.0".into(),
     };
     let db = rusqlite::Connection::open(&path)?;
-    db.execute("INSERT INTO runtime_checks(digest,fixture,binary,version,state,last_result,checked_at,available_at) VALUES(?1,'previous','/usr/bin/true','0.163.0','complete','failed',10,10)",[&identity.digest])?;
+    db.execute("INSERT INTO runtime_checks(digest,fixture,binary,version,state,last_result,checked_at,available_at) VALUES(?1,'previous','/usr/bin/true','0.163.0','complete','failed',1000,10)",[&identity.digest])?;
     db.execute("INSERT INTO runtime_checks(digest,fixture,binary,version,state,available_at) VALUES(?1,'obsolete-pending','/usr/bin/true','0.163.0','queued',9)",[&identity.digest])?;
     assert_eq!(state.observe_runtime(&identity, 11)?.validation, "failed");
     let job = state.claim_runtime_check(11)?.unwrap();
