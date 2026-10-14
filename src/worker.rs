@@ -78,7 +78,7 @@ fn absolute_file(path: &Path) -> Result<()> {
     );
     Ok(())
 }
-fn executable(path: &Path) -> Result<()> {
+pub(crate) fn executable(path: &Path) -> Result<()> {
     absolute_file(path)?;
     #[cfg(unix)]
     {
@@ -183,8 +183,22 @@ impl Config {
     }
 }
 pub struct Ownership {
-    file: std::sync::Arc<File>,
+    file: std::sync::Arc<LockFile>,
     root: PathBuf,
+}
+pub(crate) struct LockFile(File);
+impl Drop for LockFile {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            // A concurrent fork may retain the descriptor until exec. Release the
+            // shared lock explicitly when the final parent owner ends its session.
+            unsafe {
+                libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
+            }
+        }
+    }
 }
 impl Ownership {
     pub fn acquire(root: &Path) -> Result<Self> {
@@ -217,7 +231,7 @@ impl Ownership {
         )?;
         file.sync_all()?;
         Ok(Self {
-            file: std::sync::Arc::new(file),
+            file: std::sync::Arc::new(LockFile(file)),
             root: root.canonicalize()?,
         })
     }

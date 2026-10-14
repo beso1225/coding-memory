@@ -52,6 +52,15 @@ deterministic consolidation fixtures check allowed existing/accepted targets,
 dependencies and rejected links; semantic relationship usefulness remains
 unmeasured. Expand the corpus before treating link quality as established.
 
+After review, the saved synthetic notes and MCP transcript were revalidated
+offline without another model request. The token predicate examines semantic
+title/summary/body fields, excluding frontmatter IDs, digests and timestamps;
+SQLite WAL must appear in applicability conditions. Reuse requires a successful
+search hit followed by a read of that published rule's stable identity, with
+matching metadata, Markdown and revision. All three checks passed on the saved
+run. Offline regression cases reject metadata-only digits, empty searches,
+unrelated reads, reversed search/read order and failed/changed payloads.
+
 ## Opt-in reproduction
 
 Use a new private evaluation state outside repositories, run `generation-setup`,

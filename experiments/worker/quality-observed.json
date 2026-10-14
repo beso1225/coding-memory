@@ -105,5 +105,10 @@
     "No multi-note semantic-link quality estimate; links are validated in deterministic fixtures.",
     "Consumer uses the dedicated Engine login sequentially with its own fresh context; generation deny hooks remain enabled for memory-processing calls.",
     "Only explicit user-stated knowledge was evaluated with a real model; observed-tool support, ambiguous contradictions and semantic links need a broader corpus."
-  ]
+  ],
+  "offline_revalidation": {
+    "semantic_token_rule": true,
+    "wal_applicability_condition": true,
+    "matching_published_rule_searched_then_read": true
+  }
 }

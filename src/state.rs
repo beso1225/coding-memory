@@ -6,7 +6,7 @@ use std::{path::Path, time::Duration};
 
 pub struct State {
     pub(crate) db: Connection,
-    pub(crate) worker_owner: Option<std::sync::Arc<std::fs::File>>,
+    pub(crate) worker_owner: Option<std::sync::Arc<crate::worker::LockFile>>,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum Enqueue {

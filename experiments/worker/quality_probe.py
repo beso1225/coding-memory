@@ -10,6 +10,8 @@ import sqlite3
 import subprocess
 import sys
 import time
+import re
+from quality_checks import token_rule, applicable_wal, retrieved_rule
 
 
 def main():
@@ -73,9 +75,14 @@ def main():
     run("consolidate", "--vault", str(vault), "--project-id", project, "--force", "--codex-binary", args.codex, "--model", args.model, "--review-model", args.model, "--timeout-seconds", "180")
     report["batches"] = json.loads(run("consolidation-status"))
     published = list(vault.glob("*.md"))
+    notes = []
+    for path in published:
+        header = path.read_text().split('\n---\n', 1)[0]
+        identity = re.search(r'^id: ([A-Za-z0-9_-]+)$', header, re.M).group(1)
+        notes.append(json.loads(run("read", "--vault", str(vault), "--project-id", project, identity)))
     report["published_count"] = len(published)
-    report["token_rule_preserved"] = any("seven" in p.read_text().lower() or "7" in p.read_text() for p in published)
-    report["sqlite_wal_condition_preserved"] = any("wal" in p.read_text().lower() and "sqlite" in p.read_text().lower() for p in published)
+    report["token_rule_preserved"] = any(token_rule(n) for n in notes)
+    report["sqlite_wal_condition_preserved"] = any(applicable_wal(n) for n in notes)
     report["reuse"] = {"attempted": False}
     if published:
         print("Testing a separate real-model coding session with MCP", flush=True)
@@ -104,7 +111,7 @@ class Queue:
         events = [json.loads(line) for line in proc.stdout.splitlines() if line.strip().startswith("{")]
         calls = [e["item"] for e in events if e.get("type") == "item.completed" and e.get("item", {}).get("type") == "mcp_tool_call"]
         test = subprocess.run([sys.executable, "-c", "import sqlite3; from lease_queue import Queue; db=sqlite3.connect('quality-check.sqlite'); assert db.execute('PRAGMA journal_mode=WAL').fetchone()[0]=='wal'; q=Queue(db); a=q.claim(); b=q.claim(); assert (a,b)==(7,14),(a,b); assert not q.ack(a); assert q.ack(b); assert not q.ack(b); print('REUSE_TEST_PASS')"], cwd=consumer, text=True, capture_output=True)
-        report["reuse"] = {"attempted": True, "agent_exit": proc.returncode, "mcp_tools": [c.get("tool") for c in calls], "successful_search_and_read": all(any(c.get("tool") == tool and c.get("status") == "completed" for c in calls) for tool in ["memory_search", "memory_read"]), "protocol_tests_passed": test.returncode == 0}
+        report["reuse"] = {"attempted": True, "agent_exit": proc.returncode, "mcp_tools": [c.get("tool") for c in calls], "successful_search_and_read": retrieved_rule(calls, notes), "protocol_tests_passed": test.returncode == 0}
     report["limitations"] = ["Three synthetic cases; not a statistical quality estimate.", "Source CLI outputs are controlled, while extraction/consolidation/review and consumer decisions use a real model.", "No multi-note semantic-link quality estimate; links are validated in deterministic fixtures.", "Consumer uses the dedicated Engine login sequentially with its own fresh context; generation deny hooks remain enabled for memory-processing calls."]
     (rt.ROOT / "quality-report.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))

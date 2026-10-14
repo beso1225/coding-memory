@@ -64,6 +64,39 @@ fn singleton_lock_survives_owner_file_and_releases_with_its_session() -> Result<
     assert!(Ownership::acquire(d.path()).is_ok());
     Ok(())
 }
+#[cfg(unix)]
+#[test]
+fn owner_release_unlocks_even_when_a_child_inherits_the_descriptor() -> Result<()> {
+    let d = tempdir()?;
+    let owner = Ownership::acquire(d.path())?;
+    let mut pipe = [0; 2];
+    assert_eq!(unsafe { libc::pipe(pipe.as_mut_ptr()) }, 0);
+    let pid = unsafe { libc::fork() };
+    assert!(pid >= 0);
+    if pid == 0 {
+        // Only async-signal-safe syscalls after fork in this multithreaded test process.
+        unsafe {
+            libc::close(pipe[1]);
+            let mut byte = 0u8;
+            libc::read(pipe[0], (&mut byte as *mut u8).cast(), 1);
+            libc::_exit(0);
+        }
+    }
+    unsafe {
+        libc::close(pipe[0]);
+    }
+    drop(owner);
+    let result = Ownership::acquire(d.path());
+    unsafe {
+        libc::close(pipe[1]);
+        libc::waitpid(pid, std::ptr::null_mut(), 0);
+    }
+    assert!(
+        result.is_ok(),
+        "Inherited descriptor retained the released lock"
+    );
+    Ok(())
+}
 #[test]
 fn restart_recovers_only_worker_capture_claims_and_fences_late_results() -> Result<()> {
     let d = tempdir()?;
@@ -242,6 +275,9 @@ fn launchd_argv_and_xml_work_with_spaces_and_metacharacters() -> Result<()> {
     let (_state, config) = configured(&root)?;
     let config_path = root.join("worker config.json");
     fs::write(&config_path, serde_json::to_vec(&config)?)?;
+    let invalid_binary = root.join("non-executable");
+    fs::write(&invalid_binary, "not executable")?;
+    assert!(coding_memory::service::plist(&root, &config_path, &invalid_binary, "test").is_err());
     let plist = coding_memory::service::plist(
         &root,
         &config_path,

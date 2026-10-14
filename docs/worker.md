@@ -2,7 +2,8 @@
 
 Issue #7 connects reconciliation, capture, extraction, reviewed consolidation and
 interrupted Vault application. One process owns each state directory through an
-OS `flock`; a PID file alone is not proof that a worker is running. Foreground and
+OS `flock`, explicitly unlocked at final owner release even if a concurrent
+child inherited its descriptor; a PID file alone is not proof that a worker is running. Foreground and
 launchd operation use the same configuration and pipeline.
 
 ## Configuration and preparation

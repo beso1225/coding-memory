@@ -28,6 +28,7 @@ pub fn plist(root: &Path, config_path: &Path, binary: &Path, label: &str) -> Res
         root.is_absolute() && config_path.is_absolute() && binary.is_absolute() && binary.is_file(),
         "Service paths must be absolute"
     );
+    crate::worker::executable(binary)?;
     ensure!(
         !label.is_empty()
             && label.len() <= 128
