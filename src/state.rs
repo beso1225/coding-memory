@@ -5,7 +5,7 @@ use serde::Serialize;
 use std::{path::Path, time::Duration};
 
 pub struct State {
-    db: Connection,
+    pub(crate) db: Connection,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum Enqueue {
@@ -45,6 +45,9 @@ impl State {
         db.execute_batch("CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, repository TEXT NOT NULL UNIQUE, enabled_at INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS owned_stores(id TEXT PRIMARY KEY);
             CREATE TABLE IF NOT EXISTS pending_notes(note_id TEXT PRIMARY KEY, reason TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS project_policy(project TEXT PRIMARY KEY REFERENCES projects(id), allow_external INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS extraction_jobs(store TEXT,thread TEXT,turn TEXT,project TEXT NOT NULL REFERENCES projects(id),evidence TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'queued',reason TEXT,available_at INTEGER NOT NULL,lease_until INTEGER,token INTEGER NOT NULL DEFAULT 0,attempts INTEGER NOT NULL DEFAULT 0,provenance TEXT,finished_at INTEGER,PRIMARY KEY(store,thread,turn),FOREIGN KEY(store,thread,turn) REFERENCES runs(store,thread,turn));
+            CREATE TABLE IF NOT EXISTS candidates(id TEXT PRIMARY KEY,store TEXT,thread TEXT,turn TEXT,project TEXT NOT NULL,state TEXT NOT NULL,candidate TEXT NOT NULL,created_at INTEGER NOT NULL,FOREIGN KEY(store,thread,turn) REFERENCES extraction_jobs(store,thread,turn));
             CREATE TABLE IF NOT EXISTS exclusions(store TEXT, thread TEXT, turn TEXT, reason TEXT NOT NULL, PRIMARY KEY(store,thread,turn));
             CREATE TABLE IF NOT EXISTS runs(store TEXT, thread TEXT, turn TEXT, project TEXT NOT NULL REFERENCES projects(id), cwd TEXT NOT NULL,
                 state TEXT NOT NULL DEFAULT 'queued', outcome TEXT, reason TEXT, evidence TEXT, available_at INTEGER NOT NULL,

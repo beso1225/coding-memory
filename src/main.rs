@@ -1,6 +1,13 @@
 use anyhow::{Result, ensure};
 use clap::{Parser, Subcommand};
-use coding_memory::{codex::Client, domain::RunKey, evidence, ingestion, state::State};
+use coding_memory::{
+    codex::Client,
+    domain::RunKey,
+    evidence, extraction_worker,
+    generation::{self, CodexExec},
+    ingestion,
+    state::State,
+};
 use coding_memory::{
     mcp,
     search::{Scope, Search},
@@ -31,6 +38,46 @@ mod tests {
 }
 #[derive(Subcommand)]
 enum Commands {
+    /// Prepare an engine-owned Codex home; login remains an explicit human operation.
+    GenerationSetup,
+    /// Internal PreToolUse hook. Always exits with a deny status.
+    #[command(hide = true)]
+    GenerationDenyTool {
+        #[arg(long)]
+        marker_dir: PathBuf,
+    },
+    ExternalPolicy {
+        #[arg(long)]
+        project_id: String,
+        #[arg(value_enum)]
+        decision: ExternalDecision,
+    },
+    Extract {
+        #[arg(long)]
+        project_id: String,
+        #[arg(long, default_value = "codex")]
+        codex_binary: PathBuf,
+        #[arg(long, default_value = "gpt-6.1-sol")]
+        model: String,
+        #[arg(long, default_value_t = 300)]
+        timeout_seconds: u64,
+        /// Synthetic validation only; must be a loopback address.
+        #[arg(long, hide = true)]
+        loopback: Option<std::net::SocketAddr>,
+    },
+    ExtractionStatus {
+        #[arg(long)]
+        project_id: String,
+    },
+    Candidates {
+        #[arg(long)]
+        project_id: String,
+    },
+    ExtractionRetry {
+        store: String,
+        thread: String,
+        turn: String,
+    },
     IndexRebuild {
         #[arg(long)]
         vault: PathBuf,
@@ -89,6 +136,11 @@ enum Commands {
         digest: String,
     },
 }
+#[derive(Clone, clap::ValueEnum)]
+enum ExternalDecision {
+    Allow,
+    Deny,
+}
 #[derive(clap::Args)]
 struct Runtime {
     #[arg(long)]
@@ -101,9 +153,81 @@ struct Runtime {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Commands::GenerationDenyTool { marker_dir } = &cli.command {
+        let mut bytes = Vec::new();
+        // Deny even when decoding or durable marker creation fails. No database opening.
+        let _ = io::stdin()
+            .take(65537)
+            .read_to_end(&mut bytes)
+            .and_then(|_| generation::deny_tool(marker_dir, &bytes).map_err(io::Error::other));
+        eprintln!("Tool use is disabled for memory extraction.");
+        std::process::exit(2);
+    }
     let root = evidence::private_directory(&cli.state_dir)?;
     let mut state = State::open(&root.join("state.sqlite"))?;
     match cli.command {
+        Commands::GenerationSetup => {
+            let backend = CodexExec {
+                root: root.clone(),
+                binary: "codex".into(),
+                guard_binary: std::env::current_exe()?,
+                model: "gpt-6.1-sol".into(),
+                timeout: std::time::Duration::from_secs(300),
+                loopback: None,
+            };
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &serde_json::json!({"codex_home":backend.prepare()?,"login":"Independent login required; existing credentials are never copied."})
+                )?
+            );
+        }
+        Commands::ExternalPolicy {
+            project_id,
+            decision,
+        } => state.set_external_policy(&project_id, matches!(decision, ExternalDecision::Allow))?,
+        Commands::ExtractionStatus { project_id } => println!(
+            "{}",
+            serde_json::to_string_pretty(&state.extraction_status(&project_id)?)?
+        ),
+        Commands::Candidates { project_id } => println!(
+            "{}",
+            serde_json::to_string_pretty(&state.candidates(&project_id)?)?
+        ),
+        Commands::ExtractionRetry {
+            store,
+            thread,
+            turn,
+        } => state.retry_extraction(
+            &RunKey {
+                store,
+                thread,
+                turn,
+            },
+            ingestion::now(),
+        )?,
+        Commands::Extract {
+            project_id,
+            codex_binary,
+            model,
+            timeout_seconds,
+            loopback,
+        } => {
+            let backend = CodexExec {
+                root: root.clone(),
+                binary: codex_binary,
+                guard_binary: std::env::current_exe()?,
+                model,
+                timeout: std::time::Duration::from_secs(timeout_seconds),
+                loopback,
+            };
+            state.enqueue_extractions(&project_id, ingestion::now())?;
+            while extraction_worker::extract_one(&mut state, &root, &project_id, &backend).await? {}
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&state.extraction_status(&project_id)?)?
+            );
+        }
         Commands::IndexRebuild { vault } => println!(
             "{}",
             serde_json::to_string_pretty(&Search::new(&root, &vault)?.rebuild()?)?

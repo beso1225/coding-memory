@@ -6,7 +6,9 @@ consolidation proposals, and exposes stored memories through MCP.
 
 The Rust CLI implements project registration, durable run ingestion, bounded
 Codex history capture, immutable local evidence, scoped FTS retrieval, and read-only
-MCP tools. Extraction, vault updates, and login-worker operation are subsequent work.
+MCP tools, and evidence-grounded candidate extraction with independently
+authenticated Codex execution. Reviewed vault updates and login-worker operation
+are subsequent work.
 
 ## Development
 
@@ -33,6 +35,8 @@ scope of the scaffold.
   source boundaries, and isolated runtime validation.
 - [Scoped retrieval](docs/retrieval.md): Markdown schema, index rebuilding,
   scoped search/read, MCP setup, and runtime validation.
+- [Evidence-grounded extraction](docs/extraction.md): candidate staging, external
+  transmission policy, independent login, retry handling, and execution limits.
 - [Design](docs/design.md): agreed scope, data model, component contracts, and
   persistence behavior.
 - [Runtime and OSS research](docs/runtime-research.md): inspected revisions,

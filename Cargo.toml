@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
+libc = "0.2.190"
 rmcp = { version = "3.5.1", default-features = false, features = ["server", "macros", "transport-io"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
