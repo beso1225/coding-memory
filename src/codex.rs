@@ -40,25 +40,10 @@ pub struct Client {
 }
 impl Client {
     pub async fn open(binary: &Path, home: &Path, cwd: &Path) -> Result<Self> {
-        let version = timeout(
-            Duration::from_secs(5),
-            Command::new(binary)
-                .arg("--version")
-                .kill_on_drop(true)
-                .output(),
-        )
-        .await??;
-        ensure!(
-            version.status.success() && version.stdout.len() <= 1024,
-            "Cannot inspect Codex reader version"
-        );
-        let text = std::str::from_utf8(&version.stdout)?;
-        ensure!(
-            text.trim()
-                .strip_prefix("codex-cli ")
-                .is_some_and(supported),
-            "Unsupported Codex reader executable"
-        );
+        let version = crate::generation::version(binary, home)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e.reason()))?;
+        ensure!(supported(&version), "Unsupported Codex reader executable");
         let mut child = Command::new(binary)
             .args([
                 "-c",

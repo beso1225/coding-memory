@@ -28,8 +28,9 @@ excluded before generation starts. Login is an explicit human operation. The
 Engine never reads or copies regular Codex credentials, requires its own regular,
 nonsymlinked `auth.json`, and removes inherited API-key overrides for generation.
 Keep credentials private and out of Git. Refresh/expiry is an operational concern,
-not a reason to borrow another runtime's credentials. Actual authenticated
-generation has not been retested for this implementation.
+not a reason to borrow another runtime's credentials. The initial
+[quality evaluation](quality-evaluation.md) exercised authenticated generation
+with synthetic evidence and an independently logged-in evaluation home.
 
 External transmission defaults to denied per project. The gate precedes Backend
 invocation, home preparation, and authentication checks. Allowing transmission
@@ -38,8 +39,8 @@ after an in-flight request completes; it cannot undo a request already sent.
 There is no external fallback.
 
 `extract` enqueues completed captured runs once and drains currently eligible
-jobs. Deferred retries need a later invocation; scheduling and automatic startup
-belong to Issue #7. `extraction-retry STORE THREAD TURN` explicitly requeues a held
+jobs. Deferred retries need a later invocation or the [background worker](worker.md).
+`extraction-retry STORE THREAD TURN` explicitly requeues a held
 or exhausted job. Inspect and fix its reason first.
 
 ## Candidate and persistence contracts

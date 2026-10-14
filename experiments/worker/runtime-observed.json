@@ -1,0 +1,14 @@
+{
+  "runtime_version": "codex-cli 0.162.1",
+  "first_cycle": {
+    "capture_attempts": 1,
+    "extraction_attempts": 1,
+    "consolidation_batches": 1,
+    "interrupted": false,
+    "failures": []
+  },
+  "restart_deduplicated": true,
+  "duplicate_worker_rejected": true,
+  "sigterm_released_ownership": true,
+  "launchd_bootstrap_passed": true
+}

@@ -85,6 +85,9 @@ async fn stdio_client_negotiates_and_reads_only_scoped_authoritative_memory() ->
             2 => {
                 let tools = value["result"]["tools"].as_array().unwrap();
                 assert_eq!(tools.len(), 2);
+                let search = tools.iter().find(|t| t["name"] == "memory_search").unwrap();
+                assert_eq!(search["inputSchema"]["properties"]["limit"]["minimum"], 1);
+                assert_eq!(search["inputSchema"]["properties"]["limit"]["maximum"], 10);
                 assert!(
                     tools
                         .iter()
