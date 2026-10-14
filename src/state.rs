@@ -48,6 +48,10 @@ impl State {
             CREATE TABLE IF NOT EXISTS project_policy(project TEXT PRIMARY KEY REFERENCES projects(id), allow_external INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS extraction_jobs(store TEXT,thread TEXT,turn TEXT,project TEXT NOT NULL REFERENCES projects(id),evidence TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'queued',reason TEXT,available_at INTEGER NOT NULL,lease_until INTEGER,token INTEGER NOT NULL DEFAULT 0,attempts INTEGER NOT NULL DEFAULT 0,provenance TEXT,finished_at INTEGER,PRIMARY KEY(store,thread,turn),FOREIGN KEY(store,thread,turn) REFERENCES runs(store,thread,turn));
             CREATE TABLE IF NOT EXISTS candidates(id TEXT PRIMARY KEY,store TEXT,thread TEXT,turn TEXT,project TEXT NOT NULL,state TEXT NOT NULL,candidate TEXT NOT NULL,created_at INTEGER NOT NULL,FOREIGN KEY(store,thread,turn) REFERENCES extraction_jobs(store,thread,turn));
+            CREATE TABLE IF NOT EXISTS evidence_cleanup(digest TEXT PRIMARY KEY,deleted_at INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS consolidation_jobs(id INTEGER PRIMARY KEY AUTOINCREMENT,project TEXT NOT NULL REFERENCES projects(id),state TEXT NOT NULL,reason TEXT,created_at INTEGER NOT NULL,lease_until INTEGER NOT NULL,vault TEXT,provenance TEXT,consumed TEXT);
+            CREATE TABLE IF NOT EXISTS batch_candidates(batch INTEGER REFERENCES consolidation_jobs(id),candidate TEXT REFERENCES candidates(id),PRIMARY KEY(batch,candidate));
+            CREATE TABLE IF NOT EXISTS vault_changes(batch INTEGER REFERENCES consolidation_jobs(id),note_id TEXT NOT NULL,path TEXT NOT NULL,before_hash TEXT,after_hash TEXT NOT NULL,content TEXT NOT NULL,applied INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(batch,note_id));
             CREATE TABLE IF NOT EXISTS exclusions(store TEXT, thread TEXT, turn TEXT, reason TEXT NOT NULL, PRIMARY KEY(store,thread,turn));
             CREATE TABLE IF NOT EXISTS runs(store TEXT, thread TEXT, turn TEXT, project TEXT NOT NULL REFERENCES projects(id), cwd TEXT NOT NULL,
                 state TEXT NOT NULL DEFAULT 'queued', outcome TEXT, reason TEXT, evidence TEXT, available_at INTEGER NOT NULL,

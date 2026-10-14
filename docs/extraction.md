@@ -1,9 +1,10 @@
 # Evidence-grounded extraction
 
 Issue #4 implements foreground extraction from immutable captured evidence into
-SQLite candidates. It does not publish Markdown. A `ready` candidate has
+SQLite candidates. Extraction does not publish Markdown. A `ready` candidate has
 structurally eligible evidence; it is not semantically reviewed or exposed through
-MCP. Separate review, consolidation, and Vault application belong to Issue #5.
+MCP. [Consolidation](consolidation.md) implements the subsequent independent
+review and recoverable Vault application from Issue #5.
 
 ## Authentication and commands
 

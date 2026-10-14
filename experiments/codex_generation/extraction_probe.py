@@ -12,6 +12,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--engine", type=Path, required=True)
     parser.add_argument("--codex", default=shutil.which("codex"))
+    parser.add_argument("--consolidate", action="store_true")
     args = parser.parse_args()
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "codex_capture"))
     import runtime as rt
@@ -64,6 +65,24 @@ def main():
             results.append({"case": case, "state": extracted["state"], "reason": extracted["reason"]})
         candidates = json.loads(run("candidates", "--project-id", project))
         assert len(candidates) == 1 and candidates[0]["candidate"]["conditions"] == ["This synthetic project uses SQLite jobs"], candidates
+        if args.consolidate:
+            vault = rt.ROOT / "published-vault"
+            vault.mkdir()
+            c = candidates[0]["candidate"]
+            proposal = {"schema_version": 1, "role": "consolidation", "operations": [{"id": "op1", "action": "create", "candidates": [candidates[0]["id"]], "target": None, "draft": {"title": c["title"], "summary": c["claim"], "scope": c["scope"], "conditions": c["conditions"], "verification": c["verification"], "evidence": c["evidence"], "related": [], "body": c["claim"]}, "dependencies": [], "rationale": "One supported synthetic constraint"}]}
+            review = {"schema_version": 1, "role": "review", "decisions": [{"operation": "op1", "decision": "accept", "rationale": "Explicit user instruction with applicability preserved"}]}
+            rt.PLANS.put({"text": json.dumps(proposal)})
+            rt.PLANS.put({"text": json.dumps(review)})
+            result = json.loads(run("consolidate", "--vault", str(vault), "--project-id", project, "--force", "--codex-binary", args.codex, "--model", "capture-consolidation", "--review-model", "capture-review", "--loopback", f"127.0.0.1:{rt.SERVER.server_port}"))
+            status = json.loads(run("consolidation-status"))
+            assert status[0]["id"] == result["batch"] and status[0]["state"] == "applied", status
+            hits = json.loads(run("search", "--vault", str(vault), "--project-id", project, "leases"))["results"]
+            assert len(hits) == 1, hits
+            note = json.loads(run("read", "--vault", str(vault), "--project-id", project, hits[0]["metadata"]["id"]))
+            assert note["metadata"]["review"]["model"] == "capture-review", note
+            assert note["metadata"]["conditions"] == c["conditions"], note
+            assert note["evidence_available"] == [True], note
+            results.append({"case": "independent_review_and_publication", "state": status[0]["state"], "retrieved": True})
         home = state / "generation/codex-home"
         assert not (home / "auth.json").exists(), "Synthetic probe created credentials"
         owned = subprocess.run(base + ["reconcile", "--codex-home", str(home), "--codex-binary", args.codex, "--project", str(rt.WORK)], check=True, capture_output=True, text=True).stdout

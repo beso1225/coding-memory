@@ -318,6 +318,29 @@ impl Search {
         }
         Ok(response)
     }
+    pub fn retained_evidence(&self) -> Result<HashSet<String>> {
+        let db = self.index()?;
+        let mut query = db.prepare("SELECT metadata FROM indexed_notes")?;
+        let rows = query
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut refs = HashSet::new();
+        for json in rows {
+            let note: Metadata = serde_json::from_str(&json)?;
+            for r in note.evidence {
+                refs.insert(r.bundle);
+            }
+        }
+        Ok(refs)
+    }
+    pub fn location(&self, id: &str, scope: &Scope) -> Result<String> {
+        self.read(id, scope)?;
+        Ok(self
+            .index()?
+            .query_row("SELECT path FROM indexed_notes WHERE id=?1", [id], |r| {
+                r.get(0)
+            })?)
+    }
     pub fn read(&self, id: &str, scope: &Scope) -> Result<Read> {
         notes::identity(id)?;
         scope.validate()?;
