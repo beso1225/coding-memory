@@ -5,8 +5,8 @@ vault. The engine captures completed runs, extracts reusable knowledge, reviews
 consolidation proposals, and exposes stored memories through MCP.
 
 The Rust CLI implements project registration, durable run ingestion, bounded
-Codex history capture, and immutable local evidence. Extraction, vault updates,
-MCP retrieval, and login-worker operation are subsequent work.
+Codex history capture, immutable local evidence, scoped FTS retrieval, and read-only
+MCP tools. Extraction, vault updates, and login-worker operation are subsequent work.
 
 ## Development
 
@@ -31,6 +31,8 @@ scope of the scaffold.
 - [Development setup](docs/development.md): environment activation and checks.
 - [Durable ingestion](docs/ingestion.md): collection commands, state recovery,
   source boundaries, and isolated runtime validation.
+- [Scoped retrieval](docs/retrieval.md): Markdown schema, index rebuilding,
+  scoped search/read, MCP setup, and runtime validation.
 - [Design](docs/design.md): agreed scope, data model, component contracts, and
   persistence behavior.
 - [Runtime and OSS research](docs/runtime-research.md): inspected revisions,

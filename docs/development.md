@@ -2,9 +2,9 @@
 
 The initial environment targets Apple Silicon macOS (`aarch64-darwin`). It uses
 one Cargo package with library and binary entry points. The initial CLI provides
-durable ingestion and evidence capture; see [ingestion.md](ingestion.md) for
-explicit project registration and operational boundaries. Memory generation and
-retrieval are subsequent stages.
+durable ingestion, evidence capture, and scoped CLI/MCP retrieval; see
+[ingestion.md](ingestion.md) and [retrieval.md](retrieval.md) for operational
+boundaries. Memory generation and publication are subsequent stages.
 
 ## Prerequisites
 
@@ -64,7 +64,8 @@ It is also understood by rustup users. The editor should inherit the development
 shell so it finds the selected toolchain and `RUST_SRC_PATH`.
 
 Cargo.lock pins SQLite (bundled through rusqlite), Serde, Tokio, Clap, SHA-256,
-and error handling, with tempfile for tests. `publish = false` prevents
+error handling, YAML frontmatter parsing, and the official MCP SDK, with tempfile
+for tests. `publish = false` prevents
 accidental crate publication while the project and its license are being defined.
 
 ## Tasks
@@ -129,5 +130,6 @@ development setup.
 
 The setup and ingestion implementation support
 [issue #3](https://github.com/beso1225/coding-memory/issues/3). Capture and generation
-integration gates from #1 and #2 are documented separately; login operation,
-extraction, vault publication, and retrieval remain subsequent issues.
+integration gates from #1 and #2 are documented separately. Scoped retrieval is
+implemented for #6; login operation, extraction, and vault publication remain
+subsequent issues.

@@ -1,6 +1,10 @@
 use anyhow::{Result, ensure};
 use clap::{Parser, Subcommand};
 use coding_memory::{codex::Client, domain::RunKey, evidence, ingestion, state::State};
+use coding_memory::{
+    mcp,
+    search::{Scope, Search},
+};
 use std::{
     io::{self, Read},
     path::PathBuf,
@@ -27,6 +31,40 @@ mod tests {
 }
 #[derive(Subcommand)]
 enum Commands {
+    IndexRebuild {
+        #[arg(long)]
+        vault: PathBuf,
+    },
+    Search {
+        #[arg(long)]
+        vault: PathBuf,
+        #[arg(long)]
+        project_id: String,
+        query: String,
+        #[arg(long, default_value_t = 5)]
+        limit: usize,
+        #[arg(long)]
+        other_project: Vec<String>,
+        #[arg(long)]
+        include_historical: bool,
+    },
+    Read {
+        #[arg(long)]
+        vault: PathBuf,
+        #[arg(long)]
+        project_id: String,
+        id: String,
+        #[arg(long)]
+        other_project: Vec<String>,
+        #[arg(long)]
+        include_historical: bool,
+    },
+    Mcp {
+        #[arg(long)]
+        vault: PathBuf,
+        #[arg(long)]
+        project_id: String,
+    },
     Register(Runtime),
     Reconcile(Runtime),
     Capture(Runtime),
@@ -66,6 +104,49 @@ async fn main() -> Result<()> {
     let root = evidence::private_directory(&cli.state_dir)?;
     let mut state = State::open(&root.join("state.sqlite"))?;
     match cli.command {
+        Commands::IndexRebuild { vault } => println!(
+            "{}",
+            serde_json::to_string_pretty(&Search::new(&root, &vault)?.rebuild()?)?
+        ),
+        Commands::Search {
+            vault,
+            project_id,
+            query,
+            limit,
+            other_project,
+            include_historical,
+        } => println!(
+            "{}",
+            serde_json::to_string_pretty(&Search::new(&root, &vault)?.search(
+                &query,
+                &Scope {
+                    project_id,
+                    other_projects: other_project,
+                    include_historical
+                },
+                limit
+            )?)?
+        ),
+        Commands::Read {
+            vault,
+            project_id,
+            id,
+            other_project,
+            include_historical,
+        } => println!(
+            "{}",
+            serde_json::to_string_pretty(&Search::new(&root, &vault)?.read(
+                &id,
+                &Scope {
+                    project_id,
+                    other_projects: other_project,
+                    include_historical
+                }
+            )?)?
+        ),
+        Commands::Mcp { vault, project_id } => {
+            mcp::serve(Search::new(&root, &vault)?, project_id).await?
+        }
         Commands::Status => println!("{}", serde_json::to_string_pretty(&state.status()?)?),
         Commands::Evidence { digest } => println!(
             "{}",
