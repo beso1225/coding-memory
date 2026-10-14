@@ -102,7 +102,10 @@ impl Metadata {
         for reference in &self.evidence {
             ensure!(
                 reference.bundle.len() == 64
-                    && reference.bundle.bytes().all(|b| b.is_ascii_hexdigit()),
+                    && reference
+                        .bundle
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
                 "Invalid evidence digest"
             );
             text(&reference.item, 256)?;

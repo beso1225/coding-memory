@@ -108,17 +108,18 @@ impl Search {
         );
         Ok(db)
     }
-    fn pending(&self, id: &str) -> Result<bool> {
+    fn state(&self) -> Result<Connection> {
         let db = Connection::open_with_flags(
             self.root.join("state.sqlite"),
             OpenFlags::SQLITE_OPEN_READ_ONLY,
         )?;
         db.busy_timeout(Duration::from_secs(5))?;
-        Ok(db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM pending_notes WHERE note_id=?1)",
-            [id],
-            |r| r.get(0),
-        )?)
+        Ok(db)
+    }
+    fn pending(db: &Connection, id: &str) -> Result<bool> {
+        Ok(db
+            .prepare_cached("SELECT EXISTS(SELECT 1 FROM pending_notes WHERE note_id=?1)")?
+            .query_row([id], |r| r.get(0))?)
     }
     fn file(&self, relative: &str) -> Result<String> {
         let path = self.vault.join(relative);
@@ -182,6 +183,9 @@ impl Search {
                 Ok((note, revision)) => {
                     *count.entry(note.metadata.id.clone()).or_insert(0) += 1;
                     parsed.push((relative, note, revision));
+                }
+                Err(error) if error.downcast_ref::<std::io::Error>().is_some() => {
+                    return Err(error);
                 }
                 Err(error) => report.invalid.push(InvalidNote {
                     path: relative,
@@ -256,6 +260,7 @@ impl Search {
         ensure!((1..=10).contains(&limit), "Result limit must be 1..10");
         let query = literal_query(query)?;
         let db = self.index()?;
+        let state = self.state()?;
         let mut projects = vec![scope.project_id.clone()];
         projects.extend(scope.other_projects.iter().cloned());
         let placeholders = (0..projects.len())
@@ -286,7 +291,7 @@ impl Search {
             let revision: String = row.get(1)?;
             let meta: String = row.get(2)?;
             let metadata: Metadata = serde_json::from_str(&meta)?;
-            if self.pending(&metadata.id)?
+            if Self::pending(&state, &metadata.id)?
                 || self
                     .file(&path)
                     .map_or(true, |s| hash(s.as_bytes()) != revision)
@@ -316,7 +321,11 @@ impl Search {
     pub fn read(&self, id: &str, scope: &Scope) -> Result<Read> {
         notes::identity(id)?;
         scope.validate()?;
-        ensure!(!self.pending(id)?, "Note pending publication/recovery");
+        let state = self.state()?;
+        ensure!(
+            !Self::pending(&state, id)?,
+            "Note pending publication/recovery"
+        );
         let db = self.index()?;
         let (path, revision): (String, String) = db.query_row(
             "SELECT path,revision FROM indexed_notes WHERE id=?1",
@@ -333,7 +342,10 @@ impl Search {
             note.metadata.id == id && scope.permits(&note.metadata),
             "Note outside requested scope"
         );
-        ensure!(!self.pending(id)?, "Note pending publication/recovery");
+        ensure!(
+            !Self::pending(&state, id)?,
+            "Note pending publication/recovery"
+        );
         let evidence_available = note
             .metadata
             .evidence

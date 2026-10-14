@@ -178,3 +178,69 @@ fn local_evidence_availability_checks_hash_and_native_item_locator() -> Result<(
     );
     Ok(())
 }
+
+#[test]
+fn uppercase_evidence_hashes_are_not_accepted_as_canonical_locators() {
+    let source = include_str!("fixtures/vault/queue.md");
+    assert!(notes::parse(&source.replace(&"a".repeat(64), &"A".repeat(64))).is_err());
+}
+
+#[test]
+fn filesystem_read_failures_preserve_existing_index_but_bad_utf8_is_reported() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tempdir()?;
+    let vault = d.path().join("vault");
+    fs::create_dir(&vault)?;
+    let path = vault.join("queue.md");
+    fs::write(&path, include_str!("fixtures/vault/queue.md"))?;
+    let search = Search::new(d.path(), &vault)?;
+    search.rebuild()?;
+    let permissions = fs::metadata(&path)?.permissions();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o0))?;
+    let rebuild = search.rebuild();
+    fs::set_permissions(&path, permissions)?;
+    assert!(
+        rebuild.is_err(),
+        "Per-file read failures must abort rebuilds"
+    );
+    assert_eq!(
+        search
+            .read("queue-leases", &Scope::new("alpha"))?
+            .metadata
+            .id,
+        "queue-leases"
+    );
+    fs::write(vault.join("invalid.md"), [0xff])?;
+    let report = search.rebuild()?;
+    assert_eq!(report.indexed, 1);
+    assert_eq!(report.invalid.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn a_large_pending_batch_does_not_hide_unaffected_search_results() -> Result<()> {
+    let d = tempdir()?;
+    let vault = d.path().join("vault");
+    fs::create_dir(&vault)?;
+    let source = include_str!("fixtures/vault/queue.md");
+    let search = Search::new(d.path(), &vault)?;
+    let mut state = State::open(&d.path().join("state.sqlite"))?;
+    for n in 0..200 {
+        let id = format!("pending-{n:03}");
+        fs::write(
+            vault.join(format!("{id}.md")),
+            source.replace("queue-leases", &id),
+        )?;
+        state.mark_note_pending(&id, "applying")?;
+    }
+    fs::write(
+        vault.join("ready.md"),
+        source.replace("queue-leases", "zz-ready"),
+    )?;
+    search.rebuild()?;
+    let response = search.search("sync_all", &Scope::new("alpha"), 5)?;
+    assert_eq!(response.results.len(), 1);
+    assert_eq!(response.results[0].metadata.id, "zz-ready");
+    assert_eq!(response.omitted_unavailable, 200);
+    Ok(())
+}

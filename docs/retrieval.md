@@ -20,7 +20,7 @@ up to 128 bytes. Registered project IDs come from Issue #3's Git common-director
 identity; short identifiers in tests are synthetic.
 
 An active note has no successor. A superseded note names a distinct successor and
-requires deliberate historical retrieval. Evidence locators pair a SHA-256 bundle
+requires deliberate historical retrieval. Evidence locators pair a canonical lowercase SHA-256 bundle
 digest with a native item identity. Verification is `observed`, `user_stated`, or
 `unverified`; review acceptance does not promote that state. Review records carry
 an accepted decision, backend/model identity, prompt version, and review timestamp.
@@ -59,7 +59,7 @@ search limit is five, with a maximum of ten.
 `index-rebuild` returns indexed count and invalid-note diagnostics. It scans
 non-hidden Markdown files recursively and skips symlinks, including directory
 symlinks. There is a 10,000-entry scan bound and a 64 MiB aggregate readable-note
-bound. Fatal resource/directory errors leave the old index intact; malformed notes
+bound. Fatal resource/directory and per-file I/O errors leave the old index intact; malformed notes
 are reported and omitted from the new index. Renamed notes retain their identity
 once rebuilt. New or changed content requires explicit rebuild/refresh at this stage.
 
@@ -69,7 +69,8 @@ once rebuilt. New or changed content requires explicit rebuild/refresh at this s
 rebuildable FTS index and its note/vault binding, so index rebuilding cannot delete
 jobs, exclusions, or publication barriers. Rebuilds replace derived rows in one
 short SQLite transaction. Readers use WAL and read-only connections; each request
-opens a current view, rather than keeping a stale connection after rebuild.
+opens a current view, rather than keeping a stale connection after rebuild. Pending
+checks reuse one state connection and a cached statement throughout each request.
 
 The index uses [SQLite FTS5](https://www.sqlite.org/fts5.html), `unicode61` with
 `remove_diacritics 2`, and BM25 with extra title/summary weight. Lower BM25 scores
