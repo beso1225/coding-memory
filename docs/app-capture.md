@@ -16,8 +16,10 @@ are held. Admission allows an attempt, not a promise that every future format wo
 The selected history must still satisfy paging, native identities, terminal status,
 timestamps and unambiguous per-turn project attribution. Those checks remain strict.
 
-An admitted reader may capture while its verification is pending or stale. Each
-new evidence bundle records `capture_runtime`: reader executable SHA-256, version,
+An admitted reader may capture while its verification is pending or stale. Before
+saving a bundle, publication rechecks validation under a SQLite write transaction.
+A failure committed during history reads holds the run without saving evidence;
+a new pass is reflected in the saved audit. Each new evidence bundle records `capture_runtime`: reader executable SHA-256, version,
 fixture hash, `provisional`/`verified` status and the last check time when available.
 Existing bundles without this optional field remain readable. The audit describes
 reader compatibility at capture time; it does not certify knowledge correctness or
@@ -65,9 +67,11 @@ coding-memory --state-dir /absolute/engine-state runtime-verify \
 
 The manual command processes eligible queued checks in this state directory and
 requires a fresh passed result for the selected binary. An active worker lease
-cannot be overridden by `--retry`; an expired lease can be reclaimed explicitly. Moving an identical binary invalidates its old in-flight
-claim and queues verification at the new path. Late results from the old path
-cannot change the recorded result.
+cannot be overridden by `--retry`; an expired lease can be reclaimed explicitly.
+Observing an identical copy at another path preserves a valid in-flight claim,
+including both passes and actual fixture failures. If the claimed locator becomes
+unavailable and a new locator has been observed, verification requeues at the new
+path without replacing its prior result; the old token is then invalidated.
 `worker-status` also includes bounded `runtime_checks` metadata. Executable and
 fixture hashes identify local results; a wrapper's hash does not fingerprint its
 interpreter or all dependencies, which periodic rechecks help cover.

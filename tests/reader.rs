@@ -24,7 +24,7 @@ fn repository(path: &Path) {
 fn fake_server(root: &Path) -> std::path::PathBuf {
     let path = root.join("reader.py");
     fs::write(&path,r#"#!/usr/bin/env python3
-import json, os, sys
+import json, os, sys, sqlite3, time
 from pathlib import Path
 if "--version" in sys.argv:
     (Path(os.environ['CODEX_HOME'])/'version-environment.json').write_text(json.dumps({
@@ -39,6 +39,12 @@ for line in sys.stdin:
     fixture=json.loads((Path(os.environ['CODEX_HOME'])/'fake.json').read_text())
     method=request['method']
     params=request['params']
+    if method=='thread/items/list' and fixture.get('runtime_change'):
+        change=fixture['runtime_change']
+        db=sqlite3.connect(change['database'])
+        db.execute("UPDATE runtime_checks SET state='complete',last_result=?,checked_at=?",(change['result'],int(time.time())))
+        db.commit()
+        db.close()
     if fixture.get('unsupported_method') == method:
         print(json.dumps({'id':request['id'],'error':{'code':-32601,'message':'synthetic'}}),flush=True)
         continue
@@ -362,5 +368,51 @@ fn diagnostic_version_probe_clears_inherited_credentials() -> Result<()> {
         serde_json::from_slice(&fs::read(home.join("version-environment.json"))?)?;
     assert_eq!(recorded["credentials_present"], false);
     assert_eq!(recorded["home_is_isolated"], true);
+    Ok(())
+}
+
+#[tokio::test]
+async fn capture_publication_rechecks_midflight_runtime_result() -> Result<()> {
+    for result in ["failed", "passed"] {
+        let d = tempdir()?;
+        let repo = d.path().join("repo");
+        repository(&repo);
+        let home = d.path().join("home");
+        fs::create_dir(&home)?;
+        let root = evidence::private_directory(&d.path().join("engine"))?;
+        let source = home.join("rollout.jsonl");
+        fs::write(
+            &source,
+            format!(
+                "{}\n",
+                json!({"type":"turn_context","payload":{"turn_id":"turn","cwd":repo}})
+            ),
+        )?;
+        let fixture = json!({"threads":[{"id":"thread","cliVersion":"0.162.1","path":source}],"turns":[{"id":"turn","startedAt":11,"completedAt":12,"status":"completed"}],"items":[{"turnId":"turn","item":{"id":"u","type":"userMessage","content":[{"type":"text","text":"synthetic"}]}}],"runtime_change":{"database":root.join("state.sqlite"),"result":result}});
+        fs::write(home.join("fake.json"), serde_json::to_vec(&fixture)?)?;
+        let mut state = State::open(&root.join("state.sqlite"))?;
+        let project = project::resolve(&repo)?;
+        state.register_project(&project.id, project.repository.to_str().unwrap(), 1)?;
+        let key = RunKey {
+            store: ingestion::store_id(&home)?,
+            thread: "thread".into(),
+            turn: "turn".into(),
+        };
+        state.enqueue(&key, &project.id, repo.to_str().unwrap(), 2)?;
+        let mut client = Client::open(&fake_server(d.path()), &home, &repo).await?;
+        assert!(ingestion::capture_one(&mut state, &mut client, &home, &root).await?);
+        let row = &state.status()?[0];
+        if result == "failed" {
+            assert_eq!(row.state, "held");
+            assert_eq!(row.reason.as_deref(), Some("runtime_validation_failed"));
+            assert!(row.evidence.is_none());
+            assert!(!root.join("evidence").exists());
+        } else {
+            assert_eq!(row.state, "ready");
+            let bundle = evidence::load(&root, row.evidence.as_deref().unwrap())?;
+            assert_eq!(bundle.capture_runtime.unwrap().validation, "verified");
+        }
+        client.close().await?;
+    }
     Ok(())
 }

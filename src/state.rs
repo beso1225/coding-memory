@@ -202,7 +202,22 @@ impl State {
         now: i64,
         available: i64,
     ) -> Result<()> {
-        let n=self.db.execute("UPDATE runs SET state=?4,reason=?5,evidence=?6,outcome=?7,lease_until=NULL,available_at=?8 WHERE store=?1 AND thread=?2 AND turn=?3 AND state='capturing' AND token=?9 AND lease_until>?10 AND NOT EXISTS(SELECT 1 FROM owned_stores WHERE id=?1) AND NOT EXISTS(SELECT 1 FROM exclusions WHERE store=?1 AND thread=?2 AND turn=?3)",params![c.key.store,c.key.thread,c.key.turn,state,reason,evidence,outcome,available,c.token,now])?;
+        Self::transition_on(
+            &self.db, c, state, reason, evidence, outcome, now, available,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn transition_on(
+        db: &Connection,
+        c: &Claim,
+        state: &str,
+        reason: Option<&str>,
+        evidence: Option<&str>,
+        outcome: Option<&str>,
+        now: i64,
+        available: i64,
+    ) -> Result<()> {
+        let n=db.execute("UPDATE runs SET state=?4,reason=?5,evidence=?6,outcome=?7,lease_until=NULL,available_at=?8 WHERE store=?1 AND thread=?2 AND turn=?3 AND state='capturing' AND token=?9 AND lease_until>?10 AND NOT EXISTS(SELECT 1 FROM owned_stores WHERE id=?1) AND NOT EXISTS(SELECT 1 FROM exclusions WHERE store=?1 AND thread=?2 AND turn=?3)",params![c.key.store,c.key.thread,c.key.turn,state,reason,evidence,outcome,available,c.token,now])?;
         ensure!(n == 1, "Stale or expired capture claim");
         Ok(())
     }

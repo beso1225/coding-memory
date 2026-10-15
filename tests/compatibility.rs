@@ -166,7 +166,10 @@ fn relocation_fences_inflight_results_without_erasing_known_failure() -> anyhow:
         observer.observe_runtime(&identity, 14)?.validation,
         "failed"
     );
-    let replacement = observer.claim_runtime_check(14)?.unwrap();
+    assert!(observer.claim_runtime_check(14)?.is_none());
+    // Once the verifier finds that its old locator is gone, retry at the new one.
+    assert!(verifier.requeue_runtime_locator(&inflight, 15)?);
+    let replacement = observer.claim_runtime_check(15)?.unwrap();
     assert_eq!(replacement.binary, identity.binary.to_str().unwrap());
     assert!(replacement.token > inflight.token);
     assert!(verifier.finish_runtime_check(&inflight, false, 15).is_err());
@@ -203,5 +206,40 @@ fn explicit_retry_reclaims_only_expired_verification_leases() -> anyhow::Result<
         state.observe_runtime(&identity, 193)?.validation,
         "verified"
     );
+    Ok(())
+}
+
+#[test]
+fn duplicate_binary_paths_preserve_inflight_passes_and_failures() -> anyhow::Result<()> {
+    use coding_memory::{compatibility::Identity, state::State};
+    for passed in [true, false] {
+        let d = tempfile::tempdir()?;
+        let mut state = State::open(&d.path().join("state.sqlite"))?;
+        let mut identity = Identity {
+            binary: d.path().join("first"),
+            digest: "9".repeat(64),
+            version: "0.162.1".into(),
+            stamp: None,
+        };
+        std::fs::write(&identity.binary, b"same executable")?;
+        let second = d.path().join("second");
+        std::fs::copy(&identity.binary, &second)?;
+        state.observe_runtime(&identity, 10)?;
+        let job = state.claim_runtime_check(10)?.unwrap();
+        for now in 11..20 {
+            identity.binary = if now % 2 == 0 {
+                d.path().join("first")
+            } else {
+                second.clone()
+            };
+            state.observe_runtime(&identity, now)?;
+            assert!(state.claim_runtime_check(now)?.is_none());
+        }
+        state.finish_runtime_check(&job, passed, 20)?;
+        assert_eq!(
+            state.observe_runtime(&identity, 21)?.validation,
+            if passed { "verified" } else { "failed" }
+        );
+    }
     Ok(())
 }

@@ -176,49 +176,52 @@ pub struct Job {
     pub version: String,
     pub token: i64,
 }
+pub(crate) fn observe_runtime_on(
+    db: &rusqlite::Connection,
+    identity: &Identity,
+    now: i64,
+) -> Result<RuntimeAudit> {
+    let binary = identity
+        .binary
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("Non-UTF8 binary"))?;
+    // The row remembers the latest locator for future claims. An existing job
+    // retains its own locator and token; another identical copy must not fence it.
+    db.execute("INSERT INTO runtime_checks(digest,fixture,binary,version,state,available_at) VALUES(?1,?2,?3,?4,'queued',?5) ON CONFLICT(digest,fixture) DO UPDATE SET binary=excluded.binary,version=excluded.version",params![identity.digest,fixture_id(),binary,identity.version,now])?;
+    db.execute("UPDATE runtime_checks SET state='queued',available_at=?3 WHERE digest=?1 AND fixture=?2 AND state='complete' AND (checked_at>?3 OR checked_at<=?4)",params![identity.digest,fixture_id(),now,now.saturating_sub(INTERVAL)])?;
+    let (result, checked): (Option<String>, Option<i64>) = db.query_row(
+        "SELECT last_result,checked_at FROM runtime_checks WHERE digest=?1 AND fixture=?2",
+        params![identity.digest, fixture_id()],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let latest: Option<String> = db.query_row("SELECT last_result FROM runtime_checks WHERE digest=?1 AND last_result IS NOT NULL ORDER BY checked_at DESC,(fixture=?2) DESC LIMIT 1",params![identity.digest,fixture_id()],|r|r.get(0)).optional()?;
+    let status = if result.as_deref() == Some("failed")
+        || (result.is_none() && latest.as_deref() == Some("failed"))
+    {
+        "failed"
+    } else if result.as_deref() == Some("passed")
+        && checked.is_some_and(|t| t <= now && now - t < INTERVAL)
+    {
+        "verified"
+    } else {
+        "provisional"
+    };
+    Ok(RuntimeAudit {
+        binary_sha256: identity.digest.clone(),
+        reader_version: identity.version.clone(),
+        fixture: fixture_id().into(),
+        validation: status.into(),
+        checked_at: checked,
+    })
+}
 impl State {
     pub fn observe_runtime(&mut self, identity: &Identity, now: i64) -> Result<RuntimeAudit> {
         let tx = self
             .db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let binary = identity
-            .binary
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("Non-UTF8 binary"))?;
-        // Relocation invalidates a verifier's snapshot before publishing the new path.
-        // Keep the last result so a known failure still blocks until a new pass.
-        tx.execute(
-            "UPDATE runtime_checks SET state='queued',token=token+1,lease_until=NULL,available_at=?5
-             WHERE digest=?1 AND fixture=?2 AND state='running' AND (binary!=?3 OR version!=?4)",
-            params![identity.digest, fixture_id(), binary, identity.version, now],
-        )?;
-        tx.execute("INSERT INTO runtime_checks(digest,fixture,binary,version,state,available_at) VALUES(?1,?2,?3,?4,'queued',?5) ON CONFLICT(digest,fixture) DO UPDATE SET binary=excluded.binary,version=excluded.version",params![identity.digest,fixture_id(),binary,identity.version,now])?;
-        tx.execute("UPDATE runtime_checks SET state='queued',available_at=?3 WHERE digest=?1 AND fixture=?2 AND state='complete' AND (checked_at>?3 OR checked_at<=?4)",params![identity.digest,fixture_id(),now,now.saturating_sub(INTERVAL)])?;
-        let (result, checked): (Option<String>, Option<i64>) = tx.query_row(
-            "SELECT last_result,checked_at FROM runtime_checks WHERE digest=?1 AND fixture=?2",
-            params![identity.digest, fixture_id()],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
-        let latest: Option<String> = tx.query_row("SELECT last_result FROM runtime_checks WHERE digest=?1 AND last_result IS NOT NULL ORDER BY checked_at DESC,(fixture=?2) DESC LIMIT 1",params![identity.digest,fixture_id()],|r|r.get(0)).optional()?;
+        let audit = observe_runtime_on(&tx, identity, now)?;
         tx.commit()?;
-        let status = if result.as_deref() == Some("failed")
-            || (result.is_none() && latest.as_deref() == Some("failed"))
-        {
-            "failed"
-        } else if result.as_deref() == Some("passed")
-            && checked.is_some_and(|t| t <= now && now - t < INTERVAL)
-        {
-            "verified"
-        } else {
-            "provisional"
-        };
-        Ok(RuntimeAudit {
-            binary_sha256: identity.digest.clone(),
-            reader_version: identity.version.clone(),
-            fixture: fixture_id().into(),
-            validation: status.into(),
-            checked_at: checked,
-        })
+        Ok(audit)
     }
     pub fn claim_runtime_check(&mut self, now: i64) -> Result<Option<Job>> {
         let tx = self
@@ -235,6 +238,11 @@ impl State {
     pub fn finish_runtime_check(&mut self, job: &Job, passed: bool, now: i64) -> Result<()> {
         ensure!(self.db.execute("UPDATE runtime_checks SET state='complete',last_result=?4,checked_at=?5,lease_until=NULL WHERE digest=?1 AND fixture=?2 AND token=?3 AND state='running' AND lease_until>?5",params![job.digest,job.fixture,job.token,if passed {"passed"}else{"failed"},now])?==1,"Stale verification claim");
         Ok(())
+    }
+    pub fn requeue_runtime_locator(&mut self, job: &Job, now: i64) -> Result<bool> {
+        // An unavailable old locator is retried at the latest observed one. Valid
+        // fixture failures still finish normally, even when copies alternate.
+        Ok(self.db.execute("UPDATE runtime_checks SET state='queued',token=token+1,lease_until=NULL,available_at=?6 WHERE digest=?1 AND fixture=?2 AND token=?3 AND state='running' AND lease_until>?6 AND (binary!=?4 OR version!=?5)", params![job.digest,job.fixture,job.token,job.binary,job.version,now])? == 1)
     }
     pub fn retry_runtime_check(&mut self, digest: &str, now: i64) -> Result<()> {
         ensure!(self.db.execute("UPDATE runtime_checks SET state='queued',token=token+1,lease_until=NULL,available_at=?3 WHERE digest=?1 AND fixture=?2 AND (state!='running' OR lease_until<=?3)",params![digest,fixture_id(),now])?==1,"Unknown or running verification");
@@ -307,17 +315,22 @@ async fn fingerprint_bounded(binary: &Path) -> Result<Fingerprint> {
     })
     .await
 }
-async fn check(job: &Job, root: &Path) -> Result<bool> {
+enum Verification {
+    Passed,
+    Failed,
+    Unavailable,
+}
+async fn check(job: &Job, root: &Path) -> Result<Verification> {
     if job.fixture != fixture_id() {
-        return Ok(false);
+        return Ok(Verification::Failed);
     }
     let Ok(fingerprint) = fingerprint_bounded(Path::new(&job.binary)).await else {
-        return Ok(false);
+        return Ok(Verification::Unavailable);
     };
     if fingerprint.digest != job.digest {
-        return Ok(false);
+        return Ok(Verification::Unavailable);
     }
-    if let Err(error) = crate::runtime_probe::run(
+    let result = crate::runtime_probe::run(
         &Identity {
             binary: job.binary.clone().into(),
             digest: job.digest.clone(),
@@ -326,23 +339,34 @@ async fn check(job: &Job, root: &Path) -> Result<bool> {
         },
         root,
     )
-    .await
-    {
-        eprintln!("Synthetic runtime verification failed: {error}");
-        return Ok(false);
-    }
-    Ok(fingerprint_bounded(Path::new(&job.binary))
+    .await;
+    // Distinguish a moved/replaced locator from an actual fixture failure.
+    if !fingerprint_bounded(Path::new(&job.binary))
         .await
-        .is_ok_and(|d| d.digest == job.digest))
+        .is_ok_and(|d| d.digest == job.digest)
+    {
+        return Ok(Verification::Unavailable);
+    }
+    if let Err(error) = result {
+        eprintln!("Synthetic runtime verification failed: {error}");
+        return Ok(Verification::Failed);
+    }
+    Ok(Verification::Passed)
 }
 async fn finish_check(
     state: &mut State,
     job: &Job,
-    check: impl std::future::Future<Output = Result<bool>>,
-    deadline: std::time::Duration,
+    check: impl std::future::Future<Output = Result<Verification>>,
+    deadline: Duration,
 ) -> Result<()> {
-    let passed = matches!(tokio::time::timeout(deadline, check).await, Ok(Ok(true)));
-    state.finish_runtime_check(job, passed, crate::ingestion::now())
+    let now_result = tokio::time::timeout(deadline, check).await;
+    let now = crate::ingestion::now();
+    match now_result {
+        Ok(Ok(Verification::Passed)) => state.finish_runtime_check(job, true, now),
+        Ok(Ok(Verification::Failed)) => state.finish_runtime_check(job, false, now),
+        _ if state.requeue_runtime_locator(job, now)? => Ok(()),
+        _ => state.finish_runtime_check(job, false, now),
+    }
 }
 pub struct Runner(tokio::task::JoinHandle<()>);
 impl Drop for Runner {

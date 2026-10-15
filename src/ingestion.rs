@@ -187,14 +187,48 @@ pub async fn capture_one(
     let result = codex::capture(client, home, &claim.key, &claim.project).await;
     match result {
         Ok(Capture::Ready(mut bundle)) => {
-            bundle.capture_runtime = Some(audit);
             let epoch = state.project_epoch(&claim.project)?;
             if bundle.started_at <= epoch {
                 state.hold(&claim, "before_enablement_or_unknown_start", now())?;
                 return Ok(true);
             }
-            let digest = evidence::save(root, &bundle)?;
-            state.finish(&claim, &bundle.outcome, Some(&digest), now())?;
+            let tx = state
+                .db
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let published_at = now();
+            let audit = crate::compatibility::observe_runtime_on(&tx, &identity, published_at)?;
+            if audit.validation == "failed" {
+                State::transition_on(
+                    &tx,
+                    &claim,
+                    "held",
+                    Some("runtime_validation_failed"),
+                    None,
+                    None,
+                    published_at,
+                    published_at,
+                )?;
+            } else {
+                bundle.capture_runtime = Some(audit);
+                let digest = evidence::save(root, &bundle)?;
+                let outcome_state = if bundle.outcome == "completed" {
+                    "ready"
+                } else {
+                    "recorded"
+                };
+                let finished_at = now();
+                State::transition_on(
+                    &tx,
+                    &claim,
+                    outcome_state,
+                    None,
+                    Some(&digest),
+                    Some(&bundle.outcome),
+                    finished_at,
+                    finished_at,
+                )?;
+            }
+            tx.commit()?;
         }
         Ok(Capture::Pending) if claim.attempts >= 60 => {
             state.hold(&claim, "history_readiness_exhausted", now())?
