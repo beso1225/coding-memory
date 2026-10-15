@@ -95,6 +95,7 @@ fn worktrees_share_identity_and_evidence_is_immutable() -> anyhow::Result<()> {
         run: key(),
         project: "project".into(),
         runtime_version: "0.162.1".into(),
+        capture_runtime: None,
         outcome: "completed".into(),
         completed_at: 11,
         started_at: 10,
@@ -167,7 +168,7 @@ fn fixture_decoding_retains_tools_and_distinguishes_readiness() -> anyhow::Resul
     ));
     assert!(matches!(
         codex::decode(&key, "project", "future", turn, items.clone()),
-        Capture::Unsupported
+        Capture::Unsupported(_)
     ));
     for outcome in ["failed", "interrupted"] {
         let mut failed = turn.clone();
@@ -218,4 +219,62 @@ fn ownership_registered_during_capture_cannot_publish_evidence() -> anyhow::Resu
     assert!(state.claim(5, 10)?.is_none());
     assert_eq!(state.status()?[0].state, "held");
     Ok(())
+}
+
+#[test]
+fn capture_reports_specific_shape_failures_without_source_content() {
+    use coding_memory::codex::{Capture, UnsupportedReason as R};
+    let key = RunKey {
+        store: "fixture".into(),
+        thread: "thread".into(),
+        turn: "turn".into(),
+    };
+    let good =
+        serde_json::json!({"id":"turn","status":"completed","startedAt":10,"completedAt":11});
+    let item = serde_json::json!({"id":"u","type":"userMessage","text":"private content must not enter reasons"});
+    for (field, value, reason) in [
+        ("id", serde_json::json!("other"), R::TurnIdentity),
+        ("status", serde_json::json!("unknown"), R::TurnStatus),
+        ("startedAt", serde_json::Value::Null, R::StartedAt),
+        ("completedAt", serde_json::json!(9), R::Timestamps),
+    ] {
+        let mut turn = good.clone();
+        turn[field] = value;
+        assert!(
+            matches!(coding_memory::codex::decode(&key,"alpha","0.162.1",&turn,vec![item.clone()]),Capture::Unsupported(r) if r==reason)
+        );
+    }
+    assert!(matches!(
+        coding_memory::codex::decode(&key, "alpha", "0.162.1", &good, vec![item.clone(), item]),
+        Capture::Unsupported(R::ItemIdentity)
+    ));
+    let old = coding_memory::codex::version_diagnostics(
+        "0.162.1",
+        &serde_json::json!({"cliVersion":"0.162.0-alpha.2","preview":"private preview"}),
+    );
+    assert_eq!(old.reason, None);
+    assert_eq!(
+        old.history_creation_version.as_deref(),
+        Some("0.162.0-alpha.2")
+    );
+    let missing = coding_memory::codex::version_diagnostics("0.162.1", &serde_json::json!({}));
+    assert_eq!(missing.reason, Some("missing_history_version"));
+    let bad = coding_memory::codex::version_diagnostics(
+        "0.162.1",
+        &serde_json::json!({"cliVersion":"private text\nnot a version"}),
+    );
+    assert!(bad.history_creation_version.is_none());
+    assert!(!serde_json::to_string(&old).unwrap().contains("private"));
+}
+
+#[test]
+fn diagnostic_withholds_non_semver_alphanumeric_values() {
+    for version in ["private", "SECRET123", "0.162", "01.162.1"] {
+        let diagnostic = coding_memory::codex::version_diagnostics(
+            "0.162.1",
+            &serde_json::json!({"cliVersion": version}),
+        );
+        assert!(diagnostic.history_creation_version.is_none());
+        assert_eq!(diagnostic.reason, Some("unsupported_history_version"));
+    }
 }

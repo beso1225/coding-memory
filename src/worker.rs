@@ -392,6 +392,12 @@ pub async fn cycle(
                     continue;
                 }
             };
+        let audit = state.observe_runtime(&client.identity().clone(), ingestion::now())?;
+        if audit.validation == "failed" {
+            report.failed(Some(&p.id), "runtime_validation_failed");
+            client.close().await?;
+            continue;
+        }
         if ingestion::reconcile(state, &mut client, &source.codex_home, &source.project)
             .await
             .is_err()
@@ -495,7 +501,7 @@ impl State {
             false
         };
         Ok(
-            json!({"active":active,"last_cycle":last.map(|s|serde_json::from_str::<Report>(&s)).transpose()?,"counts":counts,"problems":problems}),
+            json!({"active":active,"last_cycle":last.map(|s|serde_json::from_str::<Report>(&s)).transpose()?,"counts":counts,"problems":problems,"runtime_checks":self.runtime_check_status()?}),
         )
     }
     pub fn recoverable_batches(&self) -> Result<Vec<(i64, String)>> {
@@ -517,6 +523,11 @@ pub async fn run(
     config.validate(root, state)?;
     let owner = Ownership::acquire(root)?;
     state.begin_worker(&owner, ingestion::now())?;
+    let _verification = if once {
+        None
+    } else {
+        Some(crate::compatibility::start(root.into()))
+    };
     let result = run_owned(state, root, config, guard, once).await;
     state.worker_owner = None;
     result

@@ -43,7 +43,8 @@ impl State {
         )?;
         let version: i64 = db.query_row("SELECT version FROM schema_version", [], |r| r.get(0))?;
         ensure!(version == 1, "Unsupported state schema {version}");
-        db.execute_batch("CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, repository TEXT NOT NULL UNIQUE, enabled_at INTEGER NOT NULL);
+        db.execute_batch("CREATE TABLE IF NOT EXISTS runtime_checks(digest TEXT NOT NULL,fixture TEXT NOT NULL,binary TEXT NOT NULL,version TEXT NOT NULL,state TEXT NOT NULL,last_result TEXT,checked_at INTEGER,available_at INTEGER NOT NULL,lease_until INTEGER,token INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(digest,fixture));
+            CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, repository TEXT NOT NULL UNIQUE, enabled_at INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS owned_stores(id TEXT PRIMARY KEY);
             CREATE TABLE IF NOT EXISTS pending_notes(note_id TEXT PRIMARY KEY, reason TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS project_policy(project TEXT PRIMARY KEY REFERENCES projects(id), allow_external INTEGER NOT NULL);
@@ -201,7 +202,22 @@ impl State {
         now: i64,
         available: i64,
     ) -> Result<()> {
-        let n=self.db.execute("UPDATE runs SET state=?4,reason=?5,evidence=?6,outcome=?7,lease_until=NULL,available_at=?8 WHERE store=?1 AND thread=?2 AND turn=?3 AND state='capturing' AND token=?9 AND lease_until>?10 AND NOT EXISTS(SELECT 1 FROM owned_stores WHERE id=?1) AND NOT EXISTS(SELECT 1 FROM exclusions WHERE store=?1 AND thread=?2 AND turn=?3)",params![c.key.store,c.key.thread,c.key.turn,state,reason,evidence,outcome,available,c.token,now])?;
+        Self::transition_on(
+            &self.db, c, state, reason, evidence, outcome, now, available,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn transition_on(
+        db: &Connection,
+        c: &Claim,
+        state: &str,
+        reason: Option<&str>,
+        evidence: Option<&str>,
+        outcome: Option<&str>,
+        now: i64,
+        available: i64,
+    ) -> Result<()> {
+        let n=db.execute("UPDATE runs SET state=?4,reason=?5,evidence=?6,outcome=?7,lease_until=NULL,available_at=?8 WHERE store=?1 AND thread=?2 AND turn=?3 AND state='capturing' AND token=?9 AND lease_until>?10 AND NOT EXISTS(SELECT 1 FROM owned_stores WHERE id=?1) AND NOT EXISTS(SELECT 1 FROM exclusions WHERE store=?1 AND thread=?2 AND turn=?3)",params![c.key.store,c.key.thread,c.key.turn,state,reason,evidence,outcome,available,c.token,now])?;
         ensure!(n == 1, "Stale or expired capture claim");
         Ok(())
     }

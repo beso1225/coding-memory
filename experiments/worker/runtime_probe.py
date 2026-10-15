@@ -91,6 +91,16 @@ def main():
             assert worker.poll() is None
             duplicate = run("worker", "--config", str(config_path), "--once", check=False)
             assert duplicate.returncode != 0 and "Another worker" in duplicate.stderr, duplicate.stderr
+            initial_cycle = json.loads(run("worker-status").stdout)["last_cycle"]["started_at"]
+            for _ in range(300):
+                status = json.loads(run("worker-status").stdout)
+                checks = status["runtime_checks"]
+                if any(c["last_result"] == "passed" for c in checks):
+                    break
+                assert not any(c["last_result"] == "failed" for c in checks), checks
+                time.sleep(.1)
+            assert any(c["last_result"] == "passed" for c in checks), status
+            assert status["last_cycle"]["started_at"] > initial_cycle, status
         finally:
             worker.send_signal(signal.SIGTERM)
             worker.wait(timeout=10)
@@ -116,7 +126,7 @@ def main():
         finally:
             if launched:
                 subprocess.run(["/bin/launchctl", "bootout", domain + "/" + label], check=True, capture_output=True)
-    print(json.dumps({"runtime_version": subprocess.check_output([binary, "--version"], text=True).strip(), "first_cycle": json.loads(first.stdout), "restart_deduplicated": True, "duplicate_worker_rejected": True, "sigterm_released_ownership": True, "launchd_bootstrap_passed": launched, "state_directory": str(state)}, indent=2))
+    print(json.dumps({"runtime_version": subprocess.check_output([binary, "--version"], text=True).strip(), "first_cycle": json.loads(first.stdout), "restart_deduplicated": True, "duplicate_worker_rejected": True, "background_runtime_verified": True, "cycles_progressed_during_verification": True, "sigterm_released_ownership": True, "launchd_bootstrap_passed": launched, "state_directory": str(state)}, indent=2))
 
 
 if __name__ == "__main__":

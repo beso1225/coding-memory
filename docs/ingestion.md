@@ -78,9 +78,14 @@ and analytics are disabled for that invocation. Normal runtime configuration is
 otherwise read: exec-only `--ignore-user-config`/`--ignore-rules` flags are not
 supported by app-server. No model call is requested by this reader.
 
-History support is gated to the tested `0.162.1` and `0.162.0-alpha.17.2` creation
-versions. Other versions are held, rather than guessed compatible. The selected
-executable must implement the corresponding experimental paging contract. Paged
+See [App capture diagnostics](app-capture.md) for detailed hold reasons and the
+distinction between installed reader and thread creation versions.
+
+Readers at or above `0.162.0-alpha.17.2` and creation versions at or above
+`0.162.0-alpha.2` are admitted provisionally using SemVer precedence. Periodic local
+checks and weekly Actions exercise the capture fixture; failed local checks block
+new capture until revalidation passes. Admission never overrides required fields.
+The selected executable must implement the experimental paging contract. Paged
 responses are bounded to 8 MiB per request/traversal, 100 pages, and a 30-second
 request deadline. Discovery also has an 8 MiB aggregate turn-metadata bound.
 

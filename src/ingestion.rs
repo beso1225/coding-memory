@@ -123,6 +123,8 @@ pub async fn reconcile(
     home: &Path,
     path: &Path,
 ) -> Result<usize> {
+    let audit = state.observe_runtime(client.identity(), now())?;
+    ensure!(audit.validation != "failed", "runtime_validation_failed");
     let p = project::resolve(path)?;
     let epoch = state.project_epoch(&p.id)?;
     let mut count = 0;
@@ -171,6 +173,9 @@ pub async fn capture_one(
     home: &Path,
     root: &Path,
 ) -> Result<bool> {
+    let identity = client.identity().clone();
+    let audit = state.observe_runtime(&identity, now())?;
+    ensure!(audit.validation != "failed", "runtime_validation_failed");
     let store = store_id(home)?;
     let Some(claim) = state.claim_store(Some(&store), now(), 3600)? else {
         return Ok(false);
@@ -181,21 +186,56 @@ pub async fn capture_one(
     }
     let result = codex::capture(client, home, &claim.key, &claim.project).await;
     match result {
-        Ok(Capture::Ready(bundle)) => {
+        Ok(Capture::Ready(mut bundle)) => {
             let epoch = state.project_epoch(&claim.project)?;
             if bundle.started_at <= epoch {
                 state.hold(&claim, "before_enablement_or_unknown_start", now())?;
                 return Ok(true);
             }
-            let digest = evidence::save(root, &bundle)?;
-            state.finish(&claim, &bundle.outcome, Some(&digest), now())?;
+            let tx = state
+                .db
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let published_at = now();
+            let audit = crate::compatibility::observe_runtime_on(&tx, &identity, published_at)?;
+            if audit.validation == "failed" {
+                State::transition_on(
+                    &tx,
+                    &claim,
+                    "held",
+                    Some("runtime_validation_failed"),
+                    None,
+                    None,
+                    published_at,
+                    published_at,
+                )?;
+            } else {
+                bundle.capture_runtime = Some(audit);
+                let digest = evidence::save(root, &bundle)?;
+                let outcome_state = if bundle.outcome == "completed" {
+                    "ready"
+                } else {
+                    "recorded"
+                };
+                let finished_at = now();
+                State::transition_on(
+                    &tx,
+                    &claim,
+                    outcome_state,
+                    None,
+                    Some(&digest),
+                    Some(&bundle.outcome),
+                    finished_at,
+                    finished_at,
+                )?;
+            }
+            tx.commit()?;
         }
         Ok(Capture::Pending) if claim.attempts >= 60 => {
             state.hold(&claim, "history_readiness_exhausted", now())?
         }
         Ok(Capture::Pending) => state.defer(&claim, "history_pending", now(), 10)?,
         Ok(Capture::Missing) => state.hold(&claim, "history_missing", now())?,
-        Ok(Capture::Unsupported) => state.hold(&claim, "unsupported_format", now())?,
+        Ok(Capture::Unsupported(reason)) => state.hold(&claim, reason.reason(), now())?,
         Ok(Capture::OverLimit) => state.hold(&claim, "history_over_limit", now())?,
         Ok(Capture::Excluded) => state.hold(&claim, "excluded_inherited_or_nonhuman", now())?,
         Ok(Capture::WrongProject) => state.hold(&claim, "project_mismatch", now())?,
@@ -203,7 +243,7 @@ pub async fn capture_one(
             &claim,
             match error.downcast_ref::<codex::ReadFailure>() {
                 Some(codex::ReadFailure::Missing) => "history_missing",
-                Some(codex::ReadFailure::Unsupported) => "unsupported_format",
+                Some(codex::ReadFailure::Unsupported(reason)) => reason.reason(),
                 Some(codex::ReadFailure::OverLimit) => "history_over_limit",
                 None => "reader_failure",
             },

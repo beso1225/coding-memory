@@ -26,3 +26,6 @@ pub mod retention;
 pub mod worker;
 
 pub mod service;
+
+pub mod compatibility;
+mod runtime_probe;

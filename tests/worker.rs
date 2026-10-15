@@ -22,6 +22,7 @@ fn ready(state: &mut State, root: &Path) -> Result<()> {
         run: key("ready"),
         project: "alpha".into(),
         runtime_version: "fixture".into(),
+        capture_runtime: None,
         outcome: "completed".into(),
         started_at: 1,
         completed_at: 2,
