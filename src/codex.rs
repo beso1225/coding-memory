@@ -138,6 +138,14 @@ impl Client {
     ) -> Result<Self> {
         let version = identity.version.clone();
         let binary = identity.binary.as_path();
+        let stamp = identity
+            .stamp
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Missing executable stamp"))?;
+        ensure!(
+            *stamp == crate::compatibility::executable_stamp(binary).await?,
+            "Executable changed before launch"
+        );
         let mut command = Command::new(binary);
         command
             .args([
@@ -178,6 +186,11 @@ impl Client {
                 .id()
                 .ok_or_else(|| anyhow::anyhow!("Missing reader process ID"))?,
         );
+        // Check after exec but before sending any history RPCs. No repeated file hash is needed.
+        ensure!(
+            *stamp == crate::compatibility::executable_stamp(binary).await?,
+            "Executable changed during launch"
+        );
         let input = child.stdin.take().expect("piped stdin");
         let output = BufReader::new(child.stdout.take().expect("piped stdout"));
         let mut client = Self {
@@ -193,6 +206,11 @@ impl Client {
             fixture_terminals: std::collections::HashMap::new(),
         };
         client.call("initialize",json!({"clientInfo":{"name":"coding_memory_reader","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await?;
+        ensure!(
+            client.identity.stamp.as_ref()
+                == Some(&crate::compatibility::executable_stamp(&client.binary).await?),
+            "Executable changed during initialization"
+        );
         client
             .send(json!({"method":"initialized","params":{}}))
             .await?;
@@ -681,6 +699,7 @@ for line in sys.stdin:
             binary: binary.clone(),
             digest: crate::compatibility::fingerprint(&binary)?,
             version: "0.162.1".into(),
+            stamp: Some(crate::compatibility::ExecutableStamp::read(&binary)?),
         };
         Client::open_fixture(&identity, d.path(), d.path())
             .await?
@@ -692,6 +711,30 @@ for line in sys.stdin:
                 .close()
                 .await?;
         }
+        Ok(())
+    }
+    #[tokio::test]
+    async fn fixture_launch_rejects_replaced_identified_file() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir()?;
+        let binary = d.path().join("server.py");
+        std::fs::write(
+            &binary,
+            "#!/usr/bin/env python3\nprint('codex-cli 0.162.1')\n",
+        )?;
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700))?;
+        let identity = crate::compatibility::identify(&binary, d.path()).await?;
+        let replacement = d.path().join("replacement.py");
+        std::fs::copy(&binary, &replacement)?;
+        std::fs::rename(replacement, &binary)?;
+        assert!(
+            Client::open_fixture(&identity, d.path(), d.path())
+                .await
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("Executable changed before launch")
+        );
         Ok(())
     }
 }

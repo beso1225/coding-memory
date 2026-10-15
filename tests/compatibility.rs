@@ -23,6 +23,7 @@ fn verification_jobs_are_deduplicated_fenced_and_expire_weekly() -> anyhow::Resu
         binary: "/usr/bin/true".into(),
         digest: "a".repeat(64),
         version: "0.163.0".into(),
+        stamp: None,
     };
     assert_eq!(
         state.observe_runtime(&identity, 10)?.validation,
@@ -82,6 +83,7 @@ fn a_fixture_change_rechecks_but_does_not_erase_a_known_failure() -> anyhow::Res
         binary: "/usr/bin/true".into(),
         digest: "c".repeat(64),
         version: "0.163.0".into(),
+        stamp: None,
     };
     let db = rusqlite::Connection::open(&path)?;
     db.execute("INSERT INTO runtime_checks(digest,fixture,binary,version,state,last_result,checked_at,available_at) VALUES(?1,'previous','/usr/bin/true','0.163.0','complete','failed',1000,10)",[&identity.digest])?;
@@ -108,6 +110,7 @@ fn moving_identical_binary_refreshes_queued_and_failed_check_paths() -> anyhow::
         digest: coding_memory::compatibility::fingerprint(&old)?,
         binary: old.clone(),
         version: "0.162.1".into(),
+        stamp: None,
     };
     state.observe_runtime(&identity, 10)?;
     std::fs::rename(&old, &new)?;
@@ -145,6 +148,7 @@ fn relocation_fences_inflight_results_without_erasing_known_failure() -> anyhow:
         binary: d.path().join("old"),
         digest: "d".repeat(64),
         version: "0.162.1".into(),
+        stamp: None,
     };
     std::fs::write(&identity.binary, b"synthetic executable")?;
     observer.observe_runtime(&identity, 10)?;
@@ -184,6 +188,7 @@ fn explicit_retry_reclaims_only_expired_verification_leases() -> anyhow::Result<
         binary: "/usr/bin/true".into(),
         digest: "f".repeat(64),
         version: "0.162.1".into(),
+        stamp: None,
     };
     state.observe_runtime(&identity, 10)?;
     let old = state.claim_runtime_check(10)?.unwrap();

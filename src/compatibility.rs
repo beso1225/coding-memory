@@ -10,7 +10,11 @@ use sha2::{Digest, Sha256};
 use std::{
     io::Read,
     path::{Path, PathBuf},
-    sync::OnceLock,
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
 };
 pub const INTERVAL: i64 = 7 * 24 * 60 * 60;
 const LEASE: i64 = 180;
@@ -30,22 +34,89 @@ pub struct Identity {
     pub binary: PathBuf,
     pub digest: String,
     pub version: String,
+    pub stamp: Option<ExecutableStamp>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecutableStamp {
+    device: u64,
+    inode: u64,
+    size: u64,
+    modified: (i64, i64),
+    changed: (i64, i64),
+}
+impl ExecutableStamp {
+    fn metadata(metadata: &std::fs::Metadata) -> Self {
+        use std::os::unix::fs::MetadataExt;
+        Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            size: metadata.len(),
+            modified: (metadata.mtime(), metadata.mtime_nsec()),
+            changed: (metadata.ctime(), metadata.ctime_nsec()),
+        }
+    }
+    pub fn read(path: &Path) -> Result<Self> {
+        let metadata = std::fs::symlink_metadata(path)?;
+        ensure!(metadata.is_file(), "Not a binary file");
+        Ok(Self::metadata(&metadata))
+    }
+}
+struct Fingerprint {
+    digest: String,
+    stamp: ExecutableStamp,
 }
 pub fn fingerprint(binary: &Path) -> Result<String> {
+    Ok(fingerprint_file(
+        binary,
+        Instant::now() + HASH_DEADLINE,
+        &AtomicBool::new(false),
+    )?
+    .digest)
+}
+fn fingerprint_file(
+    binary: &Path,
+    deadline: Instant,
+    cancelled: &AtomicBool,
+) -> Result<Fingerprint> {
+    ensure!(
+        !cancelled.load(Ordering::Relaxed) && Instant::now() < deadline,
+        "Fingerprint cancelled"
+    );
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
-    }
+    use std::os::unix::fs::OpenOptionsExt;
+    options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
     let mut file = options.open(binary)?;
-    ensure!(file.metadata()?.is_file(), "Not a binary file");
+    let metadata = file.metadata()?;
+    ensure!(metadata.is_file(), "Not a binary file");
+    let stamp = ExecutableStamp::metadata(&metadata);
+    let digest = hash_stream(&mut file, deadline, cancelled)?;
+    ensure!(
+        stamp == ExecutableStamp::metadata(&file.metadata()?)
+            && stamp == ExecutableStamp::read(binary)?,
+        "Executable changed during fingerprint"
+    );
+    Ok(Fingerprint { digest, stamp })
+}
+fn hash_stream(
+    reader: &mut impl Read,
+    deadline: Instant,
+    cancelled: &AtomicBool,
+) -> Result<String> {
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 65536];
     let mut total = 0;
     loop {
-        let n = file.read(&mut buf)?;
+        ensure!(
+            !cancelled.load(Ordering::Relaxed) && Instant::now() < deadline,
+            "Fingerprint cancelled"
+        );
+        let n = reader.read(&mut buf)?;
+        // A filesystem syscall cannot be interrupted here. Never start another read after cancellation.
+        ensure!(
+            !cancelled.load(Ordering::Relaxed) && Instant::now() < deadline,
+            "Fingerprint cancelled"
+        );
         if n == 0 {
             break;
         }
@@ -77,6 +148,7 @@ pub fn resolve(binary: &Path) -> Result<PathBuf> {
 }
 pub async fn identify(binary: &Path, home: &Path) -> Result<Identity> {
     let binary = resolve(binary)?;
+    let before = executable_stamp(&binary).await?;
     let version = crate::generation::version(&binary, home)
         .await
         .map_err(|e| anyhow::anyhow!("{}", e.reason()))?;
@@ -84,10 +156,16 @@ pub async fn identify(binary: &Path, home: &Path) -> Result<Identity> {
         crate::codex::supported(&version),
         "Reader below minimum version"
     );
+    let fingerprint = fingerprint_bounded(&binary).await?;
+    ensure!(
+        before == fingerprint.stamp,
+        "Executable changed during identification"
+    );
     Ok(Identity {
-        digest: fingerprint_bounded(&binary).await?,
+        digest: fingerprint.digest,
         binary,
         version,
+        stamp: Some(fingerprint.stamp),
     })
 }
 #[derive(Debug, Serialize, Deserialize)]
@@ -175,21 +253,68 @@ pub async fn process_one(root: &Path) -> Result<bool> {
     finish_check(&mut state, &job, check(&job, root), CHECK_DEADLINE).await?;
     Ok(true)
 }
-async fn fingerprint_bounded(binary: &Path) -> Result<String> {
+struct CancelHash(Arc<AtomicBool>);
+impl Drop for CancelHash {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+async fn bounded_hash<T: Send + 'static>(
+    slots: Arc<tokio::sync::Semaphore>,
+    duration: Duration,
+    operation: impl FnOnce(Instant, Arc<AtomicBool>) -> Result<T> + Send + 'static,
+) -> Result<T> {
+    let deadline = Instant::now() + duration;
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let _cancel = CancelHash(cancelled.clone());
+    tokio::time::timeout(duration, async move {
+        let permit = slots.acquire_owned().await?;
+        tokio::task::spawn_blocking(move || {
+            // Hold the slot until even a stalled OS read actually returns.
+            let _permit = permit;
+            operation(deadline, cancelled)
+        })
+        .await?
+    })
+    .await?
+}
+fn hash_slots() -> Arc<tokio::sync::Semaphore> {
+    static SLOTS: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+    SLOTS
+        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(2)))
+        .clone()
+}
+pub(crate) async fn executable_stamp(binary: &Path) -> Result<ExecutableStamp> {
     let path = binary.to_owned();
-    // File I/O must not prevent the async deadline or collection task from progressing.
-    tokio::time::timeout(
-        HASH_DEADLINE,
-        tokio::task::spawn_blocking(move || fingerprint(&path)),
-    )
-    .await??
+    bounded_hash(hash_slots(), HASH_DEADLINE, move |deadline, cancelled| {
+        ensure!(
+            !cancelled.load(Ordering::Relaxed) && Instant::now() < deadline,
+            "Executable check cancelled"
+        );
+        let stamp = ExecutableStamp::read(&path)?;
+        ensure!(
+            !cancelled.load(Ordering::Relaxed) && Instant::now() < deadline,
+            "Executable check cancelled"
+        );
+        Ok(stamp)
+    })
+    .await
+}
+async fn fingerprint_bounded(binary: &Path) -> Result<Fingerprint> {
+    let path = binary.to_owned();
+    bounded_hash(hash_slots(), HASH_DEADLINE, move |deadline, cancelled| {
+        fingerprint_file(&path, deadline, &cancelled)
+    })
+    .await
 }
 async fn check(job: &Job, root: &Path) -> Result<bool> {
-    if job.fixture != fixture_id()
-        || !fingerprint_bounded(Path::new(&job.binary))
-            .await
-            .is_ok_and(|d| d == job.digest)
-    {
+    if job.fixture != fixture_id() {
+        return Ok(false);
+    }
+    let Ok(fingerprint) = fingerprint_bounded(Path::new(&job.binary)).await else {
+        return Ok(false);
+    };
+    if fingerprint.digest != job.digest {
         return Ok(false);
     }
     if let Err(error) = crate::runtime_probe::run(
@@ -197,6 +322,7 @@ async fn check(job: &Job, root: &Path) -> Result<bool> {
             binary: job.binary.clone().into(),
             digest: job.digest.clone(),
             version: job.version.clone(),
+            stamp: Some(fingerprint.stamp),
         },
         root,
     )
@@ -207,7 +333,7 @@ async fn check(job: &Job, root: &Path) -> Result<bool> {
     }
     Ok(fingerprint_bounded(Path::new(&job.binary))
         .await
-        .is_ok_and(|d| d == job.digest))
+        .is_ok_and(|d| d.digest == job.digest))
 }
 async fn finish_check(
     state: &mut State,
@@ -246,6 +372,7 @@ mod deadline_tests {
             binary: "/usr/bin/true".into(),
             digest: "e".repeat(64),
             version: "0.162.1".into(),
+            stamp: None,
         };
         let now = crate::ingestion::now();
         state.observe_runtime(&identity, now)?;
@@ -274,6 +401,102 @@ mod deadline_tests {
                 .claim_runtime_check(crate::ingestion::now())?
                 .is_none()
         );
+        Ok(())
+    }
+    #[tokio::test]
+    async fn identification_rejects_atomic_replacement_during_version_probe() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir()?;
+        let binary = d.path().join("changing.py");
+        std::fs::write(
+            &binary,
+            r#"#!/usr/bin/env python3
+from pathlib import Path
+import os
+p=Path(__file__)
+n=p.with_suffix('.next')
+n.write_bytes(p.read_bytes()+b'\n')
+n.chmod(0o700)
+os.replace(n,p)
+print('codex-cli 0.162.1')
+"#,
+        )?;
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700))?;
+        assert!(
+            identify(&binary, d.path())
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("Executable changed")
+        );
+        Ok(())
+    }
+    #[test]
+    fn hashing_stops_after_cancelled_or_overdue_read() {
+        struct SlowRead<'a> {
+            flag: &'a AtomicBool,
+            reads: usize,
+            cancel: bool,
+        }
+        impl Read for SlowRead<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                self.reads += 1;
+                if self.cancel {
+                    self.flag.store(true, Ordering::Relaxed);
+                } else {
+                    std::thread::sleep(Duration::from_millis(3));
+                }
+                buf[0] = 0;
+                Ok(1)
+            }
+        }
+        for cancel in [true, false] {
+            let flag = AtomicBool::new(false);
+            let mut reader = SlowRead {
+                flag: &flag,
+                reads: 0,
+                cancel,
+            };
+            let deadline = Instant::now()
+                + if cancel {
+                    Duration::from_secs(1)
+                } else {
+                    Duration::from_millis(1)
+                };
+            assert!(hash_stream(&mut reader, deadline, &flag).is_err());
+            assert_eq!(reader.reads, 1);
+        }
+    }
+    #[tokio::test]
+    async fn stalled_hashes_keep_their_slot_until_the_os_read_returns() -> Result<()> {
+        let slots = Arc::new(tokio::sync::Semaphore::new(1));
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (release, stalled) = std::sync::mpsc::channel::<()>();
+        let counter = calls.clone();
+        assert!(
+            bounded_hash(slots.clone(), Duration::from_millis(50), move |_, _| {
+                counter.fetch_add(1, Ordering::Relaxed);
+                stalled.recv()?;
+                Ok(())
+            })
+            .await
+            .is_err()
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        for _ in 0..4 {
+            let counter = calls.clone();
+            assert!(
+                bounded_hash(slots.clone(), Duration::from_millis(2), move |_, _| {
+                    counter.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
+                })
+                .await
+                .is_err()
+            );
+        }
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        release.send(())?;
+        let _permit = tokio::time::timeout(Duration::from_secs(1), slots.acquire_owned()).await??;
         Ok(())
     }
 }

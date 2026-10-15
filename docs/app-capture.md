@@ -45,7 +45,11 @@ blocking across fixture changes until a new check passes. Failures can be retrie
 manually, or when next due after seven days. Interruption leaves a recoverable
 180-second lease. The complete check, including fingerprints, has a 150-second
 deadline; each fingerprint is bounded to 30 seconds and the synthetic probe to
-90 seconds. The fixture reuses the pinned, prechecked identity for its producer
+90 seconds. Hashing checks elapsed time and cancellation before and after every
+chunk read. At most two blocking hash operations run per process; a stalled OS
+read retains its slot until it returns, preventing repeated timeouts from creating
+unbounded background work. OS filesystem calls themselves may remain stalled
+until the filesystem recovers. The fixture reuses the pinned, prechecked identity for its producer
 and readers; executable fingerprints surround it rather than being repeated inside
 it. Hashing runs outside the async collection executor. Version probes also use a
 cleared environment and the selected temporary HOME during synthetic checks.
@@ -80,7 +84,11 @@ separation, message projection, completion and stable native identities. A loopb
 provider supplies fixed responses without authentication or paid-model requests.
 Temporary HOME/CODEX_HOME, scrubbed environment, disabled hooks/plugins/analytics,
 Engine-owned source exclusion and process-group cancellation protect normal state.
-Temporary fixture files are removed on completion or cancellation.
+Temporary fixture files are removed on completion or cancellation. Identification
+checks executable device/inode, size and nanosecond modification/change times
+around the version probe and fingerprint. Launch checks the same identity before
+and after spawning and after initialization; a changed executable is rejected
+before any history RPC. These checks do not fingerprint wrapper dependencies.
 
 This fixture does not establish all tool families, forks, compaction, attachments,
 App GUI restart/reopen behavior or semantic quality. Offline adapter tests cover
