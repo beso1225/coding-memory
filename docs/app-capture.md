@@ -60,8 +60,10 @@ coding-memory --state-dir /absolute/engine-state runtime-verify \
 ```
 
 The manual command processes eligible queued checks in this state directory and
-requires a fresh passed result for the selected binary. A job already leased by a
-worker may still be pending; inspect status rather than launching duplicate checks.
+requires a fresh passed result for the selected binary. An active worker lease
+cannot be overridden by `--retry`; an expired lease can be reclaimed explicitly. Moving an identical binary invalidates its old in-flight
+claim and queues verification at the new path. Late results from the old path
+cannot change the recorded result.
 `worker-status` also includes bounded `runtime_checks` metadata. Executable and
 fixture hashes identify local results; a wrapper's hash does not fingerprint its
 interpreter or all dependencies, which periodic rechecks help cover.

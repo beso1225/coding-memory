@@ -133,3 +133,70 @@ fn moving_identical_binary_refreshes_queued_and_failed_check_paths() -> anyhow::
     assert_eq!(state.observe_runtime(&identity, 15)?.validation, "verified");
     Ok(())
 }
+
+#[test]
+fn relocation_fences_inflight_results_without_erasing_known_failure() -> anyhow::Result<()> {
+    use coding_memory::{compatibility::Identity, state::State};
+    let d = tempfile::tempdir()?;
+    let path = d.path().join("state.sqlite");
+    let mut observer = State::open(&path)?;
+    let mut verifier = State::open(&path)?;
+    let mut identity = Identity {
+        binary: d.path().join("old"),
+        digest: "d".repeat(64),
+        version: "0.162.1".into(),
+    };
+    std::fs::write(&identity.binary, b"synthetic executable")?;
+    observer.observe_runtime(&identity, 10)?;
+    let prior = verifier.claim_runtime_check(10)?.unwrap();
+    verifier.finish_runtime_check(&prior, false, 11)?;
+    observer.retry_runtime_check(&identity.digest, 12)?;
+    let inflight = verifier.claim_runtime_check(12)?.unwrap();
+    // Observing the same path must preserve an active verifier's claim.
+    observer.observe_runtime(&identity, 13)?;
+    assert!(observer.claim_runtime_check(13)?.is_none());
+    let new = d.path().join("new");
+    std::fs::rename(&identity.binary, &new)?;
+    identity.binary = new;
+    assert_eq!(
+        observer.observe_runtime(&identity, 14)?.validation,
+        "failed"
+    );
+    let replacement = observer.claim_runtime_check(14)?.unwrap();
+    assert_eq!(replacement.binary, identity.binary.to_str().unwrap());
+    assert!(replacement.token > inflight.token);
+    assert!(verifier.finish_runtime_check(&inflight, false, 15).is_err());
+    assert!(verifier.finish_runtime_check(&inflight, true, 15).is_err());
+    observer.finish_runtime_check(&replacement, true, 16)?;
+    assert_eq!(
+        observer.observe_runtime(&identity, 17)?.validation,
+        "verified"
+    );
+    Ok(())
+}
+
+#[test]
+fn explicit_retry_reclaims_only_expired_verification_leases() -> anyhow::Result<()> {
+    use coding_memory::{compatibility::Identity, state::State};
+    let d = tempfile::tempdir()?;
+    let mut state = State::open(&d.path().join("state.sqlite"))?;
+    let identity = Identity {
+        binary: "/usr/bin/true".into(),
+        digest: "f".repeat(64),
+        version: "0.162.1".into(),
+    };
+    state.observe_runtime(&identity, 10)?;
+    let old = state.claim_runtime_check(10)?.unwrap();
+    assert!(state.retry_runtime_check(&identity.digest, 189).is_err());
+    assert!(state.claim_runtime_check(189)?.is_none());
+    state.retry_runtime_check(&identity.digest, 190)?;
+    let replacement = state.claim_runtime_check(190)?.unwrap();
+    assert!(replacement.token > old.token);
+    assert!(state.finish_runtime_check(&old, true, 191).is_err());
+    state.finish_runtime_check(&replacement, true, 192)?;
+    assert_eq!(
+        state.observe_runtime(&identity, 193)?.validation,
+        "verified"
+    );
+    Ok(())
+}

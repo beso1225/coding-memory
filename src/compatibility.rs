@@ -103,7 +103,18 @@ impl State {
         let tx = self
             .db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        tx.execute("INSERT INTO runtime_checks(digest,fixture,binary,version,state,available_at) VALUES(?1,?2,?3,?4,'queued',?5) ON CONFLICT(digest,fixture) DO UPDATE SET binary=excluded.binary,version=excluded.version",params![identity.digest,fixture_id(),identity.binary.to_str().ok_or_else(||anyhow::anyhow!("Non-UTF8 binary"))?,identity.version,now])?;
+        let binary = identity
+            .binary
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("Non-UTF8 binary"))?;
+        // Relocation invalidates a verifier's snapshot before publishing the new path.
+        // Keep the last result so a known failure still blocks until a new pass.
+        tx.execute(
+            "UPDATE runtime_checks SET state='queued',token=token+1,lease_until=NULL,available_at=?5
+             WHERE digest=?1 AND fixture=?2 AND state='running' AND (binary!=?3 OR version!=?4)",
+            params![identity.digest, fixture_id(), binary, identity.version, now],
+        )?;
+        tx.execute("INSERT INTO runtime_checks(digest,fixture,binary,version,state,available_at) VALUES(?1,?2,?3,?4,'queued',?5) ON CONFLICT(digest,fixture) DO UPDATE SET binary=excluded.binary,version=excluded.version",params![identity.digest,fixture_id(),binary,identity.version,now])?;
         tx.execute("UPDATE runtime_checks SET state='queued',available_at=?3 WHERE digest=?1 AND fixture=?2 AND state='complete' AND (checked_at>?3 OR checked_at<=?4)",params![identity.digest,fixture_id(),now,now.saturating_sub(INTERVAL)])?;
         let (result, checked): (Option<String>, Option<i64>) = tx.query_row(
             "SELECT last_result,checked_at FROM runtime_checks WHERE digest=?1 AND fixture=?2",
@@ -148,7 +159,7 @@ impl State {
         Ok(())
     }
     pub fn retry_runtime_check(&mut self, digest: &str, now: i64) -> Result<()> {
-        ensure!(self.db.execute("UPDATE runtime_checks SET state='queued',available_at=?3 WHERE digest=?1 AND fixture=?2 AND state!='running'",params![digest,fixture_id(),now])?==1,"Unknown or running verification");
+        ensure!(self.db.execute("UPDATE runtime_checks SET state='queued',token=token+1,lease_until=NULL,available_at=?3 WHERE digest=?1 AND fixture=?2 AND (state!='running' OR lease_until<=?3)",params![digest,fixture_id(),now])?==1,"Unknown or running verification");
         Ok(())
     }
     pub fn runtime_check_status(&self) -> Result<serde_json::Value> {
