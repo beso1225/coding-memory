@@ -58,7 +58,10 @@ permissions remain required, including for retrieved global notes.
 
 This first increment does not partition batches by size or reserve proposal space
 for review. Large referenced items, notes, or review proposals can still hold the
-batch. Size-aware selection, review headroom, diagnostic sizes and a no-model
+batch as unavailable context: the final serialized prompt is measured before any
+model call, and an over-limit prompt is recorded as `held_context_unavailable`
+rather than an invalid proposal or review. Size-aware selection, review headroom,
+per-size diagnostics, the specific `held_context_too_large` hold and a no-model
 backlog preflight remain follow-up work under #20. Extraction projection and
 resident-memory improvements remain separate work. Existing held batches are not
 automatically retried or discarded.
