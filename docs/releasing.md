@@ -8,17 +8,24 @@ The packaging tool's download is pinned by version and SHA-256.
 
 ## Release workflow
 
-Every pull request builds the actual archive, generates dependency notices, and
-tests the unpacked binary with a fresh HOME and system-only PATH. This exercises
-version/help, SQLite FTS retrieval, MCP negotiation and search, system library
-linkage, architecture, deployment target, and required archive contents.
-Personal Vaults, state, credentials, and Codex binaries are not release inputs.
+PRs affecting version/dependency metadata, toolchains, CI configuration, build
+inputs, licensing, or packaging scripts build the actual archive, generate
+dependency notices, and test the unpacked binary with a fresh HOME and
+system-only PATH. Ordinary feature and documentation PRs skip archive creation.
+The smoke test exercises version/help, SQLite FTS retrieval, MCP negotiation and
+search, system library linkage, architecture, deployment target, and required
+archive contents. Personal Vaults, state, credentials, and Codex binaries are not
+release inputs.
 
-On main, a Cargo.toml version change triggers publication after the full Nix
-development checks and archive smoke checks pass. A push that changes the lock
-file or changelog without changing the version only builds a dry run. Updating
-an existing released version does not silently replace its assets. Workflows
-run against their triggering commit, even if main advances while they build.
+CI owns the main push trigger. A Cargo.toml version change calls the Release
+workflow after the exact triggering commit's Linux development checks succeed.
+The release performs native Rust regression tests and archive smoke checks before
+publication. Linux development checks are not repeated inside that call. A push
+that changes the lock file or changelog without changing the version validates
+release metadata but does not build an archive. Direct manual Release runs
+perform their own Linux checks, even for dry runs. Updating an existing released
+version never silently replaces its assets. Workflows run against their
+triggering commit, even if main advances while they build.
 
 For a release PR:
 
@@ -32,20 +39,24 @@ For a release PR:
 3. Run `nix develop --command pkf run check` and review the PR archive smoke job.
    Do not merge the version change until all checks succeed: merging it publishes
    automatically. Keep normal feature PRs separate from release version changes.
-4. After merge, inspect the Release workflow and install the published archive
+4. After merge, inspect the CI run and its called Release workflow and install the published archive
    on a clean supported machine. The workflow tags the tested commit, uploads all
    assets to a draft, checks the asset names, then publishes it. RC versions are
    prereleases and do not become the latest stable release.
 
 The initial implementation PR contains the first RC version change, so merging
 it is the publication decision. It does not need a previously created tag or a
-personal access token: the publishing job alone receives `contents: write`.
-Other jobs use read-only tokens. The workflow does not depend on tag events
+personal access token. The CI release call permits `contents: write` so the
+called publishing job can request it; all other jobs request read-only tokens. The workflow does not depend on tag events
 triggering another workflow, avoiding GITHUB_TOKEN event-chaining limitations.
 
-Repository settings must allow GitHub Actions and the pinned first-party actions.
-Protect main and require `Development checks` and the Release `build` job before
-merging. Any rules restricting tag creation must permit the release workflow.
+Repository settings must allow GitHub Actions and the pinned actions, including
+the Nix installer/cache action. Protect main with the Linux development check
+and CI `Required checks` aggregate. The aggregate requires any selected Mac and
+archive jobs to succeed, and permits intentionally skipped native jobs. Update
+required-check names if existing branch protection references the previous
+standalone workflows. Any rules restricting tag creation must permit the release
+workflow.
 No Apple Developer signing/notarization credentials are used at this stage.
 
 Draft discovery uses the authenticated paginated release list, not the by-tag
@@ -79,8 +90,10 @@ already published version. A same-name tag pointing to another commit fails.
 A failed upload can leave a tag and a draft. A retry for the same commit can
 replace assets in that draft, but unexpected leftover asset names block public
 announcement for inspection. Never move a released tag or replace public
-assets. Fixes after publication use a new version. Release runs are serialized
-and are not canceled when a newer release is queued.
+assets. Fixes after publication use a new version. Main release runs are serialized
+and are not canceled when a newer release is queued. Superseded PR dry runs are
+canceled. Native Cargo dependencies are cached separately from Nix development
+builds; the tested Actions bundle is retained for seven days.
 
 ## Local distribution verification
 

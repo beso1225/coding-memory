@@ -5,35 +5,82 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
-  workflow_call:
 
 permissions:
   contents: read
 
+# A newer PR head supersedes the old one. Main can be publishing a release,
+# so never cancel an active main run (including its called workflows).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Unique main/manual runs also avoid replacing a queued version-changing push.
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  check:
-    name: Development checks
-    runs-on: macos-15
-    timeout-minutes: 30
+  scope:
+    name: Select native checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      macos: ${{ steps.scope.outputs.macos }}
+      archive: ${{ steps.scope.outputs.archive }}
     steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
+      - name: Inspect the complete change range
+        id: scope
+        run: python3 scripts/ci_scope.py
 
-      - name: Install Nix
-        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
-        with:
-          github_access_token: ${{ secrets.GITHUB_TOKEN }}
-          extra_nix_config: |
-            experimental-features = nix-command flakes
+  check:
+    uses: ./.github/workflows/development-checks.yml
 
-      - name: Validate flake
-        run: nix flake check --no-build
+  macos:
+    needs: scope
+    if: github.event_name != 'push' && needs.scope.outputs.macos == 'true'
+    uses: ./.github/workflows/runtime-compatibility.yml
 
-      - name: Run development checks
-        run: nix develop --command pkf run check
+  release:
+    needs: [scope, check, macos]
+    if: >-
+      !cancelled() && needs.scope.result == 'success' &&
+      needs.check.result == 'success' &&
+      (needs.macos.result == 'success' || needs.macos.result == 'skipped') &&
+      needs.scope.outputs.archive == 'true'
+    # Only the called publish job gets a write token; its event/ref guards
+    # prohibit publishing PR artifacts. The caller must permit that job.
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      development-checked: true
+
+  required:
+    name: Required checks
+    if: always()
+    needs: [scope, check, macos, release]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require all selected checks to succeed
+        env:
+          SCOPE: ${{ needs.scope.result }}
+          LINUX: ${{ needs.check.result }}
+          MACOS: ${{ needs.macos.result }}
+          RELEASE: ${{ needs.release.result }}
+          EXPECT_MACOS: ${{ github.event_name != 'push' && needs.scope.outputs.macos == 'true' }}
+          EXPECT_RELEASE: ${{ needs.scope.outputs.archive == 'true' }}
+        run: |
+          test "$SCOPE" = success
+          test "$LINUX" = success
+          if [ "$EXPECT_MACOS" = true ]; then
+            test "$MACOS" = success
+          else
+            test "$MACOS" = skipped
+          fi
+          if [ "$EXPECT_RELEASE" = true ]; then
+            test "$RELEASE" = success
+          else
+            test "$RELEASE" = skipped
+          fi

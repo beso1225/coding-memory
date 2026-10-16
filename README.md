@@ -21,7 +21,7 @@ distribution follows RC installation validation. Codex is installed separately.
 
 ## Development
 
-On an Apple Silicon Mac with Nix and direnv installed:
+With Nix and direnv installed (Apple Silicon macOS or x86-64 Linux):
 
 ```sh
 direnv allow

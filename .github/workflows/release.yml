@@ -1,10 +1,12 @@
 name: Release
 
 on:
-  pull_request:
-  push:
-    branches: [main]
-    paths: [Cargo.toml, Cargo.lock, CHANGELOG.md]
+  workflow_call:
+    inputs:
+      development-checked:
+        description: The caller has passed development checks for this exact commit
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       publish:
@@ -17,11 +19,11 @@ permissions:
 
 concurrency:
   group: release-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   plan:
-    runs-on: macos-15
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       publish: ${{ steps.plan.outputs.publish }}
@@ -44,14 +46,17 @@ jobs:
 
   checks:
     needs: plan
-    if: needs.plan.outputs.publish == 'true'
-    uses: ./.github/workflows/ci.yml
+    # CI callers already checked this exact commit. A standalone manual run
+    # must run its own checks, including dry runs and non-main branches.
+    if: ${{ !inputs.development-checked }}
+    uses: ./.github/workflows/development-checks.yml
 
   build:
     needs: [plan, checks]
     if: >-
-      always() && needs.plan.result == 'success' &&
-      (needs.checks.result == 'success' || needs.checks.result == 'skipped')
+      !cancelled() && needs.plan.result == 'success' &&
+      (needs.checks.result == 'success' || needs.checks.result == 'skipped') &&
+      (github.event_name != 'push' || needs.plan.outputs.publish == 'true')
     runs-on: macos-15
     timeout-minutes: 45
     steps:
@@ -63,6 +68,18 @@ jobs:
         run: |
           toolchain=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])')
           rustup toolchain install "$toolchain" --profile minimal --component rust-docs
+      - name: Cache native distribution dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/dist
+            target/debug
+          key: cargo-dist-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'dist-workspace.toml') }}
+      - name: Run native Rust regression tests
+        if: github.event_name != 'pull_request'
+        run: cargo test --locked --all-features
       - name: Install the pinned packaging tool
         run: bash scripts/install_dist.sh
       - name: Test release guards
@@ -86,11 +103,14 @@ jobs:
           name: tested-release
           path: target/release-plan/
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 7
 
   publish:
     needs: [plan, checks, build]
-    if: needs.plan.outputs.publish == 'true'
+    if: >-
+      !cancelled() && needs.plan.result == 'success' &&
+      needs.plan.outputs.publish == 'true' && needs.build.result == 'success' &&
+      (needs.checks.result == 'success' || needs.checks.result == 'skipped')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
