@@ -145,10 +145,12 @@ counter rather than allocating an oversized prompt. At most one original source
 is parsed at a time and retained projected evidence stays within the hard cap.
 
 This is a current-state estimate, not an approval or an executable plan. Preview
-uses hypothetical next batch IDs and normalizes candidate state to `ready` as a
-retry would. It does not reserve those IDs or simulate model decisions, new Vault
-notes or cross-batch regrouping. Concurrent worker activity, permission changes,
-new publications and resulting neighbor retrieval can change later partitions.
+normalizes candidate state to `ready` as a retry would and numbers hypothetical
+partitions from the same next batch ID for every requested batch, advancing only
+across that batch's own partitions; it does not reserve those IDs or simulate
+model decisions, new Vault notes or cross-batch regrouping. Concurrent worker
+activity, permission changes, new publications and resulting neighbor retrieval
+can change later partitions.
 Invalid notes are counted and excluded by the normal index rules. Recheck if the
 Vault or queues change; normal generation always repeats all validations.
 

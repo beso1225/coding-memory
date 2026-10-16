@@ -125,8 +125,9 @@ pub struct Preflight {
 }
 
 /// This function has no Backend and never reserves, retries, or publishes work.
-/// Preview IDs and ready-state candidates model a hypothetical subsequent retry.
-/// Future publications may change neighbor context, so later partitions are estimates.
+/// Each requested batch models its own hypothetical retry, numbering partitions
+/// from the same next batch ID. Future publications may change neighbor context,
+/// so later partitions are estimates.
 pub fn preflight(
     state: &State,
     root: &Path,
@@ -151,10 +152,15 @@ pub fn preflight(
         .collect::<Result<Vec<_>>>()?;
     let search = Search::temporary(root, vault)?;
     let invalid_note_count = search.rebuild()?.invalid.len();
-    let mut next_id = state.next_batch_id()?;
+    let base_id = state.next_batch_id()?;
     let mut reports = Vec::new();
     for mut batch in originals {
         let original_id = batch.id;
+        // Each requested batch is modeled as its own hypothetical retry, so every
+        // batch starts from the same next-batch base and only advances across its
+        // own partitions. Otherwise later batches would inherit synthetic IDs that a
+        // standalone retry would never allocate, skewing the serialized sizes.
+        let mut next_id = base_id;
         let mut partitions = Vec::new();
         let mut error = None;
         for c in &mut batch.candidates {

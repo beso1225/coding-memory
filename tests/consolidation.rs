@@ -1558,6 +1558,78 @@ async fn preflight_uses_live_sizing_without_changing_held_jobs_or_the_real_index
     Ok(())
 }
 #[test]
+fn preflight_restarts_hypothetical_ids_for_each_requested_batch() -> Result<()> {
+    use coding_memory::consolidation_preflight::preflight;
+    let (d, _state, _batch, bundles, _) = knowledge_fixture()?;
+    let root = d.path().join("preflight");
+    let vault = d.path().join("vault");
+    fs::create_dir(&root)?;
+    fs::create_dir(&vault)?;
+    let mut state = State::open(&root.join("state.sqlite"))?;
+    state.register_project("alpha", "/repo", 1)?;
+    // A first held batch that allocates a full set of synthetic partition IDs, then a
+    // second held batch. Inspecting the second batch together with the first must match
+    // inspecting it alone, so a standalone retry's reported sizes stay accurate.
+    let mut oversized_source = bundles.values().next().unwrap().clone();
+    oversized_source.run.turn = "oversized".into();
+    let _oversized = partition_sources(&mut state, &root, &oversized_source, &[300; 20])?;
+    let first = state.reserve_batch("alpha", 20, true)?.unwrap();
+    state.hold_batch_at(first.id, "fixture", &json!({}), 21)?;
+    let mut small = Vec::new();
+    for n in 0..2 {
+        let mut source = bundles.values().next().unwrap().clone();
+        source.run.thread = format!("small-{n}");
+        source.run.turn = "small".into();
+        source.items[0]["text"] = json!("x".repeat(60 * 1024));
+        let text = format!("smallq{n}");
+        stage_bundle_conditions(
+            &mut state,
+            &root,
+            &source,
+            40 + n as i64,
+            &text,
+            &text,
+            &[&text],
+        )?;
+        small.push(
+            state
+                .candidates("alpha")?
+                .into_iter()
+                .find(|c| c.candidate.title == text)
+                .unwrap()
+                .id,
+        );
+    }
+    let second = state.reserve_batch("alpha", 30, true)?.unwrap();
+    state.hold_batch_at(second.id, "fixture", &json!({}), 31)?;
+    let alone = serde_json::to_value(preflight(
+        &state,
+        &root,
+        &vault,
+        "alpha",
+        &[second.id],
+        false,
+    )?)?;
+    let combined = serde_json::to_value(preflight(
+        &state,
+        &root,
+        &vault,
+        "alpha",
+        &[first.id, second.id],
+        false,
+    )?)?;
+    assert_eq!(combined["batches"][1]["batch"], json!(second.id));
+    assert_eq!(
+        combined["batches"][1]["partitions"][0]["selected"]["candidate_ids"],
+        json!(&small)
+    );
+    assert_eq!(
+        combined["batches"][1]["partitions"][0]["selected"]["budget"],
+        alone["batches"][0]["partitions"][0]["selected"]["budget"]
+    );
+    Ok(())
+}
+#[test]
 fn preflight_distinguishes_invalid_source_from_oversized_source_without_source_text() -> Result<()>
 {
     let (d, _state, _batch, bundles, _) = knowledge_fixture()?;
