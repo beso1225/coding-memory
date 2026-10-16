@@ -20,6 +20,17 @@ def module(name):
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_new_draft_id_comes_from_creation_response_without_a_second_lookup(self):
+        release = module("release")
+        draft = {"id": 42, "draft": True, "tag_name": "v0.1.0-rc.2"}
+        result = subprocess.CompletedProcess([], 0, json.dumps(draft), "")
+        with patch.object(release, "gh", return_value=result) as api, patch.object(release, "find_release") as lookup:
+            self.assertEqual(release.create_draft("owner/repo", "v0.1.0-rc.2", "notes"), draft)
+            payload = json.loads(api.call_args.kwargs["input_data"])
+            self.assertTrue(payload["draft"])
+            self.assertEqual(payload["tag_name"], "v0.1.0-rc.2")
+            lookup.assert_not_called()
+
     def test_draft_release_is_found_across_paginated_release_lists(self):
         release = module("release")
         draft = {"id": 42, "tag_name": "v0.1.0-rc.2", "draft": True}

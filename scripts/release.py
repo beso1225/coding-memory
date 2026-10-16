@@ -59,8 +59,8 @@ def plan(event, before, publish):
                 stream.write(f"{key}={str(value).lower() if isinstance(value, bool) else value}\n")
 
 
-def gh(*args, check=True):
-    result = subprocess.run(["gh", *args], text=True, capture_output=True)
+def gh(*args, check=True, input_data=None):
+    result = subprocess.run(["gh", *args], text=True, capture_output=True, input=input_data)
     if check and result.returncode:
         raise RuntimeError(result.stderr.strip() or f"gh failed: {args}")
     return result
@@ -86,6 +86,17 @@ def find_release(repo, tag):
     return matches[0] if matches else None
 
 
+def create_draft(repo, tag, notes):
+    # Release lists may be stale immediately after a write. Keep the ID from
+    # the creation response instead of depending on read-after-write visibility.
+    payload = {"tag_name": tag, "name": tag, "draft": True, "body": notes}
+    result = json.loads(gh("api", "--method", "POST", f"repos/{repo}/releases",
+                           "--input", "-", input_data=json.dumps(payload)).stdout)
+    if not result["draft"] or result["tag_name"] != tag:
+        raise ValueError("Expected the newly created draft release")
+    return result
+
+
 def publish(directory):
     release = json.loads((directory / "plan.json").read_text())
     if not release["publish"] or os.environ.get("GITHUB_REF") != "refs/heads/main":
@@ -105,11 +116,7 @@ def publish(directory):
         gh("api", "--method", "POST", f"repos/{repo}/git/refs",
            "-f", f"ref=refs/tags/{tag}", "-f", f"sha={release['sha']}")
     if not existing:
-        gh("release", "create", tag, "--repo", repo, "--verify-tag",
-           "--draft", "--title", tag, "--notes-file", str(directory / "notes.md"))
-        existing = find_release(repo, tag)
-        if not existing or not existing["draft"]:
-            raise ValueError("Expected the newly created draft release")
+        existing = create_draft(repo, tag, (directory / "notes.md").read_text())
     # Verify the tag again before uploading/publishing.
     commit = json.loads(gh("api", f"repos/{repo}/commits/{tag}").stdout)
     if commit["sha"] != release["sha"]:
