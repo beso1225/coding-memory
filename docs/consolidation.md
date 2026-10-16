@@ -56,15 +56,51 @@ model input. This cap bounds source parsing; it does not increase the 256 KiB
 serialized prompt limit or the 64 KiB output limit. Source project transmission
 permissions remain required, including for retrieved global notes.
 
-This first increment does not partition batches by size or reserve proposal space
-for review. Large referenced items, notes, or review proposals can still hold the
-batch as unavailable context: the final serialized prompt is measured before any
-model call, and an over-limit prompt is recorded as `held_context_unavailable`
-rather than an invalid proposal or review. Size-aware selection, review headroom,
-per-size diagnostics, the specific `held_context_too_large` hold and a no-model
-backlog preflight remain follow-up work under #20. Extraction projection and
-resident-memory improvements remain separate work. Existing held batches are not
-automatically retried or discarded.
+## Serialized prompt budget (Issue #20, second increment)
+
+Before either model runs, the Engine measures the complete serialized
+consolidation prompt, including instructions, JSON escaping, candidates,
+existing notes and projected evidence. Its initial target is 160 KiB. The Engine
+also measures the review framing/context and reserves 64 KiB for the proposal,
+checking that the resulting review prompt can fit the 256 KiB hard cap. This
+leaves approximately 32 KiB of additional margin. Both measurements use the same
+prompt builder as generation. The final actual prompt is still checked before
+each call, and the actual proposer output remains capped at 64 KiB.
+
+The local generation provenance records `input_budget` with measured
+`consolidation_bytes`, `consolidation_target`, `review_max_bytes`, `input_limit`
+and `proposal_limit`. These size fields contain no source text. This is not yet
+a public preflight/status API. The local `partition` record names selected and
+individually oversized candidate IDs and counts candidates deferred by size.
+
+Candidates are examined in stable `created_at, id` order, up to the existing
+reservation limit of twenty. The Engine adds candidates while their complete
+context fits. A candidate that cannot fit alongside the selected prefix is also
+checked alone, with its full retrieved comparison context. If it fits alone,
+selection stops and that candidate plus the unexamined suffix return to `ready`
+for a later invocation. Their original creation times remain intact, preserving
+the count/age trigger. If it cannot fit alone, only that candidate is held as
+`held_context_too_large` and selection can continue with later candidates.
+Evidence items are not truncated, and retrieved neighbors are not removed to
+force a candidate through the budget.
+
+The reservation update is one lease-checked SQLite transaction. Selected
+candidates remain reserved; deferred candidates lose their reservation links
+and return to `ready`, so size-only deferrals do not count as generation attempts.
+Individually oversized candidates receive separate held jobs that can be
+explicitly retried. When none fit, the parent job holds the first oversized
+candidate and no model is called. These sizing holds also do not consume the
+three-attempt budget for later transient model failures. Worker recovery reclaims
+only the selected reservation, preserving deferred and separately held work.
+One invocation still generates at most one proposal and one independent review;
+the normal worker loop or subsequent foreground invocations process the rest.
+
+Missing/invalid evidence remains `held_context_unavailable`; this change does not
+silently treat it as an oversized valid source. The final hard-cap guard also
+retains that reason if it detects an unexpected prompt-size failure.
+Public size diagnostics and a no-model backlog preflight remain follow-up work
+under #20. Extraction projection and resident-memory improvements remain separate
+work. Existing held batches are not automatically retried or discarded.
 
 ## Proposal, review, and identity
 

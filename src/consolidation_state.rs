@@ -121,6 +121,101 @@ impl State {
             candidates,
         }))
     }
+    /// Keep only the candidates that fit this generation. Size-only deferrals
+    /// lose their reservation link, so they do not count as generation attempts.
+    pub(crate) fn partition_batch(
+        &mut self,
+        batch: &Batch,
+        selected: &[String],
+        oversized: &[String],
+        provenance: &Value,
+        now: i64,
+    ) -> Result<()> {
+        use std::collections::HashSet;
+        let original: HashSet<_> = batch.candidates.iter().map(|c| c.id.as_str()).collect();
+        let keep: HashSet<_> = selected.iter().map(String::as_str).collect();
+        let held: HashSet<_> = oversized.iter().map(String::as_str).collect();
+        ensure!(
+            original.len() == batch.candidates.len()
+                && keep.len() == selected.len()
+                && held.len() == oversized.len()
+                && keep.is_subset(&original)
+                && held.is_subset(&original)
+                && keep.is_disjoint(&held),
+            "Invalid size partition"
+        );
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        ensure!(tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM consolidation_jobs WHERE id=?1 AND project=?2 AND state='generating' AND lease_until>?3)",
+            params![batch.id,batch.project,now], |r| r.get::<_,bool>(0)
+        )?, "Stale batch");
+        let reserved = {
+            let mut q = tx.prepare("SELECT c.id,c.state FROM batch_candidates b JOIN candidates c ON c.id=b.candidate WHERE b.batch=?1")?;
+            q.query_map([batch.id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        ensure!(
+            reserved.len() == original.len()
+                && reserved
+                    .iter()
+                    .all(|(id, state)| original.contains(id.as_str()) && state == "reserved"),
+            "Reservation changed during sizing"
+        );
+        // If no model call fits, reuse the parent job for the first individual
+        // hold so the returned batch ID still identifies actionable held work.
+        let parent_hold = if selected.is_empty() {
+            oversized.first()
+        } else {
+            None
+        };
+        for c in &batch.candidates {
+            if keep.contains(c.id.as_str()) {
+                continue;
+            }
+            if parent_hold == Some(&c.id) {
+                tx.execute("UPDATE candidates SET state='held' WHERE id=?1", [&c.id])?;
+                continue;
+            }
+            tx.execute(
+                "DELETE FROM batch_candidates WHERE batch=?1 AND candidate=?2",
+                params![batch.id, c.id],
+            )?;
+            if held.contains(c.id.as_str()) {
+                let diagnostic =
+                    serde_json::json!({"schema_version":1,"size_partition_parent":batch.id});
+                tx.execute("INSERT INTO consolidation_jobs(project,state,reason,created_at,lease_until,provenance) VALUES(?1,'held','held_context_too_large',?2,?2,?3)",params![batch.project,now,diagnostic.to_string()])?;
+                let id = tx.last_insert_rowid();
+                tx.execute(
+                    "INSERT INTO batch_candidates VALUES(?1,?2)",
+                    params![id, c.id],
+                )?;
+                tx.execute("UPDATE candidates SET state='held' WHERE id=?1", [&c.id])?;
+            } else {
+                tx.execute("UPDATE candidates SET state='ready' WHERE id=?1", [&c.id])?;
+            }
+        }
+        tx.execute(
+            "UPDATE consolidation_jobs SET provenance=?2 WHERE id=?1",
+            params![batch.id, provenance.to_string()],
+        )?;
+        if selected.is_empty() {
+            if parent_hold.is_some() {
+                tx.execute("UPDATE consolidation_jobs SET state='held',reason='held_context_too_large' WHERE id=?1",[batch.id])?;
+            } else {
+                tx.execute("UPDATE consolidation_jobs SET state='abandoned',reason='size_partitioned' WHERE id=?1",[batch.id])?;
+            }
+            tx.execute(
+                "DELETE FROM worker_claims WHERE stage='consolidation' AND batch=?1",
+                [batch.id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
     pub fn hold_batch(&mut self, batch: i64, reason: &str, provenance: &Value) -> Result<()> {
         self.hold_batch_at(batch, reason, provenance, crate::ingestion::now())
     }
@@ -233,5 +328,154 @@ impl State {
             )
             .optional()?
             .flatten())
+    }
+}
+
+#[cfg(test)]
+mod partition_tests {
+    use super::*;
+    use serde_json::json;
+    fn fixture() -> Result<(tempfile::TempDir, State, Batch)> {
+        let dir = tempfile::tempdir()?;
+        let mut state = State::open(&dir.path().join("state.sqlite"))?;
+        state.register_project("alpha", "/repo", 1)?;
+        let candidate = json!({"kind":"constraint","title":"Use leases","claim":"Use leases.","scope":{"kind":"project","project_id":"alpha"},"conditions":["SQLite"],"verification":"user_stated","evidence":[{"bundle":"0".repeat(64),"item":"U"}]});
+        for id in ["a", "b", "c"] {
+            state.db.execute("INSERT INTO candidates(id,project,state,candidate,created_at) VALUES(?1,'alpha','ready',?2,1)",params![id,candidate.to_string()])?;
+        }
+        let batch = state.reserve_batch("alpha", 10, true)?.unwrap();
+        Ok((dir, state, batch))
+    }
+    #[test]
+    fn size_partition_rejects_expired_and_replaced_reservations() -> Result<()> {
+        let (_dir, mut state, batch) = fixture()?;
+        assert!(
+            state
+                .partition_batch(&batch, &["a".into()], &["b".into()], &json!({}), 3610)
+                .is_err()
+        );
+        assert!(
+            state
+                .candidates("alpha")?
+                .iter()
+                .all(|c| c.state == "reserved")
+        );
+        state.retry_batch(batch.id, 3610)?;
+        let successor = state.reserve_batch("alpha", 3611, true)?.unwrap();
+        assert!(
+            state
+                .partition_batch(&batch, &["a".into()], &["b".into()], &json!({}), 3612)
+                .is_err()
+        );
+        assert!(
+            state
+                .candidates("alpha")?
+                .iter()
+                .all(|c| c.state == "reserved")
+        );
+        state.hold_batch_at(successor.id, "fixture", &json!({}), 3613)?;
+        Ok(())
+    }
+    #[test]
+    fn partition_write_failure_rolls_back_holds_and_releases_together() -> Result<()> {
+        let (_dir, mut state, batch) = fixture()?;
+        state.db.execute_batch("CREATE TRIGGER reject_size_release BEFORE UPDATE OF state ON candidates WHEN NEW.state='ready' BEGIN SELECT RAISE(ABORT,'fixture'); END;")?;
+        assert!(
+            state
+                .partition_batch(&batch, &["a".into()], &["b".into()], &json!({}), 11)
+                .is_err()
+        );
+        assert!(
+            state
+                .candidates("alpha")?
+                .iter()
+                .all(|c| c.state == "reserved")
+        );
+        assert_eq!(state.consolidation_status()?.len(), 1);
+        assert_eq!(
+            state.db.query_row(
+                "SELECT count(*) FROM batch_candidates WHERE batch=?1",
+                [batch.id],
+                |r| r.get::<_, i64>(0)
+            )?,
+            3
+        );
+        Ok(())
+    }
+    #[test]
+    fn sizing_holds_do_not_consume_later_model_retry_attempts() -> Result<()> {
+        let (_dir, mut state, batch) = fixture()?;
+        state.partition_batch(
+            &batch,
+            &[],
+            &["a".into(), "b".into(), "c".into()],
+            &json!({}),
+            11,
+        )?;
+        state.retry_batch(batch.id, 12)?;
+        for attempt in 0..3 {
+            let now = 20 + attempt * 20;
+            let batch = state.reserve_batch("alpha", now, true)?.unwrap();
+            state.hold_batch_at(batch.id, "generation_timeout", &json!({}), now + 1)?;
+            state.retry_transient_batches("alpha", now + 11)?;
+            assert_eq!(
+                state
+                    .candidates("alpha")?
+                    .iter()
+                    .find(|c| c.id == "a")
+                    .unwrap()
+                    .state,
+                if attempt < 2 { "ready" } else { "held" }
+            );
+        }
+        assert_eq!(
+            state.consolidation_status()?.last().unwrap().state,
+            "exhausted"
+        );
+        Ok(())
+    }
+    #[test]
+    fn worker_restart_recovers_only_the_selected_partition() -> Result<()> {
+        use crate::worker::Ownership;
+        let (dir, mut state, old) = fixture()?;
+        state.hold_batch_at(old.id, "fixture", &json!({}), 11)?;
+        state.retry_batch(old.id, 12)?;
+        let owner = Ownership::acquire(dir.path())?;
+        state.begin_worker(&owner, 13)?;
+        let batch = state.reserve_batch("alpha", 14, true)?.unwrap();
+        state.partition_batch(&batch, &["a".into()], &["b".into()], &json!({}), 15)?;
+        drop(state);
+        drop(owner);
+        let owner = Ownership::acquire(dir.path())?;
+        let mut state = State::open(&dir.path().join("state.sqlite"))?;
+        state.begin_worker(&owner, 16)?;
+        let candidates = state.candidates("alpha")?;
+        assert_eq!(
+            candidates.iter().find(|c| c.id == "a").unwrap().state,
+            "held"
+        );
+        assert_eq!(
+            candidates.iter().find(|c| c.id == "b").unwrap().state,
+            "held"
+        );
+        assert_eq!(
+            candidates.iter().find(|c| c.id == "c").unwrap().state,
+            "ready"
+        );
+        state.retry_transient_batches("alpha", 26)?;
+        let candidates = state.candidates("alpha")?;
+        assert_eq!(
+            candidates.iter().find(|c| c.id == "a").unwrap().state,
+            "ready"
+        );
+        assert_eq!(
+            candidates.iter().find(|c| c.id == "b").unwrap().state,
+            "held"
+        );
+        assert_eq!(
+            candidates.iter().find(|c| c.id == "c").unwrap().state,
+            "ready"
+        );
+        Ok(())
     }
 }
