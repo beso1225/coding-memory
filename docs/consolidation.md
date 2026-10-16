@@ -33,6 +33,39 @@ the source project's transmission permission; no disallowed source is silently
 sent via a permitted neighboring project. Combined input is bounded at 256 KiB
 per call and output at 64 KiB. Oversized/unavailable context stays held.
 
+## Referenced evidence projections (Issue #20, first increment)
+
+Consolidation verifies the hash, schema and completed outcome of each immutable
+original source before selecting items. The transient model context contains only
+items referenced by the selected candidates or retrieved existing notes, deduplicated
+by original bundle hash and native item ID. Selected items retain their full JSON
+and original order; source metadata is preserved. Missing or ambiguous referenced
+IDs fail closed. Both proposer and reviewer receive the same projection. Engine
+validation rejects citations to omitted items, even if those items exist in the
+original file.
+
+Each model evidence entry carries `projection_schema_version: 1` and
+`source_bundle`, the hash of the immutable original. The projection is not a new
+evidence artifact and is never saved over the original. References in published
+notes continue to use the original bundle hash and native item ID. Consolidation
+and review prompts use version 2 for this input contract.
+
+Local source reads have a separate 16 MiB per-file cap, allowing captured items
+(up to 8 MiB) plus their JSON envelope to be verified without treating them as
+model input. This cap bounds source parsing; it does not increase the 256 KiB
+serialized prompt limit or the 64 KiB output limit. Source project transmission
+permissions remain required, including for retrieved global notes.
+
+This first increment does not partition batches by size or reserve proposal space
+for review. Large referenced items, notes, or review proposals can still hold the
+batch as unavailable context: the final serialized prompt is measured before any
+model call, and an over-limit prompt is recorded as `held_context_unavailable`
+rather than an invalid proposal or review. Size-aware selection, review headroom,
+per-size diagnostics, the specific `held_context_too_large` hold and a no-model
+backlog preflight remain follow-up work under #20. Extraction projection and
+resident-memory improvements remain separate work. Existing held batches are not
+automatically retried or discarded.
+
 ## Proposal, review, and identity
 
 Version-1 proposals assign every selected candidate exactly once to create,
