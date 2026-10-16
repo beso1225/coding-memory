@@ -66,7 +66,9 @@ shell so it finds the selected toolchain and `RUST_SRC_PATH`.
 Cargo.lock pins SQLite (bundled through rusqlite), Serde, Tokio, Clap, SHA-256,
 error handling, YAML frontmatter parsing, and the official MCP SDK, with tempfile
 for tests. `publish = false` prevents
-accidental crate publication while the project and its license are being defined.
+accidental crate publication; binary releases use GitHub Releases instead.
+Original project material is licensed under MIT OR Apache-2.0. Distribution
+checks and third-party notice handling are described in [release operations](releasing.md).
 
 ## Tasks
 

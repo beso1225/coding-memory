@@ -12,6 +12,13 @@ A bounded background worker and explicit macOS LaunchAgent configuration connect
 the pipeline. An initial synthetic real-model evaluation demonstrated separate-session
 MCP retrieval and knowledge application; broader quality assessment remains ongoing.
 
+## Install
+
+Release archives target Apple Silicon Macs running macOS 15 or later.
+See [installation, updates, and recovery](docs/install.md). The first release
+candidate is published only after the release workflow succeeds; Homebrew
+distribution follows RC installation validation. Codex is installed separately.
+
 ## Development
 
 On an Apple Silicon Mac with Nix and direnv installed:
@@ -33,6 +40,10 @@ scope of the scaffold.
 ## Documentation
 
 - [Development setup](docs/development.md): environment activation and checks.
+- [Release operations](docs/releasing.md): release PRs, validation, publication,
+  and retries.
+- [License review](docs/license-review.md): dependency and reference-project
+  licensing, attribution, and packaging requirements.
 - [Durable ingestion](docs/ingestion.md): collection commands, state recovery,
   source boundaries, and isolated runtime validation.
 - [Local App capture diagnostics](docs/app-capture.md): creation-version boundaries,
@@ -58,3 +69,12 @@ scope of the scaffold.
 The separate `coding-memory-vault` repository holds the authoritative memory
 notes. Runtime state and captured evidence stay in a local state directory
 outside both repositories.
+
+## License
+
+Original Coding Memory code and original repository documentation are licensed
+under either [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
+Third-party components retain their own licenses; release archives include
+dependency notices and Rust library attributions in `release-notices/`.
+This software license does not license users' Vaults, captured conversations,
+evidence, or other user data.
