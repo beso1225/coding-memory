@@ -52,6 +52,10 @@ Draft discovery uses the authenticated paginated release list, not the by-tag
 endpoint, which excludes unpublished drafts. Once discovered, the numeric
 release ID is used to verify uploaded assets before announcement. Both draft
 discovery and same-commit draft recovery have focused regression tests.
+New drafts retain the ID returned by the creation API itself: release lists can
+be stale immediately after creation. The rc.2 publication completed on a retry
+using its existing draft; retaining the creation response removes that initial
+read-after-write dependency for subsequent releases.
 
 The repository was private when this pipeline was prepared. Releases inherit
 that visibility: public distribution requires the owner to review the complete
