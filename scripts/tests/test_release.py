@@ -20,6 +20,17 @@ def module(name):
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_draft_release_is_found_across_paginated_release_lists(self):
+        release = module("release")
+        draft = {"id": 42, "tag_name": "v0.1.0-rc.2", "draft": True}
+        result = subprocess.CompletedProcess([], 0, json.dumps([
+            [{"id": 1, "tag_name": "v0.0.1", "draft": False}], [draft]
+        ]), "")
+        with patch.object(release, "gh", return_value=result) as api:
+            self.assertEqual(release.find_release("owner/repo", "v0.1.0-rc.2"), draft)
+            self.assertIn("--paginate", api.call_args.args)
+            self.assertNotIn("releases/tags", " ".join(api.call_args.args))
+
     def test_archive_cannot_escape_the_extraction_directory(self):
         smoke = module("release_smoke")
         with tempfile.TemporaryDirectory() as directory:
@@ -51,10 +62,33 @@ class ReleaseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "plan.json").write_text(json.dumps({"publish": True, "sha": "expected", "tag": "v0.1.0"}))
-            with patch.dict(os.environ, {"GITHUB_REF": "refs/heads/main", "GITHUB_SHA": "expected", "GITHUB_REPOSITORY": "owner/repo"}), patch.object(release, "api_optional", side_effect=[None, {"draft": False}]), patch.object(release, "gh") as api:
+            with patch.dict(os.environ, {"GITHUB_REF": "refs/heads/main", "GITHUB_SHA": "expected", "GITHUB_REPOSITORY": "owner/repo"}), patch.object(release, "api_optional", return_value=None), patch.object(release, "find_release", return_value={"draft": False}), patch.object(release, "gh") as api:
                 with self.assertRaisesRegex(ValueError, "immutable"):
                     release.publish(root)
                 api.assert_not_called()
+
+    def test_existing_draft_is_verified_by_id_before_announcement(self):
+        release = module("release")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "plan.json").write_text(json.dumps({"publish": True, "sha": "expected", "tag": "v0.1.0-rc.2", "prerelease": True}))
+            (root / "notes.md").write_text("Release notes")
+            (root / "artifacts").mkdir()
+            (root / "artifacts/archive.tar.gz").write_bytes(b"tested archive")
+            def respond(*args, **kwargs):
+                if args == ("api", "repos/owner/repo/commits/v0.1.0-rc.2"):
+                    data = {"sha": "expected"}
+                elif args == ("api", "repos/owner/repo/releases/42"):
+                    data = {"assets": [{"name": "archive.tar.gz"}]}
+                else:
+                    data = {}
+                return subprocess.CompletedProcess([], 0, json.dumps(data), "")
+            with patch.dict(os.environ, {"GITHUB_REF": "refs/heads/main", "GITHUB_SHA": "expected", "GITHUB_REPOSITORY": "owner/repo"}), patch.object(release, "api_optional", return_value={"object": {}}), patch.object(release, "find_release", return_value={"id": 42, "draft": True}), patch.object(release, "gh", side_effect=respond) as api:
+                release.publish(root)
+                calls = [call.args for call in api.call_args_list]
+                self.assertIn(("api", "repos/owner/repo/releases/42"), calls)
+                self.assertFalse(any("create" in call for call in calls))
+                self.assertIn("--draft=false", calls[-1])
 
     def test_api_authentication_failure_is_not_treated_as_a_missing_release(self):
         release = module("release")

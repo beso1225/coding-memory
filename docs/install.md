@@ -13,21 +13,21 @@ Anonymous downloads require a public repository. While the repository is
 private, only authorized GitHub users can access its releases; use an
 authenticated `gh release download` instead of the curl commands below.
 Prereleases must be selected explicitly; they are not the stable latest release.
-The initial intended release is `v0.1.0-rc.1`; downloads become available only
+The initial installable release is `v0.1.0-rc.2`; downloads become available only
 after its release workflow succeeds.
 
 For an authorized user of the private repository, GitHub CLI can download the
 same assets into the current directory after `gh auth login`:
 
 ```sh
-gh release download v0.1.0-rc.1 --repo beso1225/coding-memory \
+gh release download v0.1.0-rc.2 --repo beso1225/coding-memory \
   --pattern coding-memory-aarch64-apple-darwin.tar.gz --pattern SHA256SUMS
 ```
 
 For a public repository, download with curl:
 
 ```sh
-version=0.1.0-rc.1
+version=0.1.0-rc.2
 archive=coding-memory-aarch64-apple-darwin.tar.gz
 curl --fail --location --remote-name \
   "https://github.com/beso1225/coding-memory/releases/download/v$version/$archive"

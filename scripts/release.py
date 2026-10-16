@@ -60,7 +60,10 @@ def plan(event, before, publish):
 
 
 def gh(*args, check=True):
-    return subprocess.run(["gh", *args], text=True, capture_output=True, check=check)
+    result = subprocess.run(["gh", *args], text=True, capture_output=True)
+    if check and result.returncode:
+        raise RuntimeError(result.stderr.strip() or f"gh failed: {args}")
+    return result
 
 
 def api_optional(path):
@@ -70,6 +73,17 @@ def api_optional(path):
             return None
         raise RuntimeError(result.stderr)
     return json.loads(result.stdout)
+
+
+def find_release(repo, tag):
+    # The by-tag endpoint excludes unpublished drafts. List releases with push
+    # access instead, then retain the numeric ID for subsequent draft lookups.
+    pages = json.loads(gh("api", "--paginate", "--slurp",
+                          f"repos/{repo}/releases?per_page=100").stdout)
+    matches = [release for page in pages for release in page if release["tag_name"] == tag]
+    if len(matches) > 1:
+        raise ValueError("Multiple releases share this tag; inspect before retrying")
+    return matches[0] if matches else None
 
 
 def publish(directory):
@@ -84,7 +98,7 @@ def publish(directory):
         commit = json.loads(gh("api", f"repos/{repo}/commits/{tag}").stdout)
         if commit["sha"] != release["sha"]:
             raise ValueError("Existing release tag points at a different commit")
-    existing = api_optional(f"repos/{repo}/releases/tags/{tag}")
+    existing = find_release(repo, tag)
     if existing and not existing["draft"]:
         raise ValueError("Published releases are immutable; create a new version")
     if not existing_tag:
@@ -93,6 +107,9 @@ def publish(directory):
     if not existing:
         gh("release", "create", tag, "--repo", repo, "--verify-tag",
            "--draft", "--title", tag, "--notes-file", str(directory / "notes.md"))
+        existing = find_release(repo, tag)
+        if not existing or not existing["draft"]:
+            raise ValueError("Expected the newly created draft release")
     # Verify the tag again before uploading/publishing.
     commit = json.loads(gh("api", f"repos/{repo}/commits/{tag}").stdout)
     if commit["sha"] != release["sha"]:
@@ -100,7 +117,7 @@ def publish(directory):
     assets = sorted((directory / "artifacts").iterdir())
     gh("release", "upload", tag, "--repo", repo, "--clobber", *map(str, assets))
     expected = {f.name for f in assets}
-    uploaded = json.loads(gh("api", f"repos/{repo}/releases/tags/{tag}").stdout)
+    uploaded = json.loads(gh("api", f"repos/{repo}/releases/{existing['id']}").stdout)
     if {asset["name"] for asset in uploaded["assets"]} != expected:
         raise ValueError("Draft contains unexpected or missing assets; inspect before retrying")
     gh("release", "edit", tag, "--repo", repo, "--draft=false",
