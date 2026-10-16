@@ -1,0 +1,15 @@
+# cargo-dist packages artifacts; repository-owned workflows control publication.
+[workspace]
+members = ["cargo:."]
+
+[dist]
+cargo-dist-version = "0.33.0"
+ci = []
+hosting = ["github"]
+targets = ["aarch64-apple-darwin"]
+installers = []
+unix-archive = ".tar.gz"
+checksum = "sha256"
+source-tarball = false
+auto-includes = false
+include = ["README.md", "LICENSE-MIT", "LICENSE-APACHE", "docs/install.md", "target/release-notices"]

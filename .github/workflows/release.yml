@@ -1,0 +1,112 @@
+name: Release
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    paths: [Cargo.toml, Cargo.lock, CHANGELOG.md]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the current main version after validation
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: macos-15
+    timeout-minutes: 5
+    outputs:
+      publish: ${{ steps.plan.outputs.publish }}
+      version: ${{ steps.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate release intent and changelog
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          args=()
+          if [ "$PUBLISH" = true ]; then args+=(--publish); fi
+          python3 scripts/release.py plan --event "$EVENT" --before "$BEFORE" "${args[@]}"
+
+  checks:
+    needs: plan
+    if: needs.plan.outputs.publish == 'true'
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: [plan, checks]
+    if: >-
+      always() && needs.plan.result == 'success' &&
+      (needs.checks.result == 'success' || needs.checks.result == 'skipped')
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain and library notices
+        run: |
+          toolchain=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])')
+          rustup toolchain install "$toolchain" --profile minimal --component rust-docs
+      - name: Install the pinned packaging tool
+        run: bash scripts/install_dist.sh
+      - name: Test release guards
+        run: python3 -m unittest discover -s scripts/tests -v
+      - name: Build archive and test the unpacked CLI and MCP server
+        run: bash scripts/build_release.sh
+      - name: Record publication intent for the tested commit
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          # The build helper always plans a dry run. Only this trusted event
+          # determines whether its already-tested artifacts may be published.
+          args=()
+          if [ "$PUBLISH" = true ]; then args+=(--publish); fi
+          python3 scripts/release.py plan --event "$EVENT" --before "$BEFORE" "${args[@]}"
+      - name: Retain the tested release bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tested-release
+          path: target/release-plan/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: [plan, checks, build]
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: tested-release
+          path: target/tested-release
+      - name: Verify the transferred archive checksum
+        working-directory: target/tested-release/artifacts
+        run: sha256sum -c SHA256SUMS
+      - name: Upload all assets to a draft, then publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release.py publish target/tested-release

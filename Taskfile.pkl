@@ -62,10 +62,24 @@ local captureFixtures: Task = new {
   cache = false
 }
 
+local releaseTests: Task = new {
+  name = "release-tests"
+  description = "Test release metadata and dependency license guards"
+  cmd = "python3 -m unittest discover -s scripts/tests -v"
+  cache = false
+}
+
+local releaseBuild: Task = new {
+  name = "release-build"
+  description = "Package and smoke-test the Apple Silicon distribution (requires dist)"
+  cmd = "bash scripts/build_release.sh"
+  cache = false
+}
+
 local check: Task = new {
   name = "check"
   description = "Run formatting, lint, test, build, workflow, and capture fixture checks"
-  deps { fmtCheck; lint; test; build; workflowLint; captureFixtures }
+  deps { fmtCheck; lint; test; build; workflowLint; captureFixtures; releaseTests }
   cache = false
 }
 
@@ -78,4 +92,16 @@ local allChecks: Task = new {
   cache = false
 }
 
-tasks { fmt; fmtCheck; lint; test; build; workflowLint; captureFixtures; check; allChecks }
+tasks {
+  fmt
+  fmtCheck
+  lint
+  test
+  build
+  workflowLint
+  captureFixtures
+  releaseTests
+  releaseBuild
+  check
+  allChecks
+}
