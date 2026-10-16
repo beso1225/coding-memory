@@ -625,7 +625,7 @@ impl State {
                 .collect::<rusqlite::Result<Vec<_>>>()?
         };
         for id in jobs {
-            let maximum:i64=tx.query_row("SELECT max((SELECT count(*) FROM batch_candidates old WHERE old.candidate=current.candidate)) FROM batch_candidates current WHERE current.batch=?1",[id],|r|r.get(0))?;
+            let maximum:i64=tx.query_row("SELECT max((SELECT count(*) FROM batch_candidates old JOIN consolidation_jobs j ON j.id=old.batch WHERE old.candidate=current.candidate AND (j.reason IS NULL OR j.reason!='held_context_too_large'))) FROM batch_candidates current WHERE current.batch=?1",[id],|r|r.get(0))?;
             if maximum >= 3 {
                 tx.execute(
                     "UPDATE consolidation_jobs SET state='exhausted' WHERE id=?1",

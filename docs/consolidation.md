@@ -70,17 +70,37 @@ each call, and the actual proposer output remains capped at 64 KiB.
 The local generation provenance records `input_budget` with measured
 `consolidation_bytes`, `consolidation_target`, `review_max_bytes`, `input_limit`
 and `proposal_limit`. These size fields contain no source text. This is not yet
-a public preflight/status API. A budget failure invokes neither model and holds
-the batch as `held_context_unavailable`, preserving all selected candidates for
-deliberate retry.
+a public preflight/status API. The local `partition` record names selected and
+individually oversized candidate IDs and counts candidates deferred by size.
 
-Size-aware batch selection, per-candidate oversized-context holds, public size
-diagnostics and a no-model backlog preflight remain follow-up work under #20.
-Until batch partitioning lands, an oversized context still holds the whole
-batch; this increment prevents spending a proposer call on context that exceeds
-the configured review budget, but does not unblock that batch by splitting it.
-Extraction projection and resident-memory improvements remain separate work.
-Existing held batches are not automatically retried or discarded.
+Candidates are examined in stable `created_at, id` order, up to the existing
+reservation limit of twenty. The Engine adds candidates while their complete
+context fits. A candidate that cannot fit alongside the selected prefix is also
+checked alone, with its full retrieved comparison context. If it fits alone,
+selection stops and that candidate plus the unexamined suffix return to `ready`
+for a later invocation. Their original creation times remain intact, preserving
+the count/age trigger. If it cannot fit alone, only that candidate is held as
+`held_context_too_large` and selection can continue with later candidates.
+Evidence items are not truncated, and retrieved neighbors are not removed to
+force a candidate through the budget.
+
+The reservation update is one lease-checked SQLite transaction. Selected
+candidates remain reserved; deferred candidates lose their reservation links
+and return to `ready`, so size-only deferrals do not count as generation attempts.
+Individually oversized candidates receive separate held jobs that can be
+explicitly retried. When none fit, the parent job holds the first oversized
+candidate and no model is called. These sizing holds also do not consume the
+three-attempt budget for later transient model failures. Worker recovery reclaims
+only the selected reservation, preserving deferred and separately held work.
+One invocation still generates at most one proposal and one independent review;
+the normal worker loop or subsequent foreground invocations process the rest.
+
+Missing/invalid evidence remains `held_context_unavailable`; this change does not
+silently treat it as an oversized valid source. The final hard-cap guard also
+retains that reason if it detects an unexpected prompt-size failure.
+Public size diagnostics and a no-model backlog preflight remain follow-up work
+under #20. Extraction projection and resident-memory improvements remain separate
+work. Existing held batches are not automatically retried or discarded.
 
 ## Proposal, review, and identity
 

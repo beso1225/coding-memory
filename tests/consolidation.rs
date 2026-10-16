@@ -49,6 +49,17 @@ fn stage_bundle(
     title: &str,
     claim: &str,
 ) -> Result<()> {
+    stage_bundle_conditions(state, root, b, now, title, claim, &["SQLite"])
+}
+fn stage_bundle_conditions(
+    state: &mut State,
+    root: &std::path::Path,
+    b: &Evidence,
+    now: i64,
+    title: &str,
+    claim: &str,
+    conditions: &[&str],
+) -> Result<()> {
     let digest = evidence::save(root, b)?;
     state.enqueue(&b.run, "alpha", "/repo", 2)?;
     let c = state.claim(3, 10)?.unwrap();
@@ -57,7 +68,7 @@ fn stage_bundle(
     let c = state.claim_extraction("alpha", 6, 100)?.unwrap();
     let v = extraction::decode(
         &serde_json::to_vec(
-            &json!({"schema_version":1,"role":"extraction","project_id":"alpha","candidates":[{"kind":"constraint","title":title,"claim":claim,"scope":{"kind":"project","project_id":"alpha"},"conditions":["SQLite"],"verification":"user_stated","evidence":[{"bundle":digest,"item":"U"}]}]}),
+            &json!({"schema_version":1,"role":"extraction","project_id":"alpha","candidates":[{"kind":"constraint","title":title,"claim":claim,"scope":{"kind":"project","project_id":"alpha"},"conditions":conditions,"verification":"user_stated","evidence":[{"bundle":digest,"item":"U"}]}]}),
         )?,
         b,
         &digest,
@@ -1117,7 +1128,7 @@ async fn consolidation_reserves_review_headroom_before_calling_either_model() ->
             if fits {
                 None
             } else {
-                Some("held_context_unavailable")
+                Some("held_context_too_large")
             }
         );
         assert_eq!(
@@ -1126,5 +1137,317 @@ async fn consolidation_reserves_review_headroom_before_calling_either_model() ->
         );
         assert_eq!(fs::read_dir(&vault)?.count(), usize::from(fits));
     }
+    Ok(())
+}
+
+struct PartitionModel {
+    role: &'static str,
+    fail: bool,
+    supplied: std::sync::Mutex<Vec<Vec<String>>>,
+}
+impl PartitionModel {
+    fn new(role: &'static str, fail: bool) -> Self {
+        Self {
+            role,
+            fail,
+            supplied: Default::default(),
+        }
+    }
+}
+impl coding_memory::generation::Backend for PartitionModel {
+    fn external(&self) -> bool {
+        false
+    }
+    fn provenance(&self) -> serde_json::Value {
+        json!({"backend":"fixture","model":self.role})
+    }
+    async fn generate(
+        &self,
+        r: coding_memory::generation::Request,
+    ) -> std::result::Result<coding_memory::generation::Output, coding_memory::generation::Failure>
+    {
+        assert!(r.prompt.len() <= extraction::MAX_INPUT);
+        let input: serde_json::Value =
+            serde_json::from_str(r.prompt.split_once("INPUT_JSON\n").unwrap().1).unwrap();
+        let context = if self.role == "review" {
+            &input["context"]
+        } else {
+            &input
+        };
+        let batch: coding_memory::consolidation_state::Batch =
+            serde_json::from_value(context["batch"].clone()).unwrap();
+        self.supplied
+            .lock()
+            .unwrap()
+            .push(batch.candidates.iter().map(|c| c.id.clone()).collect());
+        if self.fail {
+            return Err(coding_memory::generation::Failure::Timeout);
+        }
+        let output = if self.role == "review" {
+            let decisions: Vec<_> = input["proposal"]["operations"].as_array().unwrap().iter().map(|op| json!({"operation":op["id"],"decision":"accept","rationale":"Synthetic independent review"})).collect();
+            json!({"schema_version":1,"role":"review","decisions":decisions})
+        } else {
+            let operations: Vec<_> = batch
+                .candidates
+                .iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    let one = serde_json::from_value(
+                        json!({"id":batch.id,"project":batch.project,"candidates":[c]}),
+                    )
+                    .unwrap();
+                    let mut op = proposal(&one, "create", None)["operations"][0].clone();
+                    op["id"] = json!(format!("op{i}"));
+                    op
+                })
+                .collect();
+            json!({"schema_version":1,"role":"consolidation","operations":operations})
+        };
+        Ok(coding_memory::generation::Output {
+            bytes: serde_json::to_vec(&output).unwrap(),
+            runtime_version: "fixture".into(),
+            thread_id: None,
+        })
+    }
+}
+fn partition_sources(
+    state: &mut State,
+    root: &std::path::Path,
+    template: &Evidence,
+    sizes: &[usize],
+) -> Result<Vec<String>> {
+    let mut ids = Vec::new();
+    for (n, size) in sizes.iter().enumerate() {
+        let mut source = template.clone();
+        source.run.thread = format!("partition-{n}");
+        source.items[0]["text"] = json!("x".repeat(*size * 1024));
+        let text = format!("factq{n}");
+        stage_bundle_conditions(state, root, &source, 10 + n as i64, &text, &text, &[&text])?;
+        ids.push(
+            state
+                .candidates("alpha")?
+                .into_iter()
+                .find(|c| c.candidate.title == text)
+                .unwrap()
+                .id,
+        );
+    }
+    Ok(ids)
+}
+#[tokio::test]
+async fn size_partitions_preserve_order_and_publish_every_deferred_candidate() -> Result<()> {
+    for (size_kib, per_batch) in [(60, 2), (90, 1)] {
+        let (d, _state, _batch, bundles, _) = knowledge_fixture()?;
+        let root = d.path().join("partition");
+        let vault = d.path().join("vault");
+        fs::create_dir(&root)?;
+        fs::create_dir(&vault)?;
+        let mut state = State::open(&root.join("state.sqlite"))?;
+        state.register_project("alpha", "/repo", 1)?;
+        let expected = partition_sources(
+            &mut state,
+            &root,
+            bundles.values().next().unwrap(),
+            &[size_kib; 6],
+        )?;
+        let proposer = PartitionModel::new("consolidation", false);
+        let reviewer = PartitionModel::new("review", false);
+        for n in 0..(6 / per_batch) {
+            coding_memory::consolidation_worker::consolidate(
+                &mut state, &root, &vault, "alpha", true, &proposer, &reviewer,
+            )
+            .await?
+            .unwrap();
+            let candidates = state.candidates("alpha")?;
+            assert_eq!(
+                candidates.iter().filter(|c| c.state == "consumed").count(),
+                (n + 1) * per_batch
+            );
+            assert_eq!(
+                candidates.iter().filter(|c| c.state == "ready").count(),
+                6 - (n + 1) * per_batch
+            );
+            assert!(
+                candidates
+                    .iter()
+                    .all(|c| c.state == "consumed" || c.state == "ready")
+            );
+        }
+        let supplied = proposer.supplied.lock().unwrap();
+        assert_eq!(
+            *supplied,
+            expected
+                .chunks(per_batch)
+                .map(|ids| ids.to_vec())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(*supplied, *reviewer.supplied.lock().unwrap());
+        assert_eq!(fs::read_dir(&vault)?.count(), 6);
+        assert!(
+            state
+                .consolidation_status()?
+                .iter()
+                .all(|b| b.state == "applied")
+        );
+    }
+    Ok(())
+}
+#[tokio::test]
+async fn individually_oversized_candidate_does_not_block_later_work() -> Result<()> {
+    let (d, _state, _batch, bundles, _) = knowledge_fixture()?;
+    let root = d.path().join("partition");
+    let vault = d.path().join("vault");
+    fs::create_dir(&root)?;
+    fs::create_dir(&vault)?;
+    let path = root.join("state.sqlite");
+    let mut state = State::open(&path)?;
+    state.register_project("alpha", "/repo", 1)?;
+    let ids = partition_sources(
+        &mut state,
+        &root,
+        bundles.values().next().unwrap(),
+        &[300, 80],
+    )?;
+    let proposer = PartitionModel::new("consolidation", false);
+    let reviewer = PartitionModel::new("review", false);
+    coding_memory::consolidation_worker::consolidate(
+        &mut state, &root, &vault, "alpha", true, &proposer, &reviewer,
+    )
+    .await?
+    .unwrap();
+    drop(state);
+    let mut state = State::open(&path)?;
+    let candidates = state.candidates("alpha")?;
+    assert_eq!(
+        candidates.iter().find(|c| c.id == ids[0]).unwrap().state,
+        "held"
+    );
+    assert_eq!(
+        candidates.iter().find(|c| c.id == ids[1]).unwrap().state,
+        "consumed"
+    );
+    assert_eq!(
+        *proposer.supplied.lock().unwrap(),
+        vec![vec![ids[1].clone()]]
+    );
+    let status = state.consolidation_status()?;
+    let held = status.iter().find(|b| b.state == "held").unwrap();
+    assert_eq!(held.reason.as_deref(), Some("held_context_too_large"));
+    assert!(
+        coding_memory::consolidation_worker::consolidate(
+            &mut state, &root, &vault, "alpha", true, &proposer, &reviewer
+        )
+        .await?
+        .is_none()
+    );
+    state.retry_batch(held.id, 100)?;
+    assert_eq!(
+        state
+            .candidates("alpha")?
+            .iter()
+            .filter(|c| c.state == "ready")
+            .count(),
+        1
+    );
+    assert_eq!(
+        state
+            .candidates("alpha")?
+            .iter()
+            .filter(|c| c.state == "consumed")
+            .count(),
+        1
+    );
+    Ok(())
+}
+#[tokio::test]
+async fn size_deferrals_do_not_consume_generation_retry_budget() -> Result<()> {
+    let (d, _state, _batch, bundles, _) = knowledge_fixture()?;
+    let root = d.path().join("partition");
+    let vault = d.path().join("vault");
+    fs::create_dir(&root)?;
+    fs::create_dir(&vault)?;
+    let mut state = State::open(&root.join("state.sqlite"))?;
+    state.register_project("alpha", "/repo", 1)?;
+    partition_sources(
+        &mut state,
+        &root,
+        bundles.values().next().unwrap(),
+        &[90; 5],
+    )?;
+    let proposer = PartitionModel::new("consolidation", false);
+    let reviewer = PartitionModel::new("review", false);
+    for _ in 0..4 {
+        coding_memory::consolidation_worker::consolidate(
+            &mut state, &root, &vault, "alpha", true, &proposer, &reviewer,
+        )
+        .await?;
+    }
+    let failing = PartitionModel::new("consolidation", true);
+    coding_memory::consolidation_worker::consolidate(
+        &mut state, &root, &vault, "alpha", true, &failing, &reviewer,
+    )
+    .await?;
+    state.retry_transient_batches("alpha", coding_memory::ingestion::now() + 100)?;
+    assert_eq!(
+        state
+            .candidates("alpha")?
+            .iter()
+            .filter(|c| c.state == "ready")
+            .count(),
+        1
+    );
+    assert!(
+        !state
+            .consolidation_status()?
+            .iter()
+            .any(|b| b.state == "exhausted")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn required_neighbor_is_not_dropped_to_make_an_oversized_candidate_fit() -> Result<()> {
+    let (d, _state, _batch, bundles, existing) = knowledge_fixture()?;
+    let root = d.path().join("neighbor-budget");
+    let vault = d.path().join("vault");
+    fs::create_dir(&root)?;
+    fs::create_dir(&vault)?;
+    let mut state = State::open(&root.join("state.sqlite"))?;
+    state.register_project("alpha", "/repo", 1)?;
+    let mut candidate_source = bundles.values().next().unwrap().clone();
+    candidate_source.items[0]["text"] = json!("x".repeat(80 * 1024));
+    stage_bundle(
+        &mut state,
+        &root,
+        &candidate_source,
+        10,
+        "Use leased jobs",
+        "Use leased jobs.",
+    )?;
+    let mut old_source = candidate_source.clone();
+    old_source.run.thread = "neighbor".into();
+    old_source.items[0]["text"] = json!("x".repeat(100 * 1024));
+    let digest = evidence::save(&root, &old_source)?;
+    let mut note = notes::parse(&existing.markdown)?;
+    note.metadata.evidence = vec![notes::Reference {
+        bundle: digest,
+        item: "U".into(),
+    }];
+    let original = notes::render(&note)?;
+    fs::write(vault.join("queue.md"), &original)?;
+    let proposer = PartitionModel::new("consolidation", false);
+    let reviewer = PartitionModel::new("review", false);
+    coding_memory::consolidation_worker::consolidate(
+        &mut state, &root, &vault, "alpha", true, &proposer, &reviewer,
+    )
+    .await?;
+    assert!(proposer.supplied.lock().unwrap().is_empty());
+    assert!(reviewer.supplied.lock().unwrap().is_empty());
+    assert_eq!(state.candidates("alpha")?[0].state, "held");
+    assert_eq!(
+        state.consolidation_status()?[0].reason.as_deref(),
+        Some("held_context_too_large")
+    );
+    assert_eq!(fs::read_to_string(vault.join("queue.md"))?, original);
     Ok(())
 }

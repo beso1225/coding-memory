@@ -24,7 +24,7 @@ pub struct ExtractionStatus {
     pub attempts: i64,
     pub provenance: Option<String>,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StagedCandidate {
     pub id: String,
     pub state: String,

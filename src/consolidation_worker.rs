@@ -119,10 +119,7 @@ fn context(
     for (digest, items) in requested {
         let b = load_projection(root, &digest, &items)?;
         total += serde_json::to_vec(&projection(&digest, &b))?.len();
-        ensure!(
-            total <= extraction::MAX_INPUT,
-            "Projected evidence exceeds input cap"
-        );
+        ensure!(total <= extraction::MAX_INPUT, INPUT_TOO_LARGE);
         if external {
             ensure!(
                 state.external_allowed(&b.project)?,
@@ -166,6 +163,87 @@ fn input_budget(input: &Value) -> Result<InputBudget> {
         input_limit: extraction::MAX_INPUT,
         proposal_limit: extraction::MAX_OUTPUT,
     })
+}
+
+struct ModelContext {
+    existing: Vec<Existing>,
+    bundles: HashMap<String, Evidence>,
+    input: Value,
+    budget: InputBudget,
+}
+fn prepare_context(
+    state: &State,
+    root: &Path,
+    search: &Search,
+    batch: &Batch,
+    external: bool,
+) -> Result<Option<ModelContext>> {
+    let (existing, bundles) = match context(state, root, search, batch, external) {
+        Ok(context) => context,
+        Err(error) if error.to_string() == INPUT_TOO_LARGE => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let input = json!({"batch":batch,"existing":existing,"evidence":projections(&bundles)});
+    let budget = input_budget(&input)?;
+    if !budget.fits() {
+        return Ok(None);
+    }
+    Ok(Some(ModelContext {
+        existing,
+        bundles,
+        input,
+        budget,
+    }))
+}
+
+/// Greedily select a stable prefix, skipping candidates that cannot fit alone.
+/// Every trial retrieves its own full neighbor set; notes are never dropped just
+/// to make a new memory fit. Reservations change only after sizing completes.
+fn select_context(
+    state: &mut State,
+    root: &Path,
+    search: &Search,
+    batch: &mut Batch,
+    external: bool,
+    provenance: &mut Value,
+) -> Result<Option<ModelContext>> {
+    let mut trial = Batch {
+        id: batch.id,
+        project: batch.project.clone(),
+        candidates: Vec::new(),
+    };
+    let mut selected = None;
+    let mut oversized = Vec::new();
+    for candidate in &batch.candidates {
+        trial.candidates.push(candidate.clone());
+        if let Some(context) = prepare_context(state, root, search, &trial, external)? {
+            selected = Some(context);
+            continue;
+        }
+        trial.candidates.pop();
+        let fits_alone = if trial.candidates.is_empty() {
+            false
+        } else {
+            let single = Batch {
+                id: batch.id,
+                project: batch.project.clone(),
+                candidates: vec![candidate.clone()],
+            };
+            prepare_context(state, root, search, &single, external)?.is_some()
+        };
+        if fits_alone {
+            break;
+        }
+        oversized.push(candidate.id.clone());
+    }
+    let ids: Vec<_> = trial.candidates.iter().map(|c| c.id.clone()).collect();
+    provenance["partition"] = json!({
+        "selected":ids,"oversized":oversized,
+        "deferred_count":batch.candidates.len() - ids.len() - oversized.len()
+    });
+    state.partition_batch(batch, &ids, &oversized, provenance, ingestion::now())?;
+    batch.candidates = trial.candidates;
+    Ok(selected)
 }
 
 async fn generate(
@@ -224,7 +302,7 @@ pub async fn consolidate(
     proposer: &impl Backend,
     reviewer: &impl Backend,
 ) -> Result<Option<i64>> {
-    let Some(batch) = state.reserve_batch(project, ingestion::now(), trigger)? else {
+    let Some(mut batch) = state.reserve_batch(project, ingestion::now(), trigger)? else {
         return Ok(None);
     };
     let mut provenance = json!({"schema_version":1});
@@ -241,12 +319,17 @@ pub async fn consolidate(
         failure_stage = "held_context_unavailable";
         let search = Search::new(root, vault_path)?;
         search.rebuild()?;
-        let (existing, bundles) = context(state, root, &search, &batch, external)?;
-        let input = json!({"batch":batch,"existing":existing,"evidence":projections(&bundles)});
+        let Some(ModelContext {
+            existing,
+            bundles,
+            input,
+            budget,
+        }) = select_context(state, root, &search, &mut batch, external, &mut provenance)?
+        else {
+            return Ok(false);
+        };
         provenance["context"] = input.clone();
-        let budget = input_budget(&input)?;
         provenance["input_budget"] = serde_json::to_value(&budget)?;
-        ensure!(budget.fits(), INPUT_TOO_LARGE);
         failure_stage = "held_invalid_proposal";
         let bytes = generate(
             proposer,
@@ -317,14 +400,18 @@ pub async fn consolidate(
             &provenance,
             ingestion::now(),
         )?;
-        Ok::<_, anyhow::Error>(())
+        Ok::<_, anyhow::Error>(true)
     }
     .await;
-    if let Err(error) = result {
-        // Store a bounded diagnostic without source/prompt contents.
-        let reason = hold_reason(&error, failure_stage);
-        state.hold_batch(batch.id, &reason, &provenance)?;
-        return Ok(Some(batch.id));
+    match result {
+        Err(error) => {
+            // Store a bounded diagnostic without source/prompt contents.
+            let reason = hold_reason(&error, failure_stage);
+            state.hold_batch(batch.id, &reason, &provenance)?;
+            return Ok(Some(batch.id));
+        }
+        Ok(false) => return Ok(Some(batch.id)),
+        Ok(true) => {}
     }
     vault::apply(state, root, vault_path, batch.id, |_| Ok(()))?;
     Ok(Some(batch.id))
