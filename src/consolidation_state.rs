@@ -40,8 +40,63 @@ pub struct BatchStatus {
     pub state: String,
     pub reason: Option<String>,
     pub review: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<crate::consolidation_preflight::PartitionDiagnostic>,
 }
 impl State {
+    pub(crate) fn next_batch_id(&self) -> Result<i64> {
+        let previous: i64 = self.db.query_row(
+            "SELECT coalesce((SELECT seq FROM sqlite_sequence WHERE name='consolidation_jobs'),0)",
+            [],
+            |r| r.get(0),
+        )?;
+        previous
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("Batch ID overflow"))
+    }
+    pub(crate) fn preflight_batch(&self, project: &str, id: i64) -> Result<Batch> {
+        let valid:bool=self.db.query_row("SELECT EXISTS(SELECT 1 FROM consolidation_jobs WHERE id=?1 AND project=?2 AND state IN ('held','exhausted'))",params![id,project],|r|r.get(0))?;
+        ensure!(
+            valid,
+            "Preflight requires a held or exhausted batch in the requested project"
+        );
+        let mut q = self.db.prepare("SELECT c.id,c.state,c.candidate,c.created_at,EXISTS(SELECT 1 FROM owned_stores o WHERE o.id=c.store) OR EXISTS(SELECT 1 FROM exclusions e WHERE e.store=c.store AND e.thread=c.thread AND e.turn=c.turn) FROM candidates c JOIN batch_candidates b ON b.candidate=c.id WHERE b.batch=?1 AND c.project=?2 ORDER BY c.created_at,c.id LIMIT 21")?;
+        let rows = q
+            .query_map(params![id, project], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, bool>(4)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        ensure!(
+            !rows.is_empty() && rows.len() <= 20,
+            "Preflight batch must contain 1..20 candidates"
+        );
+        let candidates = rows
+            .into_iter()
+            .map(|(id, state, json, created_at, excluded)| {
+                ensure!(
+                    state == "held" && !excluded,
+                    "Batch contains non-held or excluded candidates"
+                );
+                Ok(StagedCandidate {
+                    id,
+                    state,
+                    candidate: serde_json::from_str(&json)?,
+                    created_at,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Batch {
+            id,
+            project: project.into(),
+            candidates,
+        })
+    }
     pub fn reserve_batch(
         &mut self,
         project: &str,
@@ -185,8 +240,16 @@ impl State {
                 params![batch.id, c.id],
             )?;
             if held.contains(c.id.as_str()) {
-                let diagnostic =
-                    serde_json::json!({"schema_version":1,"size_partition_parent":batch.id});
+                let sizing = provenance
+                    .get("diagnostics")
+                    .and_then(|v| {
+                        serde_json::from_value::<
+                                crate::consolidation_preflight::PartitionDiagnostic,
+                            >(v.clone())
+                            .ok()
+                    })
+                    .and_then(|d| d.held_candidate(&c.id));
+                let diagnostic = serde_json::json!({"schema_version":1,"size_partition_parent":batch.id,"diagnostics":sizing});
                 tx.execute("INSERT INTO consolidation_jobs(project,state,reason,created_at,lease_until,provenance) VALUES(?1,'held','held_context_too_large',?2,?2,?3)",params![batch.project,now,diagnostic.to_string()])?;
                 let id = tx.last_insert_rowid();
                 tx.execute(
@@ -198,9 +261,22 @@ impl State {
                 tx.execute("UPDATE candidates SET state='ready' WHERE id=?1", [&c.id])?;
             }
         }
+        let mut stored = provenance.clone();
+        if let Some(id) = parent_hold {
+            let sizing = provenance
+                .get("diagnostics")
+                .and_then(|v| {
+                    serde_json::from_value::<crate::consolidation_preflight::PartitionDiagnostic>(
+                        v.clone(),
+                    )
+                    .ok()
+                })
+                .and_then(|d| d.held_candidate(id));
+            stored["diagnostics"] = serde_json::to_value(sizing)?;
+        }
         tx.execute(
             "UPDATE consolidation_jobs SET provenance=?2 WHERE id=?1",
-            params![batch.id, provenance.to_string()],
+            params![batch.id, stored.to_string()],
         )?;
         if selected.is_empty() {
             if parent_hold.is_some() {
@@ -304,6 +380,10 @@ impl State {
                     project,
                     state,
                     reason,
+                    diagnostics: provenance
+                        .as_ref()
+                        .and_then(|p| p.get("diagnostics"))
+                        .and_then(|v| serde_json::from_value(v.clone()).ok()),
                     review: provenance.and_then(|p| p.get("decisions").cloned()),
                 })
             })
@@ -476,6 +556,32 @@ mod partition_tests {
             candidates.iter().find(|c| c.id == "c").unwrap().state,
             "ready"
         );
+        Ok(())
+    }
+    #[test]
+    fn preflight_batch_bounds_the_candidate_count() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut state = State::open(&dir.path().join("state.sqlite"))?;
+        state.register_project("alpha", "/repo", 1)?;
+        let candidate = json!({"kind":"constraint","title":"Use leases","claim":"Use leases.","scope":{"kind":"project","project_id":"alpha"},"conditions":["SQLite"],"verification":"user_stated","evidence":[{"bundle":"0".repeat(64),"item":"U"}]});
+        for n in 0..21 {
+            state.db.execute(
+                "INSERT INTO candidates(id,project,state,candidate,created_at) VALUES(?1,'alpha','ready',?2,1)",
+                params![format!("c{n:02}"), candidate.to_string()],
+            )?;
+        }
+        // Reservation caps at twenty; attach the twenty-first to exceed the bound.
+        let batch = state.reserve_batch("alpha", 10, true)?.unwrap();
+        state.hold_batch_at(batch.id, "fixture", &json!({}), 11)?;
+        state.db.execute(
+            "INSERT INTO batch_candidates VALUES(?1,'c20')",
+            params![batch.id],
+        )?;
+        state
+            .db
+            .execute("UPDATE candidates SET state='held' WHERE id='c20'", [])?;
+        let error = state.preflight_batch("alpha", batch.id).unwrap_err();
+        assert!(error.to_string().contains("1..20"), "{error}");
         Ok(())
     }
 }

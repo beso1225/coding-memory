@@ -84,6 +84,10 @@ counts for runs/extraction jobs/candidates/consolidation jobs, and bounded group
 failure reasons, plus `runtime_checks` metadata. Cycle counters count attempts, not successful memories. Use
 `status`, `extraction-status --project-id PROJECT`, `candidates --project-id PROJECT`
 and `consolidation-status` to inspect individual records.
+New consolidation records include bounded sizing diagnostics. Use
+`consolidation-preflight --vault VAULT --project-id PROJECT --batch BATCH` for a
+model-free preview of held work before deliberate retry; it does not release jobs
+or rebuild the live index. See [consolidation](consolidation.md#held-batch-preflight-issue-20-final-increment).
 
 Successful empty extraction is `succeeded_empty`; it is distinct from `queued`,
 `held`, `exhausted`, application `conflict` or generation failure. A completed cycle

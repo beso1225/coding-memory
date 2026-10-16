@@ -1451,3 +1451,383 @@ async fn required_neighbor_is_not_dropped_to_make_an_oversized_candidate_fit() -
     assert_eq!(fs::read_to_string(vault.join("queue.md"))?, original);
     Ok(())
 }
+
+fn run_preflight(
+    root: &std::path::Path,
+    vault: &std::path::Path,
+    batch: i64,
+    local_only: bool,
+) -> Result<serde_json::Value> {
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_coding-memory"));
+    command
+        .env("PATH", "/no-executables")
+        .env("HOME", root)
+        .env("CODEX_HOME", root.join("unused-auth"))
+        .arg("--state-dir")
+        .arg(root)
+        .arg("consolidation-preflight")
+        .arg("--vault")
+        .arg(vault)
+        .args(["--project-id", "alpha", "--batch", &batch.to_string()]);
+    if local_only {
+        command.arg("--local-only");
+    }
+    let output = command.output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(serde_json::from_slice(&output.stdout)?)
+}
+#[tokio::test]
+async fn preflight_uses_live_sizing_without_changing_held_jobs_or_the_real_index() -> Result<()> {
+    let (d, _state, _batch, bundles, _) = knowledge_fixture()?;
+    let root = d.path().join("preflight");
+    let vault = d.path().join("vault");
+    fs::create_dir(&root)?;
+    fs::create_dir(&vault)?;
+    let mut state = State::open(&root.join("state.sqlite"))?;
+    state.register_project("alpha", "/repo", 1)?;
+    let ids = partition_sources(
+        &mut state,
+        &root,
+        bundles.values().next().unwrap(),
+        &[60; 6],
+    )?;
+    let held = state.reserve_batch("alpha", 20, true)?.unwrap();
+    state.hold_batch_at(held.id, "held_context_unavailable", &json!({}), 21)?;
+    fs::write(root.join("search.sqlite"), "existing-index-must-not-change")?;
+    let before = (
+        serde_json::to_value(state.candidates("alpha")?)?,
+        serde_json::to_value(state.consolidation_status()?)?,
+    );
+    #[cfg(unix)]
+    let original_mode = {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(&root)?.permissions().mode()
+    };
+    let report = run_preflight(&root, &vault, held.id, true)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(fs::metadata(&root)?.permissions().mode(), original_mode);
+    }
+    let plans = report["batches"][0]["partitions"].as_array().unwrap();
+    assert_eq!(plans.len(), 3);
+    assert_eq!(plans[0]["selected"]["candidate_ids"], json!(&ids[..2]));
+    assert_eq!(plans[1]["selected"]["candidate_ids"], json!(&ids[2..4]));
+    assert_eq!(plans[2]["selected"]["candidate_ids"], json!(&ids[4..]));
+    assert_eq!(plans[0]["selected"]["candidate_count"], 2);
+    assert_eq!(plans[0]["selected"]["referenced_item_count"], 2);
+    assert_eq!(plans[0]["selected"]["related_note_count"], 0);
+    assert_eq!(report["snapshot_only"], true);
+    assert_eq!(serde_json::to_value(state.candidates("alpha")?)?, before.0);
+    assert_eq!(
+        serde_json::to_value(state.consolidation_status()?)?,
+        before.1
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("search.sqlite"))?,
+        "existing-index-must-not-change"
+    );
+    assert!(!root.join("generation").exists());
+    assert!(!root.join("unused-auth").exists());
+    assert_eq!(fs::read_dir(&vault)?.count(), 0);
+    fs::remove_file(root.join("search.sqlite"))?;
+    state.retry_batch(held.id, 22)?;
+    let proposer = PartitionModel::new("consolidation", false);
+    let reviewer = PartitionModel::new("review", false);
+    let id = coding_memory::consolidation_worker::consolidate(
+        &mut state, &root, &vault, "alpha", true, &proposer, &reviewer,
+    )
+    .await?
+    .unwrap();
+    let status = serde_json::to_value(state.consolidation_status()?)?;
+    let actual = status
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["id"] == id)
+        .unwrap();
+    assert_eq!(
+        actual["diagnostics"]["selected"]["budget"],
+        plans[0]["selected"]["budget"]
+    );
+    Ok(())
+}
+#[test]
+fn preflight_restarts_hypothetical_ids_for_each_requested_batch() -> Result<()> {
+    use coding_memory::consolidation_preflight::preflight;
+    let (d, _state, _batch, bundles, _) = knowledge_fixture()?;
+    let root = d.path().join("preflight");
+    let vault = d.path().join("vault");
+    fs::create_dir(&root)?;
+    fs::create_dir(&vault)?;
+    let mut state = State::open(&root.join("state.sqlite"))?;
+    state.register_project("alpha", "/repo", 1)?;
+    // A first held batch that allocates a full set of synthetic partition IDs, then a
+    // second held batch. Inspecting the second batch together with the first must match
+    // inspecting it alone, so a standalone retry's reported sizes stay accurate.
+    let mut oversized_source = bundles.values().next().unwrap().clone();
+    oversized_source.run.turn = "oversized".into();
+    let _oversized = partition_sources(&mut state, &root, &oversized_source, &[300; 20])?;
+    let first = state.reserve_batch("alpha", 20, true)?.unwrap();
+    state.hold_batch_at(first.id, "fixture", &json!({}), 21)?;
+    let mut small = Vec::new();
+    for n in 0..2 {
+        let mut source = bundles.values().next().unwrap().clone();
+        source.run.thread = format!("small-{n}");
+        source.run.turn = "small".into();
+        source.items[0]["text"] = json!("x".repeat(60 * 1024));
+        let text = format!("smallq{n}");
+        stage_bundle_conditions(
+            &mut state,
+            &root,
+            &source,
+            40 + n as i64,
+            &text,
+            &text,
+            &[&text],
+        )?;
+        small.push(
+            state
+                .candidates("alpha")?
+                .into_iter()
+                .find(|c| c.candidate.title == text)
+                .unwrap()
+                .id,
+        );
+    }
+    let second = state.reserve_batch("alpha", 30, true)?.unwrap();
+    state.hold_batch_at(second.id, "fixture", &json!({}), 31)?;
+    let alone = serde_json::to_value(preflight(
+        &state,
+        &root,
+        &vault,
+        "alpha",
+        &[second.id],
+        false,
+    )?)?;
+    let combined = serde_json::to_value(preflight(
+        &state,
+        &root,
+        &vault,
+        "alpha",
+        &[first.id, second.id],
+        false,
+    )?)?;
+    assert_eq!(combined["batches"][1]["batch"], json!(second.id));
+    assert_eq!(
+        combined["batches"][1]["partitions"][0]["selected"]["candidate_ids"],
+        json!(&small)
+    );
+    assert_eq!(
+        combined["batches"][1]["partitions"][0]["selected"]["budget"],
+        alone["batches"][0]["partitions"][0]["selected"]["budget"]
+    );
+    Ok(())
+}
+#[test]
+fn preflight_reports_the_generation_assumption_without_changing_policy() -> Result<()> {
+    let d = tempdir()?;
+    let root = d.path().join("preflight");
+    let vault = d.path().join("vault");
+    fs::create_dir(&root)?;
+    fs::create_dir(&vault)?;
+    let mut state = State::open(&root.join("state.sqlite"))?;
+    state.register_project("alpha", "/repo", 1)?;
+    candidate(&mut state, &root, 0, 10)?;
+    let held = state.reserve_batch("alpha", 20, true)?.unwrap();
+    state.hold_batch_at(held.id, "fixture", &json!({}), 21)?;
+    let local = run_preflight(&root, &vault, held.id, true)?;
+    assert_eq!(local["assumes_external"], false);
+    // The default assumes external generation. A missing policy is reported as a
+    // batch error, but stored permission is never changed by the preview.
+    let external = run_preflight(&root, &vault, held.id, false)?;
+    assert_eq!(external["assumes_external"], true);
+    assert_eq!(
+        external["batches"][0]["error"]["reason"],
+        "held_external_policy"
+    );
+    assert!(!state.external_allowed("alpha")?);
+    Ok(())
+}
+#[test]
+fn preflight_distinguishes_invalid_source_from_oversized_source_without_source_text() -> Result<()>
+{
+    let (d, _state, _batch, bundles, _) = knowledge_fixture()?;
+    let root = d.path().join("preflight");
+    let vault = d.path().join("vault");
+    fs::create_dir(&root)?;
+    fs::create_dir(&vault)?;
+    let mut state = State::open(&root.join("state.sqlite"))?;
+    state.register_project("alpha", "/repo", 1)?;
+    partition_sources(
+        &mut state,
+        &root,
+        bundles.values().next().unwrap(),
+        &[300, 80],
+    )?;
+    let held = state.reserve_batch("alpha", 20, true)?.unwrap();
+    state.hold_batch_at(held.id, "held_context_unavailable", &json!({}), 21)?;
+    let report = run_preflight(&root, &vault, held.id, true)?;
+    let oversized = &report["batches"][0]["partitions"][0]["oversized"][0];
+    assert_eq!(oversized["reason"], "held_context_too_large");
+    assert!(oversized["budget"]["consolidation_bytes"].as_u64().unwrap() > 300 * 1024);
+    assert_eq!(oversized["referenced_item_count"], 1);
+    assert_eq!(oversized["related_note_count"], 0);
+    let source = root.join("evidence").join(format!(
+        "{}.json",
+        held.candidates[0].candidate.evidence[0].bundle
+    ));
+    fs::write(&source, "PRIVATE-CONTENT-must-not-appear")?;
+    let report = run_preflight(&root, &vault, held.id, true)?;
+    assert_eq!(
+        report["batches"][0]["error"]["reason"],
+        "held_context_unavailable"
+    );
+    assert_eq!(
+        report["batches"][0]["error"]["detail"],
+        "source_hash_mismatch"
+    );
+    assert!(!report.to_string().contains("PRIVATE-CONTENT"));
+    assert_eq!(
+        fs::read_to_string(&source)?,
+        "PRIVATE-CONTENT-must-not-appear"
+    );
+    assert!(state.candidates("alpha")?.iter().all(|c| c.state == "held"));
+    fs::remove_file(&source)?;
+    let missing = run_preflight(&root, &vault, held.id, true)?;
+    assert_eq!(missing["batches"][0]["error"]["detail"], "source_missing");
+    state.retry_batch(held.id, 22)?;
+    let proposer = PartitionModel::new("consolidation", false);
+    let reviewer = PartitionModel::new("review", false);
+    // Normal processing persists the same sanitized failure, without model calls.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let id = runtime
+        .block_on(coding_memory::consolidation_worker::consolidate(
+            &mut state, &root, &vault, "alpha", true, &proposer, &reviewer,
+        ))?
+        .unwrap();
+    let statuses = serde_json::to_value(state.consolidation_status()?)?;
+    let status = statuses
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["id"] == id)
+        .unwrap();
+    assert_eq!(status["reason"], "held_context_unavailable");
+    assert_eq!(status["diagnostics"]["error"]["detail"], "source_missing");
+    assert!(proposer.supplied.lock().unwrap().is_empty());
+    Ok(())
+}
+
+#[test]
+fn preflight_is_read_only_bounded_and_project_scoped() -> Result<()> {
+    use coding_memory::consolidation_preflight::preflight;
+    let (d, mut state, batch, _bundles, _) = knowledge_fixture()?;
+    let vault = d.path().join("vault");
+    fs::create_dir(&vault)?;
+    assert!(preflight(&state, d.path(), &vault, "alpha", &[batch.id], false).is_err());
+    state.hold_batch_at(batch.id, "fixture", &json!({}), 21)?;
+    state.register_project("beta", "/other", 1)?;
+    for ids in [
+        vec![],
+        vec![0],
+        vec![-1],
+        vec![batch.id, batch.id],
+        vec![batch.id; 21],
+    ] {
+        assert!(preflight(&state, d.path(), &vault, "alpha", &ids, false).is_err());
+    }
+    assert!(preflight(&state, d.path(), &vault, "beta", &[batch.id], false).is_err());
+    let mut reader = State::open_read_only(&d.path().join("state.sqlite"))?;
+    assert!(reader.set_external_policy("alpha", true).is_err());
+    let denied = serde_json::to_value(preflight(
+        &reader,
+        d.path(),
+        &vault,
+        "alpha",
+        &[batch.id],
+        true,
+    )?)?;
+    assert_eq!(
+        denied["batches"][0]["error"]["reason"],
+        "held_external_policy"
+    );
+    assert!(!state.external_allowed("alpha")?);
+    assert!(!d.path().join("search.sqlite").exists());
+    assert!(State::open_read_only(&d.path().join("nonexistent.sqlite")).is_err());
+    assert!(!d.path().join("nonexistent.sqlite").exists());
+    state.retry_batch(batch.id, 22)?;
+    assert!(preflight(&reader, d.path(), &vault, "alpha", &[batch.id], false).is_err());
+    Ok(())
+}
+#[test]
+fn preflight_preserves_neighbor_scope_and_origin_transmission_policy() -> Result<()> {
+    use coding_memory::consolidation_preflight::preflight;
+    let (d, mut state, batch, bundles, existing) = knowledge_fixture()?;
+    let vault = d.path().join("vault");
+    fs::create_dir(&vault)?;
+    state.hold_batch_at(batch.id, "fixture", &json!({}), 21)?;
+    state.set_external_policy("alpha", true)?;
+    state.register_project("beta", "/other", 1)?;
+    let mut source = bundles.values().next().unwrap().clone();
+    source.project = "beta".into();
+    let digest = evidence::save(d.path(), &source)?;
+    let mut note = notes::parse(&existing.markdown)?;
+    note.metadata.scope = notes::MemoryScope::Project {
+        project_id: "beta".into(),
+    };
+    note.metadata.evidence = vec![notes::Reference {
+        bundle: digest,
+        item: "U".into(),
+    }];
+    fs::write(vault.join("queue.md"), notes::render(&note)?)?;
+    // A foreign project note is outside the default retrieval scope.
+    let scoped = serde_json::to_value(preflight(
+        &state,
+        d.path(),
+        &vault,
+        "alpha",
+        &[batch.id],
+        true,
+    )?)?;
+    assert_eq!(
+        scoped["batches"][0]["partitions"][0]["selected"]["related_note_count"],
+        0
+    );
+    note.metadata.scope = notes::MemoryScope::Global;
+    fs::write(vault.join("queue.md"), notes::render(&note)?)?;
+    let denied = serde_json::to_value(preflight(
+        &state,
+        d.path(),
+        &vault,
+        "alpha",
+        &[batch.id],
+        true,
+    )?)?;
+    assert_eq!(
+        denied["batches"][0]["error"]["reason"],
+        "held_external_policy"
+    );
+    assert_eq!(denied["batches"][0]["error"]["related_note_count"], 1);
+    state.set_external_policy("beta", true)?;
+    let allowed = serde_json::to_value(preflight(
+        &state,
+        d.path(),
+        &vault,
+        "alpha",
+        &[batch.id],
+        true,
+    )?)?;
+    assert_eq!(
+        allowed["batches"][0]["partitions"][0]["selected"]["referenced_item_count"],
+        2
+    );
+    assert!(!allowed.to_string().contains("Use leased jobs"));
+    Ok(())
+}

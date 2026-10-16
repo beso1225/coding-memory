@@ -69,9 +69,15 @@ each call, and the actual proposer output remains capped at 64 KiB.
 
 The local generation provenance records `input_budget` with measured
 `consolidation_bytes`, `consolidation_target`, `review_max_bytes`, `input_limit`
-and `proposal_limit`. These size fields contain no source text. This is not yet
-a public preflight/status API. The local `partition` record names selected and
-individually oversized candidate IDs and counts candidates deferred by size.
+and `proposal_limit`. These size fields contain no source text. New batch records
+also expose typed `diagnostics` through `consolidation-status`: the selected
+context, individually oversized contexts, deferred count and any preparation
+error. Each context reports candidate IDs/count, related-note count, deduplicated
+referenced-item/bundle counts, budget and bounded reason/detail codes. Counts or
+budgets that could not be computed are `null`, not zero. Older records without
+these fields remain readable and omit `diagnostics`; use preflight to measure
+such held work against the current Vault. The local `partition` record retains
+selected/oversized candidate IDs and the deferred count.
 
 Candidates are examined in stable `created_at, id` order, up to the existing
 reservation limit of twenty. The Engine adds candidates while their complete
@@ -98,9 +104,70 @@ the normal worker loop or subsequent foreground invocations process the rest.
 Missing/invalid evidence remains `held_context_unavailable`; this change does not
 silently treat it as an oversized valid source. The final hard-cap guard also
 retains that reason if it detects an unexpected prompt-size failure.
-Public size diagnostics and a no-model backlog preflight remain follow-up work
-under #20. Extraction projection and resident-memory improvements remain separate
+Extraction input budgeting and resident-memory improvements remain separate
 work. Existing held batches are not automatically retried or discarded.
+
+## Held-batch preflight (Issue #20, final increment)
+
+Inspect explicitly selected held/exhausted batches before retrying them:
+
+```sh
+coding-memory --state-dir /path/to/state consolidation-status
+coding-memory --state-dir /path/to/state consolidation-preflight \
+  --vault /path/to/vault --project-id PROJECT --batch 6 --batch 7
+```
+
+The command accepts 1–20 distinct positive batch IDs belonging to the requested
+project, with 1–20 currently held, non-excluded candidates per batch. Processing,
+applied, abandoned, foreign-project, empty and excluded batches are rejected.
+It uses an existing read-only state connection, creates no directories or schema
+in the state root, and builds a fresh private search index in an automatically
+removed temporary directory. The real search index, queues, candidates, evidence,
+Vault and generation credentials are not changed. No Backend, Codex process,
+login, model call or network request is involved. The state database uses
+write-ahead logging, so read-only access may create or reuse SQLite's `-wal` and
+`-shm` coordination files in the state root while another connection holds the
+database open; no schema, rows or lasting state are written.
+
+By default preflight checks the same external-transmission permissions as Codex
+consolidation, including each evidence origin project. `--local-only` checks the
+local-generation case without those external permission gates; it still calls
+no model. It is an assumption for the report, not a change to stored policy.
+Publication barriers and default project/global neighbor scope remain enforced.
+
+The JSON report contains `schema_version`, `project`, `assumes_external`,
+`snapshot_only`, `invalid_note_count`, and `batches`. Each batch reports proposed
+`partitions` and a preparation `error`, if any. Partitions use the same selection
+and prompt builder as normal consolidation and include the diagnostics described
+above. Error details distinguish missing, corrupt, unsupported or oversized local
+source files, missing/ambiguous native locators, and policy denial without
+returning source text, filesystem paths or raw parser/process errors. Oversized
+valid inputs report their full serialized prompt size; counting writes to a byte
+counter rather than allocating an oversized prompt. At most one original source
+is parsed at a time and retained projected evidence stays within the hard cap.
+
+This is a current-state estimate, not an approval or an executable plan. Preview
+normalizes candidate state to `ready` as a retry would and numbers hypothetical
+partitions from the same next batch ID for every requested batch, advancing only
+across that batch's own partitions; it does not reserve those IDs or simulate
+model decisions, new Vault notes or cross-batch regrouping. Concurrent worker
+activity, permission changes, new publications and resulting neighbor retrieval
+can change later partitions.
+Invalid notes are counted and excluded by the normal index rules. Recheck if the
+Vault or queues change; normal generation always repeats all validations.
+
+Review the report, then deliberately retry only the batch whose cause is resolved:
+
+```sh
+coding-memory --state-dir /path/to/state consolidation-retry 6
+coding-memory --state-dir /path/to/state consolidate \
+  --vault /path/to/vault --project-id PROJECT --force \
+  --codex-binary /absolute/path/to/codex
+```
+
+A running worker may claim the released candidates before the foreground command.
+Preflight never releases them itself. An individually oversized required context
+continues to hold; no evidence truncation or deletion is authorized by a preview.
 
 ## Proposal, review, and identity
 

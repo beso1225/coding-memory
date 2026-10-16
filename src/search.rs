@@ -81,6 +81,7 @@ pub struct Rebuild {
 pub struct Search {
     root: PathBuf,
     vault: PathBuf,
+    temporary_index: Option<std::sync::Arc<tempfile::TempDir>>,
 }
 impl Search {
     pub fn new(root: &Path, vault: &Path) -> Result<Self> {
@@ -91,13 +92,37 @@ impl Search {
             "Engine state must be outside the vault"
         );
         State::open(&root.join("state.sqlite"))?;
-        Ok(Self { root, vault })
+        Ok(Self {
+            root,
+            vault,
+            temporary_index: None,
+        })
+    }
+    /// Reuse authoritative sources and publication checks with a private scratch index.
+    pub(crate) fn temporary(root: &Path, vault: &Path) -> Result<Self> {
+        let root = root.canonicalize()?;
+        let vault = vault.canonicalize()?;
+        ensure!(
+            vault.is_dir() && !root.starts_with(&vault),
+            "Engine state must be outside the vault"
+        );
+        State::open_read_only(&root.join("state.sqlite"))?;
+        let scratch = tempfile::tempdir()?;
+        evidence::private_directory(scratch.path())?;
+        Ok(Self {
+            root,
+            vault,
+            temporary_index: Some(std::sync::Arc::new(scratch)),
+        })
+    }
+    fn index_path(&self) -> PathBuf {
+        self.temporary_index.as_ref().map_or_else(
+            || self.root.join("search.sqlite"),
+            |dir| dir.path().join("search.sqlite"),
+        )
     }
     fn index(&self) -> Result<Connection> {
-        let db = Connection::open_with_flags(
-            self.root.join("search.sqlite"),
-            OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )?;
+        let db = Connection::open_with_flags(self.index_path(), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         db.busy_timeout(Duration::from_secs(5))?;
         let (version, vault): (i64, String) =
             db.query_row("SELECT version,vault FROM index_metadata", [], |r| {
@@ -196,7 +221,7 @@ impl Search {
         }
         // A resource failure aborts the rebuild rather than replacing the index with a prefix.
         ensure!(total <= 64 * 1024 * 1024, "Vault exceeds byte limit");
-        let mut db = Connection::open(self.root.join("search.sqlite"))?;
+        let mut db = Connection::open(self.index_path())?;
         db.busy_timeout(Duration::from_secs(5))?;
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS index_metadata(version INTEGER NOT NULL,vault TEXT NOT NULL);")?;
         let version: Option<i64> = db

@@ -29,3 +29,5 @@ pub mod service;
 
 pub mod compatibility;
 mod runtime_probe;
+
+pub mod consolidation_preflight;
