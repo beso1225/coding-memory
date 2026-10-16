@@ -39,7 +39,17 @@ fn candidate_with_text(
         coverage: vec![],
         items: vec![json!({"id":"U","type":"userMessage","text":claim})],
     };
-    let digest = evidence::save(root, &b)?;
+    stage_bundle(state, root, &b, now, title, claim)
+}
+fn stage_bundle(
+    state: &mut State,
+    root: &std::path::Path,
+    b: &Evidence,
+    now: i64,
+    title: &str,
+    claim: &str,
+) -> Result<()> {
+    let digest = evidence::save(root, b)?;
     state.enqueue(&b.run, "alpha", "/repo", 2)?;
     let c = state.claim(3, 10)?.unwrap();
     state.finish(&c, "completed", Some(&digest), 4)?;
@@ -49,7 +59,7 @@ fn candidate_with_text(
         &serde_json::to_vec(
             &json!({"schema_version":1,"role":"extraction","project_id":"alpha","candidates":[{"kind":"constraint","title":title,"claim":claim,"scope":{"kind":"project","project_id":"alpha"},"conditions":["SQLite"],"verification":"user_stated","evidence":[{"bundle":digest,"item":"U"}]}]}),
         )?,
-        &b,
+        b,
         &digest,
     )?;
     state.finish_extraction(&c, &v, &json!({}), now)?;
@@ -761,6 +771,26 @@ impl coding_memory::generation::Backend for NeighborModel {
         };
         assert_eq!(context["existing"].as_array().unwrap().len(), 1);
         assert_eq!(context["existing"][0]["id"], "queue-leases");
+        let batch: coding_memory::consolidation_state::Batch =
+            serde_json::from_value(context["batch"].clone()).unwrap();
+        let old = notes::parse(context["existing"][0]["markdown"].as_str().unwrap()).unwrap();
+        for reference in batch
+            .candidates
+            .iter()
+            .flat_map(|c| &c.candidate.evidence)
+            .chain(&old.metadata.evidence)
+        {
+            let bundle = &context["evidence"][&reference.bundle];
+            assert_eq!(bundle["source_bundle"], reference.bundle);
+            assert!(
+                bundle["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|i| i["id"] == reference.item)
+            );
+        }
+
         let output = if self.role == "review" {
             json!({"schema_version":1,"role":"review","decisions":[{"operation":"op1","decision":"accept","rationale":"Synthetic support and applicability preserved"}]})
         } else {
@@ -902,6 +932,121 @@ async fn retrieved_paraphrases_reach_both_roles_for_update_skip_and_distinct_rel
                     .all(|e| stored.metadata.evidence.contains(e))
             );
         }
+    }
+    Ok(())
+}
+
+struct ProjectionModel {
+    inner: Model,
+    hidden_citation: bool,
+}
+impl coding_memory::generation::Backend for ProjectionModel {
+    fn external(&self) -> bool {
+        false
+    }
+    fn provenance(&self) -> serde_json::Value {
+        self.inner.provenance()
+    }
+    async fn generate(
+        &self,
+        r: coding_memory::generation::Request,
+    ) -> std::result::Result<coding_memory::generation::Output, coding_memory::generation::Failure>
+    {
+        let input: serde_json::Value =
+            serde_json::from_str(r.prompt.split_once("INPUT_JSON\n").unwrap().1).unwrap();
+        let context = if self.inner.role == "review" {
+            &input["context"]
+        } else {
+            &input
+        };
+        let bundles = context["evidence"].as_object().unwrap();
+        assert_eq!(bundles.len(), 1);
+        let (digest, bundle) = bundles.iter().next().unwrap();
+        assert_eq!(bundle["projection_schema_version"], 1);
+        assert_eq!(bundle["source_bundle"], *digest);
+        assert_eq!(bundle["project"], "alpha");
+        assert_eq!(bundle["items"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            bundle["items"][0],
+            json!({"id":"U","type":"userMessage","text":"Use leased jobs."})
+        );
+        let mut out = self.inner.generate(r).await?;
+        if self.hidden_citation {
+            let mut value: serde_json::Value = serde_json::from_slice(&out.bytes).unwrap();
+            value["operations"][0]["draft"]["evidence"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"bundle":digest,"item":"hidden"}));
+            out.bytes = serde_json::to_vec(&value).unwrap();
+        }
+        Ok(out)
+    }
+}
+#[tokio::test]
+async fn consolidation_projects_large_originals_and_rejects_unsupplied_citations() -> Result<()> {
+    for hidden_citation in [false, true] {
+        let (d, _state, _batch, bundles, _) = knowledge_fixture()?;
+        let mut original = bundles.values().next().unwrap().clone();
+        original.run.thread = "large".into();
+        original.items.push(json!({"id":"hidden","type":"userMessage","text":"x".repeat(extraction::MAX_INPUT + 1)}));
+        // Use a separate project state to select only the candidate citing this source.
+        let root = d.path().join("projected");
+        let v = d.path().join("vault");
+        fs::create_dir(&root)?;
+        fs::create_dir(&v)?;
+        let mut state = State::open(&root.join("state.sqlite"))?;
+        state.register_project("alpha", "/repo", 1)?;
+        stage_bundle(
+            &mut state,
+            &root,
+            &original,
+            10,
+            "Use leased jobs",
+            "Use leased jobs.",
+        )?;
+        let digest = evidence::save(&root, &original)?;
+        let path = root.join("evidence").join(format!("{digest}.json"));
+        let before = fs::read(&path)?;
+        assert!(before.len() > extraction::MAX_INPUT);
+        let proposer = ProjectionModel {
+            inner: Model {
+                role: "consolidation",
+                decision: "accept",
+                calls: 0.into(),
+            },
+            hidden_citation,
+        };
+        let reviewer = ProjectionModel {
+            inner: Model {
+                role: "review",
+                decision: "accept",
+                calls: 0.into(),
+            },
+            hidden_citation: false,
+        };
+        coding_memory::consolidation_worker::consolidate(
+            &mut state, &root, &v, "alpha", true, &proposer, &reviewer,
+        )
+        .await?;
+        assert_eq!(
+            proposer
+                .inner
+                .calls
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            reviewer
+                .inner
+                .calls
+                .load(std::sync::atomic::Ordering::Relaxed),
+            usize::from(!hidden_citation)
+        );
+        assert_eq!(
+            state.consolidation_status()?[0].state,
+            if hidden_citation { "held" } else { "applied" }
+        );
+        assert_eq!(fs::read(path)?, before);
     }
     Ok(())
 }
