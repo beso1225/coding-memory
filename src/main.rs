@@ -124,6 +124,18 @@ enum Commands {
         #[arg(long, hide = true)]
         loopback: Option<std::net::SocketAddr>,
     },
+    /// Inspect explicitly selected held batches without models or queue changes.
+    ConsolidationPreflight {
+        #[arg(long)]
+        vault: PathBuf,
+        #[arg(long)]
+        project_id: String,
+        #[arg(long, required = true)]
+        batch: Vec<i64>,
+        /// Check sizing for local-only generation; never makes any model call.
+        #[arg(long)]
+        local_only: bool,
+    },
     ConsolidationStatus,
     ConsolidationRetry {
         batch: i64,
@@ -266,9 +278,32 @@ async fn main() -> Result<()> {
         eprintln!("Tool use is disabled for memory generation.");
         std::process::exit(2);
     }
+    if let Commands::ConsolidationPreflight {
+        vault,
+        project_id,
+        batch,
+        local_only,
+    } = &cli.command
+    {
+        let root = cli.state_dir.canonicalize()?;
+        let state = State::open_read_only(&root.join("state.sqlite"))?;
+        let report = coding_memory::consolidation_preflight::preflight(
+            &state,
+            &root,
+            vault,
+            project_id,
+            batch,
+            !local_only,
+        )?;
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
     let root = evidence::private_directory(&cli.state_dir)?;
     let mut state = State::open(&root.join("state.sqlite"))?;
     match cli.command {
+        Commands::ConsolidationPreflight { .. } => {
+            unreachable!("Handled read-only before state setup")
+        }
         Commands::RuntimeCheckStatus => println!(
             "{}",
             serde_json::to_string_pretty(&state.runtime_check_status()?)?

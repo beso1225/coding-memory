@@ -33,6 +33,17 @@ pub struct RunStatus {
 }
 
 impl State {
+    /// Read existing state without schema setup, journal changes, or directory creation.
+    pub fn open_read_only(path: &Path) -> Result<Self> {
+        let db = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        db.busy_timeout(Duration::from_secs(5))?;
+        let version: i64 = db.query_row("SELECT version FROM schema_version", [], |r| r.get(0))?;
+        ensure!(version == 1, "Unsupported state schema");
+        Ok(Self {
+            db,
+            worker_owner: None,
+        })
+    }
     pub fn open(path: &Path) -> Result<Self> {
         let db = Connection::open(path)?;
         db.busy_timeout(Duration::from_secs(5))?;
