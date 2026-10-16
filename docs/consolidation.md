@@ -56,15 +56,31 @@ model input. This cap bounds source parsing; it does not increase the 256 KiB
 serialized prompt limit or the 64 KiB output limit. Source project transmission
 permissions remain required, including for retrieved global notes.
 
-This first increment does not partition batches by size or reserve proposal space
-for review. Large referenced items, notes, or review proposals can still hold the
-batch as unavailable context: the final serialized prompt is measured before any
-model call, and an over-limit prompt is recorded as `held_context_unavailable`
-rather than an invalid proposal or review. Size-aware selection, review headroom,
-per-size diagnostics, the specific `held_context_too_large` hold and a no-model
-backlog preflight remain follow-up work under #20. Extraction projection and
-resident-memory improvements remain separate work. Existing held batches are not
-automatically retried or discarded.
+## Serialized prompt budget (Issue #20, second increment)
+
+Before either model runs, the Engine measures the complete serialized
+consolidation prompt, including instructions, JSON escaping, candidates,
+existing notes and projected evidence. Its initial target is 160 KiB. The Engine
+also measures the review framing/context and reserves 64 KiB for the proposal,
+checking that the resulting review prompt can fit the 256 KiB hard cap. This
+leaves approximately 32 KiB of additional margin. Both measurements use the same
+prompt builder as generation. The final actual prompt is still checked before
+each call, and the actual proposer output remains capped at 64 KiB.
+
+The local generation provenance records `input_budget` with measured
+`consolidation_bytes`, `consolidation_target`, `review_max_bytes`, `input_limit`
+and `proposal_limit`. These size fields contain no source text. This is not yet
+a public preflight/status API. A budget failure invokes neither model and holds
+the batch as `held_context_unavailable`, preserving all selected candidates for
+deliberate retry.
+
+Size-aware batch selection, per-candidate oversized-context holds, public size
+diagnostics and a no-model backlog preflight remain follow-up work under #20.
+Until batch partitioning lands, an oversized context still holds the whole
+batch; this increment prevents spending a proposer call on context that exceeds
+the configured review budget, but does not unblock that batch by splitting it.
+Extraction projection and resident-memory improvements remain separate work.
+Existing held batches are not automatically retried or discarded.
 
 ## Proposal, review, and identity
 

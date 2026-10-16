@@ -360,6 +360,7 @@ impl coding_memory::generation::Backend for Model {
     {
         self.calls
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        assert!(r.prompt.len() <= extraction::MAX_INPUT);
         assert!(r.attempt.starts_with(self.role));
         assert_eq!(r.schema["properties"]["role"]["enum"][0], self.role);
         let input: serde_json::Value =
@@ -367,7 +368,21 @@ impl coding_memory::generation::Backend for Model {
         let output = if self.role == "consolidation" {
             let batch: coding_memory::consolidation_state::Batch =
                 serde_json::from_value(input["batch"].clone()).unwrap();
-            proposal(&batch, "create", None)
+            let mut proposal = proposal(&batch, "create", None);
+            if self.decision == "max-size" {
+                // JSON escaping makes this valid body approach the output cap
+                // without exceeding the decoded 32 KiB body limit.
+                proposal["operations"][0]["draft"]["body"] = json!("");
+                let remaining =
+                    extraction::MAX_OUTPUT - serde_json::to_vec(&proposal).unwrap().len();
+                proposal["operations"][0]["draft"]["body"] =
+                    json!("\"".repeat(remaining / 2) + &"x".repeat(remaining % 2));
+                assert_eq!(
+                    serde_json::to_vec(&proposal).unwrap().len(),
+                    extraction::MAX_OUTPUT
+                );
+            }
+            proposal
         } else {
             json!({"schema_version":1,"role":"review","decisions":[{"operation":"op1","decision":self.decision,"rationale":"Independent synthetic review"}]})
         };
@@ -1047,6 +1062,69 @@ async fn consolidation_projects_large_originals_and_rejects_unsupplied_citations
             if hidden_citation { "held" } else { "applied" }
         );
         assert_eq!(fs::read(path)?, before);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn consolidation_reserves_review_headroom_before_calling_either_model() -> Result<()> {
+    for (source_kib, fits) in [(150, true), (210, false)] {
+        let (d, _state, _batch, bundles, _) = knowledge_fixture()?;
+        let root = d.path().join("budget");
+        let vault = d.path().join("vault");
+        fs::create_dir(&root)?;
+        fs::create_dir(&vault)?;
+        let mut state = State::open(&root.join("state.sqlite"))?;
+        state.register_project("alpha", "/repo", 1)?;
+        let mut original = bundles.values().next().unwrap().clone();
+        // Both inputs fit the hard cap alone, but only the smaller one leaves
+        // the configured margin for a maximum-size independently reviewed proposal.
+        original.items[0]["text"] = json!("x".repeat(source_kib * 1024));
+        stage_bundle(
+            &mut state,
+            &root,
+            &original,
+            10,
+            "Use leased jobs",
+            "Use leased jobs.",
+        )?;
+        let proposer = Model {
+            role: "consolidation",
+            decision: "max-size",
+            calls: 0.into(),
+        };
+        let reviewer = Model {
+            role: "review",
+            decision: "accept",
+            calls: 0.into(),
+        };
+        coding_memory::consolidation_worker::consolidate(
+            &mut state, &root, &vault, "alpha", true, &proposer, &reviewer,
+        )
+        .await?;
+        assert_eq!(
+            proposer.calls.load(std::sync::atomic::Ordering::Relaxed),
+            usize::from(fits)
+        );
+        assert_eq!(
+            reviewer.calls.load(std::sync::atomic::Ordering::Relaxed),
+            usize::from(fits)
+        );
+        let status = state.consolidation_status()?;
+        assert_eq!(status[0].state, if fits { "applied" } else { "held" });
+        assert_eq!(
+            status[0].reason.as_deref(),
+            if fits {
+                None
+            } else {
+                Some("held_context_unavailable")
+            }
+        );
+        assert_eq!(
+            state.candidates("alpha")?[0].state,
+            if fits { "consumed" } else { "held" }
+        );
+        assert_eq!(fs::read_dir(&vault)?.count(), usize::from(fits));
     }
     Ok(())
 }
