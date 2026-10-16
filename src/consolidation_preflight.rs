@@ -1,7 +1,7 @@
 //! Content-free sizing reports and an explicitly read-only held-batch preview.
 use crate::{consolidation_state::Batch, consolidation_worker, search::Search, state::State};
 use anyhow::{Result, ensure};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{collections::HashSet, path::Path};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -18,23 +18,37 @@ impl InputBudget {
             && self.review_max_bytes <= self.input_limit
     }
 }
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+/// Bounded preparation reason. `code` is the single source of the serialized
+/// strings: serde, `Display`, and hold classification all derive from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reason {
-    #[serde(rename = "held_context_too_large")]
     TooLarge,
-    #[serde(rename = "held_context_unavailable")]
     Unavailable,
-    #[serde(rename = "held_external_policy")]
     ExternalPolicy,
 }
 impl Reason {
+    const ALL: [Self; 3] = [Self::TooLarge, Self::Unavailable, Self::ExternalPolicy];
     pub(crate) fn code(self) -> &'static str {
         match self {
             Self::TooLarge => "held_context_too_large",
             Self::Unavailable => "held_context_unavailable",
             Self::ExternalPolicy => "held_external_policy",
         }
+    }
+    fn from_code(code: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|reason| reason.code() == code)
+    }
+}
+impl Serialize for Reason {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.code())
+    }
+}
+impl<'de> Deserialize<'de> for Reason {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let code = String::deserialize(deserializer)?;
+        Self::from_code(&code)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown reason code `{code}`")))
     }
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -219,4 +233,19 @@ pub fn preflight(
         invalid_note_count,
         batches: reports,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Reason;
+    #[test]
+    fn reason_serialization_is_derived_from_its_code() -> anyhow::Result<()> {
+        for reason in Reason::ALL {
+            let encoded = serde_json::to_string(&reason)?;
+            assert_eq!(encoded, format!("\"{}\"", reason.code()));
+            assert_eq!(serde_json::from_str::<Reason>(&encoded)?, reason);
+        }
+        assert!(serde_json::from_str::<Reason>("\"unknown\"").is_err());
+        Ok(())
+    }
 }

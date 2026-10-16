@@ -124,8 +124,10 @@ It uses an existing read-only state connection, creates no directories or schema
 in the state root, and builds a fresh private search index in an automatically
 removed temporary directory. The real search index, queues, candidates, evidence,
 Vault and generation credentials are not changed. No Backend, Codex process,
-login, model call or network request is involved. SQLite may use its normal
-reader coordination files while another process holds the live database open.
+login, model call or network request is involved. The state database uses
+write-ahead logging, so read-only access may create or reuse SQLite's `-wal` and
+`-shm` coordination files in the state root while another connection holds the
+database open; no schema, rows or lasting state are written.
 
 By default preflight checks the same external-transmission permissions as Codex
 consolidation, including each evidence origin project. `--local-only` checks the

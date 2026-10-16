@@ -214,7 +214,7 @@ fn prepare_context(
         // Count the exact evidence JSON without retaining oversized projected data.
         // Continue verifying all sources so an invalid source is never certified
         // as merely oversized, and keep at most the existing hard cap of evidence.
-        let mut map_bytes = 2;
+        let mut map_bytes: usize = 2;
         let mut bundles = HashMap::new();
         for (index, (digest, items)) in requested.into_iter().enumerate() {
             let bundle = load_projection(root, &digest, &items).map_err(|e| {
@@ -227,10 +227,16 @@ fn prepare_context(
                     .clone()
                     .failure(Reason::ExternalPolicy, Detail::ExternalPolicy));
             }
-            map_bytes += usize::from(index > 0)
-                + serialized_size(&digest)?
-                + 1
-                + serialized_size(&projection(&digest, &bundle))?;
+            let digest_bytes = serialized_size(&digest)?;
+            let projection_bytes = serialized_size(&projection(&digest, &bundle))?;
+            let entry_bytes = usize::from(index > 0)
+                .checked_add(digest_bytes)
+                .and_then(|n| n.checked_add(1))
+                .and_then(|n| n.checked_add(projection_bytes))
+                .ok_or_else(|| anyhow::anyhow!("Size overflow"))?;
+            map_bytes = map_bytes
+                .checked_add(entry_bytes)
+                .ok_or_else(|| anyhow::anyhow!("Size overflow"))?;
             if map_bytes <= extraction::MAX_INPUT {
                 bundles.insert(digest, bundle);
             } else {

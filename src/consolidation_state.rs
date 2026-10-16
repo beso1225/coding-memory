@@ -558,4 +558,30 @@ mod partition_tests {
         );
         Ok(())
     }
+    #[test]
+    fn preflight_batch_bounds_the_candidate_count() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut state = State::open(&dir.path().join("state.sqlite"))?;
+        state.register_project("alpha", "/repo", 1)?;
+        let candidate = json!({"kind":"constraint","title":"Use leases","claim":"Use leases.","scope":{"kind":"project","project_id":"alpha"},"conditions":["SQLite"],"verification":"user_stated","evidence":[{"bundle":"0".repeat(64),"item":"U"}]});
+        for n in 0..21 {
+            state.db.execute(
+                "INSERT INTO candidates(id,project,state,candidate,created_at) VALUES(?1,'alpha','ready',?2,1)",
+                params![format!("c{n:02}"), candidate.to_string()],
+            )?;
+        }
+        // Reservation caps at twenty; attach the twenty-first to exceed the bound.
+        let batch = state.reserve_batch("alpha", 10, true)?.unwrap();
+        state.hold_batch_at(batch.id, "fixture", &json!({}), 11)?;
+        state.db.execute(
+            "INSERT INTO batch_candidates VALUES(?1,'c20')",
+            params![batch.id],
+        )?;
+        state
+            .db
+            .execute("UPDATE candidates SET state='held' WHERE id='c20'", [])?;
+        let error = state.preflight_batch("alpha", batch.id).unwrap_err();
+        assert!(error.to_string().contains("1..20"), "{error}");
+        Ok(())
+    }
 }

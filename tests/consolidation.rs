@@ -1456,8 +1456,10 @@ fn run_preflight(
     root: &std::path::Path,
     vault: &std::path::Path,
     batch: i64,
+    local_only: bool,
 ) -> Result<serde_json::Value> {
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_coding-memory"))
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_coding-memory"));
+    command
         .env("PATH", "/no-executables")
         .env("HOME", root)
         .env("CODEX_HOME", root.join("unused-auth"))
@@ -1466,14 +1468,11 @@ fn run_preflight(
         .arg("consolidation-preflight")
         .arg("--vault")
         .arg(vault)
-        .args([
-            "--project-id",
-            "alpha",
-            "--batch",
-            &batch.to_string(),
-            "--local-only",
-        ])
-        .output()?;
+        .args(["--project-id", "alpha", "--batch", &batch.to_string()]);
+    if local_only {
+        command.arg("--local-only");
+    }
+    let output = command.output()?;
     assert!(
         output.status.success(),
         "{}",
@@ -1508,7 +1507,7 @@ async fn preflight_uses_live_sizing_without_changing_held_jobs_or_the_real_index
         use std::os::unix::fs::PermissionsExt;
         fs::metadata(&root)?.permissions().mode()
     };
-    let report = run_preflight(&root, &vault, held.id)?;
+    let report = run_preflight(&root, &vault, held.id, true)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1630,6 +1629,31 @@ fn preflight_restarts_hypothetical_ids_for_each_requested_batch() -> Result<()> 
     Ok(())
 }
 #[test]
+fn preflight_reports_the_generation_assumption_without_changing_policy() -> Result<()> {
+    let d = tempdir()?;
+    let root = d.path().join("preflight");
+    let vault = d.path().join("vault");
+    fs::create_dir(&root)?;
+    fs::create_dir(&vault)?;
+    let mut state = State::open(&root.join("state.sqlite"))?;
+    state.register_project("alpha", "/repo", 1)?;
+    candidate(&mut state, &root, 0, 10)?;
+    let held = state.reserve_batch("alpha", 20, true)?.unwrap();
+    state.hold_batch_at(held.id, "fixture", &json!({}), 21)?;
+    let local = run_preflight(&root, &vault, held.id, true)?;
+    assert_eq!(local["assumes_external"], false);
+    // The default assumes external generation. A missing policy is reported as a
+    // batch error, but stored permission is never changed by the preview.
+    let external = run_preflight(&root, &vault, held.id, false)?;
+    assert_eq!(external["assumes_external"], true);
+    assert_eq!(
+        external["batches"][0]["error"]["reason"],
+        "held_external_policy"
+    );
+    assert!(!state.external_allowed("alpha")?);
+    Ok(())
+}
+#[test]
 fn preflight_distinguishes_invalid_source_from_oversized_source_without_source_text() -> Result<()>
 {
     let (d, _state, _batch, bundles, _) = knowledge_fixture()?;
@@ -1647,7 +1671,7 @@ fn preflight_distinguishes_invalid_source_from_oversized_source_without_source_t
     )?;
     let held = state.reserve_batch("alpha", 20, true)?.unwrap();
     state.hold_batch_at(held.id, "held_context_unavailable", &json!({}), 21)?;
-    let report = run_preflight(&root, &vault, held.id)?;
+    let report = run_preflight(&root, &vault, held.id, true)?;
     let oversized = &report["batches"][0]["partitions"][0]["oversized"][0];
     assert_eq!(oversized["reason"], "held_context_too_large");
     assert!(oversized["budget"]["consolidation_bytes"].as_u64().unwrap() > 300 * 1024);
@@ -1658,7 +1682,7 @@ fn preflight_distinguishes_invalid_source_from_oversized_source_without_source_t
         held.candidates[0].candidate.evidence[0].bundle
     ));
     fs::write(&source, "PRIVATE-CONTENT-must-not-appear")?;
-    let report = run_preflight(&root, &vault, held.id)?;
+    let report = run_preflight(&root, &vault, held.id, true)?;
     assert_eq!(
         report["batches"][0]["error"]["reason"],
         "held_context_unavailable"
@@ -1674,7 +1698,7 @@ fn preflight_distinguishes_invalid_source_from_oversized_source_without_source_t
     );
     assert!(state.candidates("alpha")?.iter().all(|c| c.state == "held"));
     fs::remove_file(&source)?;
-    let missing = run_preflight(&root, &vault, held.id)?;
+    let missing = run_preflight(&root, &vault, held.id, true)?;
     assert_eq!(missing["batches"][0]["error"]["detail"], "source_missing");
     state.retry_batch(held.id, 22)?;
     let proposer = PartitionModel::new("consolidation", false);
