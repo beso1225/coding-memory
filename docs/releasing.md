@@ -23,7 +23,9 @@ run against their triggering commit, even if main advances while they build.
 For a release PR:
 
 1. Choose the next `X.Y.Z` or `X.Y.Z-rc.N` version. Use `v0.1.0-rc.1` first to
-   validate installation before announcing the first stable release.
+   validate installation before announcing the first stable release. The rc.1
+   attempt exposed a draft lookup bug before publication; rc.2 is the first
+   intended installable private release.
 2. Update Cargo.toml and the root package version in Cargo.lock. Add exactly one
    nonempty `## [VERSION]` section to CHANGELOG.md. Describe supported Codex
    versions, state/configuration compatibility, and recovery steps when relevant.
@@ -45,6 +47,11 @@ Repository settings must allow GitHub Actions and the pinned first-party actions
 Protect main and require `Development checks` and the Release `build` job before
 merging. Any rules restricting tag creation must permit the release workflow.
 No Apple Developer signing/notarization credentials are used at this stage.
+
+Draft discovery uses the authenticated paginated release list, not the by-tag
+endpoint, which excludes unpublished drafts. Once discovered, the numeric
+release ID is used to verify uploaded assets before announcement. Both draft
+discovery and same-commit draft recovery have focused regression tests.
 
 The repository was private when this pipeline was prepared. Releases inherit
 that visibility: public distribution requires the owner to review the complete
