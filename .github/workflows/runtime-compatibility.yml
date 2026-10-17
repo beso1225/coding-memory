@@ -1,7 +1,7 @@
 name: Runtime compatibility
 
 on:
-  pull_request:
+  workflow_call:
   schedule:
     - cron: '17 3 * * 1'
   workflow_dispatch:
@@ -10,12 +10,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: runtime-compatibility-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   capture-contract:
-    name: Latest Codex CLI capture contract
+    name: macOS regression and latest Codex CLI capture contract
     runs-on: macos-15
     timeout-minutes: 20
     steps:
@@ -23,12 +23,11 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install Nix
-        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
-        with:
-          github_access_token: ${{ secrets.GITHUB_TOKEN }}
-          extra_nix_config: |
-            experimental-features = nix-command flakes
+      - uses: ./.github/actions/setup-dev
+      - name: Validate flake and run native regression checks
+        run: |
+          nix flake check --no-build
+          nix develop --command pkf run check
       - name: Obtain latest official CLI release
         env:
           GH_TOKEN: ${{ github.token }}

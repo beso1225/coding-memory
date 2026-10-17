@@ -1,7 +1,9 @@
 # Development Setup
 
-The initial environment targets Apple Silicon macOS (`aarch64-darwin`). It uses
-one Cargo package with library and binary entry points. The initial CLI provides
+The development environment supports Apple Silicon macOS (`aarch64-darwin`)
+and x86-64 Linux (`x86_64-linux`). Distribution archives still target Apple
+Silicon macOS only. The project uses one Cargo package with library and binary
+entry points. The initial CLI provides
 durable ingestion, evidence capture, and scoped CLI/MCP retrieval; see
 [ingestion.md](ingestion.md) and [retrieval.md](retrieval.md) for operational
 boundaries. Memory generation and publication are subsequent stages.
@@ -109,15 +111,45 @@ cargo build --locked --all-targets
 ## Continuous integration
 
 [The CI workflow](../.github/workflows/ci.yml) runs on pushes to `main`, pull
-requests, and manual dispatch. It uses the ARM64 `macos-15` runner to match the
-development flake's `aarch64-darwin` target, evaluates the flake with
-`nix flake check --no-build`, and runs `nix develop --command pkf run check`.
-The workflow uses the committed toolchain and Nix lock file. Action versions
-are pinned by commit SHA, and the token has only `contents: read` permission.
+requests, and manual dispatch. Its reusable `Development checks` workflow runs
+on `ubuntu-24.04`: it evaluates the flake with `nix flake check --no-build` and
+runs `nix develop --command pkf run check`. The pinned toolchain, Nix lock file,
+and check commands are shared with local development.
 
-CI requires no LLM credentials and does not launch a worker or modify the memory
-vault. Additional platforms and build caching can be added when the engine's
-implementation needs them.
+Native checks are selected from the full Git change range by
+[`scripts/ci_scope.py`](../scripts/ci_scope.py). PR comparisons use the merge
+base; deleted and renamed inputs are included. A failed comparison fails the
+selection job rather than silently skipping validation. Normal consolidation,
+retrieval, and documentation changes run Linux checks only. Changes to platform
+integration (capture, runtime probes, generation, service/worker startup), their
+tests, dependencies, build inputs, or CI configuration also run the macOS
+regression suite and latest official Codex CLI capture fixture. Keep the native
+path list current when adding platform integration modules.
+
+The [runtime compatibility workflow](../.github/workflows/runtime-compatibility.yml)
+also runs the full native checks and credential-free CLI fixture every Monday
+at 03:17 UTC, and on manual dispatch. One Mac job shares the build between
+regression tests and the runtime fixture. Local Worker runtime verification
+continues independently. A manual CI dispatch requests all native checks and
+an archive dry run. See [release operations](releasing.md) for selective archive
+builds and publication.
+
+The shared setup action caches the Nix store by OS, architecture, flake inputs,
+and toolchain. Cargo development dependencies and `target/debug` are separately
+cached by those inputs plus Cargo.lock; native rustup distribution caches use a
+different namespace. Cached builds never bypass tests, release notice generation,
+or archive smoke checks. Credentials, state, personal histories, and Vaults are
+not cache inputs. No cache storage limit or paid spending limit is increased.
+Cache restore/save overhead should be compared with saved build time after the
+first successful runs; the initial run has no warm cache.
+
+PR updates cancel superseded runs. Main runs are not canceled because a called
+release may already be publishing. Ordinary main pushes run the Linux checks
+once; version-changing pushes reuse that result before publication. The release
+workflow runs its own Linux checks only when dispatched directly. All external
+actions are pinned by commit SHA. Only the release call permits `contents: write`,
+and only its guarded publish job requests a write token; check jobs use read-only
+tokens. CI uses no LLM credentials and operates on isolated synthetic fixtures.
 
 ## Updating tools and keeping state local
 

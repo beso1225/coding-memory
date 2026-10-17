@@ -23,30 +23,44 @@
       ...
     }:
     let
-      system = "aarch64-darwin";
-      pkgs = import nixpkgs {
-        inherit system;
-        overlays = [ rust-overlay.overlays.default ];
-      };
-      rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+      systems = [
+        "aarch64-darwin"
+        "x86_64-linux"
+      ];
+      forEachSystem = nixpkgs.lib.genAttrs systems;
+      pkgsFor =
+        system:
+        import nixpkgs {
+          inherit system;
+          overlays = [ rust-overlay.overlays.default ];
+        };
     in
     {
-      devShells.${system}.default = pkgs.mkShell {
-        packages = [
-          rustToolchain
-          pkgs.rust-analyzer
-          pkgs.sqlite
-          pkgs.pkg-config
-          pkgs.nixfmt
-          pkgs.pkl
-          pkgs.actionlint
-          pkgs.python3
-          pkfire.packages.${system}.default
-        ];
+      devShells = forEachSystem (
+        system:
+        let
+          pkgs = pkgsFor system;
+          rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+        in
+        {
+          default = pkgs.mkShell {
+            packages = [
+              rustToolchain
+              pkgs.rust-analyzer
+              pkgs.sqlite
+              pkgs.pkg-config
+              pkgs.nixfmt
+              pkgs.pkl
+              pkgs.actionlint
+              pkgs.python3
+              pkfire.packages.${system}.default
+            ];
 
-        RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
-      };
+            RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
+          };
+        }
+      );
 
-      formatter.${system} = pkgs.nixfmt;
+      formatter = forEachSystem (system: (pkgsFor system).nixfmt);
     };
 }
