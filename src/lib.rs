@@ -1,6 +1,8 @@
 //! Durable ingestion and evidence capture for coding-agent memory.
 pub mod codex;
 pub mod consolidation_state;
+pub mod dashboard;
+pub mod dashboard_server;
 pub mod domain;
 pub mod evidence;
 pub mod extraction;

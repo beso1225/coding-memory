@@ -8,7 +8,10 @@ fn sources(directory: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
         let path = entry?.path();
         if path.is_dir() {
             sources(&path, files)?;
-        } else if path.extension().is_some_and(|e| e == "rs") {
+        } else if path
+            .extension()
+            .is_some_and(|e| e == "rs" || e == "html" || e == "js")
+        {
             files.push(path);
         }
     }

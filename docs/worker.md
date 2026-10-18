@@ -79,6 +79,78 @@ floors, failure policy, audit fields and weekly Actions coverage.
 
 ## Inspection and recovery
 
+### Local HTML dashboard
+
+Start the local viewer and open the printed URL in a browser:
+
+```sh
+coding-memory --state-dir /absolute/path/to/state dashboard --serve
+# Dashboard: http://127.0.0.1:8765
+```
+
+The viewer fetches a fresh read-only snapshot every five seconds. It shows the
+last response time, flags unavailable sections, and retains the previous display
+with a stale-data warning if a request fails or times out. It retries automatically
+and resumes live updates after reconnection. Browser background throttling can
+delay updates; returning to the tab checks freshness again. Requests time out
+after ten seconds, and responses older than fifteen seconds are marked stale.
+Snapshot and cycle timestamps use UTC; the connection indicator uses browser
+local time. A completed refresh does not mean that all pipeline stages succeeded.
+
+The listener binds only to `127.0.0.1`. Use `--port PORT` to choose another port,
+or `--port 0` to select an available one. Only fixed GET routes for the page,
+its local script and snapshots are served. Other Host/Origin values and requests
+from other sites are rejected; responses are not cached. There are no job-control
+endpoints, directory browsing, external assets, or CORS access. Stop the foreground
+viewer with Ctrl-C or SIGTERM. This stops viewing only; the worker keeps running.
+An occupied port fails explicitly without starting or changing a worker.
+
+For a standalone snapshot without a running viewer:
+
+```sh
+coding-memory --state-dir /absolute/path/to/state dashboard > /private/path/status.html
+open /private/path/status.html  # macOS; use a local browser on Linux
+```
+
+Without `--serve`, the command prints static HTML to stdout and requires no
+JavaScript. Regenerate the file with the same command and reload the browser to
+refresh it; reloading alone does not fetch new state. Worker activity is an
+instantaneous lock observation and can change after generation.
+
+The view includes actual worker lock ownership, the last cycle report, stage and
+state counts by project, grouped attention reasons, recent successful extraction
+outcomes (including `succeeded_empty`), and applied note IDs. Consolidation,
+review and Vault application share the consolidation job state: `generating`,
+`held`, `applying`, `conflict`, and `applied` are not separate independent queues.
+No candidates is a successful extraction outcome. Cycle attempts and consumed
+candidates are not memory publication counts. Applied note records include
+updates to existing memories; their order uses batch IDs because publication
+timestamps are not recorded. They do not establish current Vault contents.
+
+Each available empty section explicitly reports zero records. Unreadable state
+or sections show `Unavailable`, without substituting zero or printing database
+errors. The selected state directory is displayed so an incorrect `--state-dir`
+can be identified. Use the same directory as the worker or MCP configuration;
+the example paths are placeholders. Snapshots still produce HTML when state is
+unavailable; a successful HTTP response or CLI exit is not a worker health check.
+Older schemas with missing tables
+must be prepared by the normal Engine setup before all sections are available.
+Attention lists are limited to 100 groups per stage; recent outcomes and applied
+notes are limited to 30 entries each. CLI status commands provide individual job
+identifiers and further details for recovery.
+
+Dashboard generation opens existing state read-only and uses a read transaction
+for database metadata. It does not initialize state, claim jobs, change retries,
+invoke models, read evidence, or open/modify the Vault. SQLite may use WAL/SHM
+coordination files, as with other read-only connections. The worker lock check
+reuses `worker-status` semantics and does not start a worker or change its lock
+file. Captured content, candidate claims, prompts, provenance, file contents,
+credentials, raw reason strings and model stderr are omitted. Known reason codes
+are translated to static guidance; unknown reasons are withheld. HTML metadata
+is escaped and the document loads no external resources. Keep the generated
+file private: project names and memory IDs are operational metadata, and shell
+redirection creates the file with your shell's permissions.
+
 `worker-status` returns actual lock activity, the last cycle report, grouped
 counts for runs/extraction jobs/candidates/consolidation jobs, and bounded grouped
 failure reasons, plus `runtime_checks` metadata. Cycle counters count attempts, not successful memories. Use
