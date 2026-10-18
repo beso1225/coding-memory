@@ -174,7 +174,9 @@ or model stderr. launchd log rotation is an operator responsibility.
 Worker-acquired capture/extraction claims are recorded transactionally with their
 lease tokens. On restart, only matching abandoned worker claims are reclaimed;
 manual CLI claims and newer tokens are preserved. Late results fail the normal
-fence. Extraction keeps its existing three-attempt bound. Interrupted worker
+fence. Extraction keeps its existing three-attempt bound, and a failed chunk
+resumes from the recorded prefix of the same evidence, prompt version and
+partition instead of repeating calls that already succeeded. Interrupted worker
 consolidation becomes held and its reserved candidates remain protected.
 
 Timeout, process failure and worker interruption allow automatic consolidation

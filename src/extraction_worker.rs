@@ -2,6 +2,7 @@
 use crate::{
     domain::{Evidence, hash},
     evidence, extraction,
+    extraction_state::ChunkPlanId,
     generation::{Backend, Request},
     ingestion,
     state::State,
@@ -119,15 +120,34 @@ pub async fn extract_one(
         }
     };
     provenance["chunk_count"] = json!(ranges.len());
-    provenance["completed_chunks"] = json!(0);
+    // A prefix recorded by an earlier attempt is reused only for the same evidence, prompt
+    // version and partition; anything else restarts every chunk. Fences clear the record and
+    // a fenced attempt cannot write it, so a takeover never resumes an offset it lost.
+    let signature = plan_signature(&ranges);
+    let plan = ChunkPlanId {
+        evidence: &claim.evidence,
+        prompt_version: extraction::PROMPT_VERSION,
+        signature: &signature,
+        chunks: ranges.len(),
+    };
+    let resumed = state.extraction_progress(&claim.key, &plan)?;
+    let resumed_chunks = resumed
+        .as_ref()
+        .map_or(0, |progress| progress.completed_chunks);
+    provenance["plan_hash"] = json!(signature);
+    provenance["resumed_chunks"] = json!(resumed_chunks);
+    provenance["completed_chunks"] = json!(resumed_chunks);
     let mut metadata = bundle;
     let items = std::mem::take(&mut metadata.items);
-    let mut candidates = Vec::new();
+    let mut candidates = resumed.map_or_else(Vec::new, |progress| progress.candidates);
     // Processing failures below hold the job with a bounded reason and the provenance of
-    // the chunks that completed. Only state-database errors propagate: a job that cannot
-    // be written relies on lease recovery, which records `generation_lease_expired` once
-    // its attempts are exhausted.
+    // the chunks that completed. Fence and state-database errors propagate instead: an
+    // attempt that lost its claim cannot write a hold, and lease recovery records
+    // `generation_lease_expired` once its attempts are exhausted.
     for (index, range) in ranges.into_iter().enumerate() {
+        if index < resumed_chunks {
+            continue;
+        }
         // A fenced, superseded or excluded claim must not send another chunk. Surfaced
         // as an error rather than a hold: fail/finish would be rejected on the same
         // stale token, and the job is left for a later claim after its lease.
@@ -209,6 +229,15 @@ pub async fn extract_one(
             return Ok(true);
         }
         provenance["completed_chunks"] = json!(index + 1);
+        // The prefix is durable before the next call, so a later failure cannot repeat calls
+        // that already succeeded. It publishes no candidate until the final commit.
+        state.record_extraction_progress(
+            &claim,
+            &plan,
+            index + 1,
+            &candidates,
+            ingestion::now(),
+        )?;
     }
     // Revocation during generation prevents staging; it cannot undo a request already sent.
     if backend.external() && !state.external_allowed(project)? {
@@ -223,6 +252,17 @@ pub async fn extract_one(
         state.finish_extraction(&claim, &candidates, &provenance, ingestion::now())?;
     }
     Ok(true)
+}
+
+/// Partition signature recorded with a resumable prefix. Boundaries are hashed in order so
+/// an Engine change that repartitions the same evidence cannot reuse an incompatible prefix.
+fn plan_signature(ranges: &[std::ops::Range<usize>]) -> String {
+    let mut bytes = Vec::with_capacity(ranges.len() * 16);
+    for range in ranges {
+        bytes.extend_from_slice(&(range.start as u64).to_le_bytes());
+        bytes.extend_from_slice(&(range.end as u64).to_le_bytes());
+    }
+    hash(&bytes)
 }
 
 /// Build one chunk request. `chunks` already proves the supplied items fit the input
