@@ -79,6 +79,14 @@ enum Commands {
         once: bool,
     },
     WorkerStatus,
+    /// Print HTML, or serve a read-only dashboard on 127.0.0.1.
+    Dashboard {
+        #[arg(long)]
+        serve: bool,
+        /// Local viewer port; 0 selects an available port.
+        #[arg(long, default_value_t = 8765, requires = "serve")]
+        port: u16,
+    },
     RuntimeCheckStatus,
     RuntimeVerify {
         #[arg(long)]
@@ -298,9 +306,18 @@ async fn main() -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
     }
+    if let Commands::Dashboard { serve, port } = &cli.command {
+        if *serve {
+            coding_memory::dashboard_server::run(cli.state_dir.clone(), *port).await?;
+        } else {
+            println!("{}", coding_memory::dashboard::render(&cli.state_dir));
+        }
+        return Ok(());
+    }
     let root = evidence::private_directory(&cli.state_dir)?;
     let mut state = State::open(&root.join("state.sqlite"))?;
     match cli.command {
+        Commands::Dashboard { .. } => unreachable!("Handled before state setup"),
         Commands::ConsolidationPreflight { .. } => {
             unreachable!("Handled read-only before state setup")
         }

@@ -56,6 +56,8 @@ scope of the scaffold.
   Wikilinks, durable Vault application/recovery, and opt-in evidence cleanup.
 - [Background worker](docs/worker.md): explicit configuration, macOS startup,
   singleton ownership, status and recovery.
+- [Local HTML dashboard](docs/worker.md#local-html-dashboard): live read-only
+  pipeline status, static snapshots, project backlogs and recent outcomes.
 - [Initial quality evaluation](docs/quality-evaluation.md): real-model synthetic
   corpus, separate-session reuse and observed limitations.
 - [Design](docs/design.md): agreed scope, data model, component contracts, and
