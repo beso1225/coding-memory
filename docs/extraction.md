@@ -148,9 +148,12 @@ nix develop -c python3 experiments/codex_generation/extraction_probe.py \
 The opt-in probe creates isolated synthetic source histories and a loopback
 Responses provider. Codex CLI 0.162.1 demonstrated denied transmission before home
 preparation, supported knowledge with retained conditions/locators, empty success,
-actual command denial without its sentinel file being created, and exclusion of
-persisted generation sessions from reconciliation. It performs no login or
-paid-model call. This verifies wiring and controls, not actual LLM quality.
+actual command denial without its sentinel file being created, exclusion of
+persisted generation sessions from reconciliation, and an oversized synthetic
+bundle extracted through two calls with distinct attempt identities and per-chunk
+schemas. A chunk citing an item outside its own part is held with nothing staged.
+It performs no login or paid-model call. This verifies wiring and controls, not
+actual LLM quality.
 Offline tests cover malformed output, tool attempts, timeout/process failure,
 invalid scope/locators, held support, permission gating, lease recovery, bounded
 retries, directory protection, and transactional rollback.

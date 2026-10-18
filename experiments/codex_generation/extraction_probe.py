@@ -27,6 +27,7 @@ def main():
 
     project = run("register", *runtime).strip()
     time.sleep(2)
+    options = ["--project-id", project, "--codex-binary", args.codex, "--model", "capture-extraction", "--timeout-seconds", "30", "--loopback", f"127.0.0.1:{rt.SERVER.server_port}"]
     client = rt.Client(args.codex)
     results = []
     try:
@@ -44,7 +45,6 @@ def main():
             output = {"schema_version": 1, "role": "extraction", "project_id": project, "candidates": []}
             if case == "supported":
                 output["candidates"] = [{"kind": "constraint", "title": "Fence SQLite job leases", "claim": "Use token-fenced leases for SQLite jobs.", "scope": {"kind": "project", "project_id": project}, "conditions": ["This synthetic project uses SQLite jobs"], "verification": "user_stated", "evidence": [{"bundle": row["evidence"], "item": item}]}]
-            options = ["--project-id", project, "--codex-binary", args.codex, "--model", "capture-extraction", "--timeout-seconds", "30", "--loopback", f"127.0.0.1:{rt.SERVER.server_port}"]
             if case == "supported":
                 start = len(rt.EVENTS)
                 run("extract", *options)
@@ -83,11 +83,116 @@ def main():
             assert note["metadata"]["conditions"] == c["conditions"], note
             assert note["evidence_available"] == [True], note
             results.append({"case": "independent_review_and_publication", "state": status[0]["state"], "retrieved": True})
+
+        # Chunked extraction. A capture admits bundles far above one 256 KiB input, so the
+        # engine must split them and merge one CodexExec call per chunk. Every plan answers
+        # from its own request, which pins the per-chunk schema, input budget and attempt
+        # identity instead of trusting the engine's own accounting.
+        def request_texts(value):
+            if isinstance(value, str):
+                yield value
+            elif isinstance(value, dict):
+                for child in value.values():
+                    yield from request_texts(child)
+            elif isinstance(value, list):
+                for child in value:
+                    yield from request_texts(child)
+
+        def attempt_names():
+            directory = state / "generation/attempts"
+            return {p.name for p in directory.iterdir()} if directory.exists() else set()
+
+        def drain_plans():
+            drained = 0
+            while not rt.PLANS.empty():
+                rt.PLANS.get_nowait()
+                drained += 1
+            return drained
+
+        def bulk_turn(label):
+            """Capture one own turn whose completed items exceed two chunk budgets."""
+            for index in range(6):
+                command = "python3 -c \"print('%s' * 100000)\"" % chr(ord("a") + index)
+                rt.PLANS.put({"items": [{"type": "function_call", "name": "exec_command", "call_id": f"bulk-{label}-{index}", "arguments": json.dumps({"cmd": command, "yield_time_ms": 4000})}]})
+            rt.PLANS.put({"text": "Synthetic bulk outputs recorded."})
+            turn = client.call("turn/start", {"threadId": thread, "input": [{"type": "text", "text": f"Synthetic bulk constraint {label}."}]})["turn"]["id"]
+            client.terminal(turn)
+            run("reconcile", *runtime)
+            run("capture", *runtime)
+            row = next(r for r in json.loads(run("status")) if r["key"]["turn"] == turn)
+            assert row["state"] == "ready", row
+            return row, json.loads(run("evidence", row["evidence"]))
+
+        def chunk_plan(items, calls, mutate=None, renew=False):
+            """Answer one chunk from its own request.
+
+            `renew` keeps exactly one spare plan queued, so the number of plans follows
+            the number of chunks instead of a guessed upper bound.
+            """
+
+            def plan(body):
+                if renew:
+                    rt.PLANS.put(plan)
+                schema = body["text"]["format"]["schema"]
+                declared = schema["properties"]["candidates"]["items"]["properties"]["evidence"]["items"]["properties"]
+                prompt = next(text for text in request_texts(body) if "INPUT_JSON\n" in text)
+                supplied = json.loads(prompt.split("INPUT_JSON\n", 1)[1])
+                chunk = supplied["evidence"]["items"]
+                assert declared["item"]["enum"] == [i["id"] for i in chunk], "Schema offered items outside the chunk"
+                assert declared["bundle"]["enum"] == [supplied["bundle"]], "Schema offered another bundle"
+                input_bytes = len(prompt.encode()) + len(json.dumps(schema, separators=(",", ":"), ensure_ascii=False).encode())
+                assert input_bytes <= 256 * 1024, ("Chunk exceeds the model input budget", input_bytes)
+                calls.append(input_bytes)
+                if mutate == "omitted":
+                    target = next(i for i in items if i["id"] not in {i["id"] for i in chunk})
+                else:
+                    target = next(i for i in chunk if i["type"] == "commandExecution" and i["status"] == "completed")
+                output = {"schema_version": 1, "role": "extraction", "project_id": project, "candidates": [{"kind": "procedure", "title": f"Synthetic chunk claim {target['id']}", "claim": f"Chunk cited {target['id']} from the supplied chunk.", "scope": {"kind": "project", "project_id": project}, "conditions": ["Synthetic loopback evidence"], "verification": "observed", "evidence": [{"bundle": supplied["bundle"], "item": target["id"]}]}]}
+                return {"text": json.dumps(output)}
+            return plan
+
+        assert drain_plans() == 0, "Previous cases left loopback plans queued"
+        row, bundle = bulk_turn("chunked")
+        assert len(bundle["items"]) == 8, bundle["items"]
+        before_attempts = attempt_names()
+        before_candidates = json.loads(run("candidates", "--project-id", project))
+        calls = []
+        rt.PLANS.put(chunk_plan(bundle["items"], calls, renew=True))
+        extracted = next(r for r in json.loads(run("extract", *options)) if r["key"]["turn"] == row["key"]["turn"])
+        assert extracted["state"] == "succeeded", extracted
+        provenance = json.loads(extracted["provenance"])
+        chunk_count = provenance["chunk_count"]
+        assert chunk_count >= 2 and provenance["completed_chunks"] == chunk_count, provenance
+        assert len(calls) == chunk_count, (len(calls), chunk_count)
+        assert calls[-1] == provenance["input_bytes"], (calls[-1], provenance["input_bytes"])
+        created = sorted(attempt_names() - before_attempts)
+        assert len(created) == chunk_count, created
+        assert sorted(name.rsplit("-", 1)[1] for name in created) == [str(i) for i in range(chunk_count)], created
+        assert len({name.rsplit("-", 1)[0] for name in created}) == 1, created
+        known = {c["id"] for c in before_candidates}
+        staged = [c for c in json.loads(run("candidates", "--project-id", project)) if c["id"] not in known]
+        assert len(staged) == chunk_count, staged
+        assert len({c["candidate"]["evidence"][0]["item"] for c in staged}) == chunk_count, staged
+        assert drain_plans() == 1, "Chunked extraction left an unexpected renewing plan count"
+        results.append({"case": "chunked_extraction", "state": extracted["state"], "chunks": chunk_count, "calls": len(calls), "input_bytes": calls})
+
+        row, bundle = bulk_turn("omitted")
+        before_candidates = json.loads(run("candidates", "--project-id", project))
+        calls = []
+        rt.PLANS.put(chunk_plan(bundle["items"], calls, mutate="omitted"))
+        extracted = next(r for r in json.loads(run("extract", *options)) if r["key"]["turn"] == row["key"]["turn"])
+        assert extracted["state"] == "held", extracted
+        assert extracted["reason"] == "held_invalid_candidates", extracted
+        assert len(calls) == 1, calls
+        assert drain_plans() == 0, "Failed extraction consumed another loopback plan"
+        assert json.loads(run("candidates", "--project-id", project)) == before_candidates, "Omitted-chunk reference staged a candidate"
+        results.append({"case": "omitted_chunk_reference", "state": extracted["state"], "reason": extracted["reason"], "calls": len(calls), "staged": 0})
+
         home = state / "generation/codex-home"
         assert not (home / "auth.json").exists(), "Synthetic probe created credentials"
         owned = subprocess.run(base + ["reconcile", "--codex-home", str(home), "--codex-binary", args.codex, "--project", str(rt.WORK)], check=True, capture_output=True, text=True).stdout
         assert owned.strip() == "0", owned
-        print(json.dumps({"version": subprocess.check_output([args.codex, "--version"], text=True).strip(), "results": results, "candidate_count": len(candidates), "owned_reconciliation": 0, "state_directory": str(state)}, indent=2))
+        print(json.dumps({"version": subprocess.check_output([args.codex, "--version"], text=True).strip(), "results": results, "candidate_count": len(json.loads(run("candidates", "--project-id", project))), "owned_reconciliation": 0, "state_directory": str(state)}, indent=2))
     finally:
         client.close()
 
