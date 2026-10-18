@@ -187,6 +187,27 @@ supplied existing target; unresolved contradictions use hold. The Engine derives
 new IDs from the durable batch and operation ID and persists the exact intended
 content before file writes. Application recovery never regenerates an ID.
 
+The proposer contract makes candidate applicability explicit: every operation's
+draft must copy, verbatim, the conditions, verification category and evidence of
+each candidate it consumes, and a summarized, reworded, merged or dropped
+condition, category or reference is rejected. Because a targetless `skip` had
+recurred, `skip` must name a supplied existing note to compare against, and when
+there is no supplied existing note the only fallback is `hold`, which publishes
+nothing. The response schema binds each action to the target and draft shape
+`validate` accepts, so a `skip` cannot be requested without a supplied target and
+a `create` cannot name an existing one by construction; with no supplied note,
+`update`, `supersede` and `skip` are not offered at all.
+
+A single mechanically invalid operation no longer parks the whole batch. On a
+decode or `validate` failure the Engine records the bounded rejection in
+`proposal_repair` and re-requests the proposal once, with the rejected proposal's
+error echoed to the proposer; the repair attempt uses its own attempt directory.
+`validate` remains the authority: a repair that still fails, a second decode
+failure, or an over-limit repair prompt holds the batch with `held_invalid_proposal`
+exactly as before, so one defect cannot silently discard the batch's other
+candidates, loop unboundedly, or publish an unvalidated draft. Held batches stay
+inspectable and deliberately retryable.
+
 The review input includes captured evidence, candidates, scoped existing notes,
 and the entire proposal. A complete decision set names each operation and
 accepts/rejects/holds it with a reason. Invalid review output authorizes nothing.

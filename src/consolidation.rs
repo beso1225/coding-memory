@@ -468,12 +468,19 @@ fn string() -> Value {
 fn array(item: Value) -> Value {
     json!({"type":"array","maxItems":32,"items":item})
 }
-fn supplied(ids: Vec<String>) -> Value {
+fn supplied(ids: &[String]) -> Value {
     if ids.is_empty() {
         json!({"type":"null"})
     } else {
         json!({"anyOf":[{"type":"string","enum":ids},{"type":"null"}]})
     }
+}
+/// One operation variant carrying the exact action/target/draft shape `validate`
+/// accepts, so the response schema cannot request an unsatisfiable combination.
+fn operation(action: &[&str], target: Value, draft: Value, candidates: &[String]) -> Value {
+    object(
+        json!({"id":string(),"action":{"type":"string","enum":action},"candidates":array(json!({"type":"string","enum":candidates})),"target":target,"draft":draft,"dependencies":array(string()),"rationale":string()}),
+    )
 }
 pub fn proposal_schema(batch: &Batch, existing: &[Existing]) -> Value {
     let scope = object(
@@ -482,11 +489,37 @@ pub fn proposal_schema(batch: &Batch, existing: &[Existing]) -> Value {
     let draft = object(
         json!({"title":string(),"summary":string(),"body":string(),"scope":{"anyOf":[scope,object(json!({"kind":{"type":"string","enum":["global"]}}))]},"conditions":array(string()),"verification":{"type":"string","enum":["observed","user_stated","unverified"]},"related":array(string()),"evidence":array(object(json!({"bundle":string(),"item":string()})))}),
     );
-    let op = object(
-        json!({"id":string(),"action":{"type":"string","enum":["create","update","supersede","skip","hold"]},"candidates":array(json!({"type":"string","enum":batch.candidates.iter().map(|c|&c.id).collect::<Vec<_>>() })),"target":supplied(existing.iter().map(|n|n.id.clone()).collect()),"draft":{"anyOf":[draft,{"type":"null"}]},"dependencies":array(string()),"rationale":string()}),
-    );
+    let candidates: Vec<String> = batch.candidates.iter().map(|c| c.id.clone()).collect();
+    let targets: Vec<String> = existing.iter().map(|n| n.id.clone()).collect();
+    let no_target = json!({"type":"null"});
+    let no_draft = json!({"type":"null"});
+    // Bind every action to the target and draft shape `validate` accepts: a `skip`
+    // cannot be requested without a supplied target and a `create` cannot name one,
+    // by construction. With no supplied note the only satisfiable actions are
+    // `create` and `hold`; `update`, `supersede` and `skip` need an existing target
+    // and are omitted. `hold` is the documented no-new-note fallback.
+    let mut variants = vec![
+        operation(&["create"], no_target.clone(), draft.clone(), &candidates),
+        operation(&["hold"], supplied(&targets), no_draft.clone(), &candidates),
+    ];
+    if !targets.is_empty() {
+        let target = json!({"type":"string","enum":targets});
+        variants.push(operation(
+            &["update"],
+            target.clone(),
+            draft.clone(),
+            &candidates,
+        ));
+        variants.push(operation(
+            &["supersede"],
+            target.clone(),
+            draft.clone(),
+            &candidates,
+        ));
+        variants.push(operation(&["skip"], target, no_draft, &candidates));
+    }
     object(
-        json!({"schema_version":{"type":"integer","enum":[1]},"role":{"type":"string","enum":["consolidation"]},"operations":array(op)}),
+        json!({"schema_version":{"type":"integer","enum":[1]},"role":{"type":"string","enum":["consolidation"]},"operations":array(json!({"anyOf":variants}))}),
     )
 }
 pub fn review_schema(proposal: &Proposal) -> Value {
