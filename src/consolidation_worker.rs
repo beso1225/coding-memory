@@ -20,9 +20,6 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     path::Path,
 };
-// Local source parsing is bounded separately from the serialized model prompt.
-// Capture accepts up to 8 MiB of native items; allow room for its JSON envelope.
-const MAX_SOURCE_BYTES: usize = 16 * 1024 * 1024;
 const CONSOLIDATION_TARGET: usize = 160 * 1024;
 // The complete prompt is measured after serialization. An over-limit prompt is a
 // context-sizing failure that never reached a model, not an invalid proposal/review.
@@ -59,7 +56,7 @@ fn load_projection(root: &Path, digest: &str, requested: &BTreeSet<String>) -> R
     );
     let bytes = evidence::read_bounded(
         &root.join("evidence").join(format!("{digest}.json")),
-        MAX_SOURCE_BYTES,
+        evidence::MAX_SOURCE_BYTES,
     )?;
     ensure!(hash(&bytes) == digest, "Source hash mismatch");
     let mut source: Evidence = serde_json::from_slice(&bytes)?;
@@ -640,7 +637,7 @@ mod tests {
         fs::OpenOptions::new()
             .write(true)
             .open(path)?
-            .set_len((MAX_SOURCE_BYTES + 1) as u64)?;
+            .set_len((evidence::MAX_SOURCE_BYTES + 1) as u64)?;
         let error = load_projection(d.path(), &digest, &["U".into()].into()).unwrap_err();
         assert!(error.to_string().contains("capture limit"));
         Ok(())

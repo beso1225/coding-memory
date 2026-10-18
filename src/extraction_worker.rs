@@ -50,12 +50,12 @@ pub async fn extract_one(
             .join(format!("{}.json", claim.evidence));
         let metadata = std::fs::metadata(&path)?;
         provenance["source_bytes"] = json!(metadata.len());
-        provenance["source_limit"] = json!(extraction::MAX_SOURCE_BYTES);
+        provenance["source_limit"] = json!(evidence::MAX_SOURCE_BYTES);
         ensure!(
-            metadata.len() <= extraction::MAX_SOURCE_BYTES as u64,
+            metadata.len() <= evidence::MAX_SOURCE_BYTES as u64,
             "Source exceeds local limit"
         );
-        let bytes = evidence::read_bounded(&path, extraction::MAX_SOURCE_BYTES)?;
+        let bytes = evidence::read_bounded(&path, evidence::MAX_SOURCE_BYTES)?;
         provenance["source_bytes"] = json!(bytes.len());
         ensure!(hash(&bytes) == claim.evidence, "Corrupt captured evidence");
         let bundle: Evidence = serde_json::from_slice(&bytes)?;
@@ -88,7 +88,7 @@ pub async fn extract_one(
                 "held_missing_evidence"
             } else if provenance["source_bytes"]
                 .as_u64()
-                .is_some_and(|n| n > extraction::MAX_SOURCE_BYTES as u64)
+                .is_some_and(|n| n > evidence::MAX_SOURCE_BYTES as u64)
             {
                 "held_oversized_evidence_source"
             } else {
@@ -113,6 +113,9 @@ pub async fn extract_one(
     let items = std::mem::take(&mut metadata.items);
     let mut candidates = Vec::new();
     for (index, range) in ranges.into_iter().enumerate() {
+        // A fenced, superseded or excluded claim must not send another chunk. Surfaced
+        // as an error rather than a hold: fail/finish would be rejected on the same
+        // stale token, and the job is left for a later claim after its lease.
         state.renew_extraction(&claim, ingestion::now(), 3600)?;
         // Recheck before every transmission, including after a prior chunk.
         if backend.external() && !state.external_allowed(project)? {

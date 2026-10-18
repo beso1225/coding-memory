@@ -583,7 +583,7 @@ async fn corrupt_unsupported_and_local_oversize_never_generate() -> Result<()> {
             std::fs::OpenOptions::new()
                 .write(true)
                 .open(&path)?
-                .set_len(extraction::MAX_SOURCE_BYTES as u64 + 1)?;
+                .set_len(evidence::MAX_SOURCE_BYTES as u64 + 1)?;
         }
         let backend = ChunkBackend {
             calls: 0.into(),

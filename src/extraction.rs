@@ -10,8 +10,6 @@ use std::collections::HashSet;
 
 pub const PROMPT_VERSION: &str = "extraction-v2";
 pub const MAX_INPUT: usize = 256 * 1024;
-/// Local artifact ceiling, independent of the model input budget.
-pub const MAX_SOURCE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_OUTPUT: usize = 64 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -202,8 +200,9 @@ pub fn prompt(evidence: &Evidence, digest: &str) -> Result<String> {
     Ok(prompt)
 }
 
-/// Keep distinct claims, conditions, verification and citations. Only exact
-/// duplicates are removed; semantic merging belongs to consolidation/review.
+/// Defensive exact-duplicate check. Chunks share no item and every candidate must
+/// cite a supplied item, so this cannot match across chunks; semantic merging
+/// belongs to consolidation/review.
 pub fn merge(target: &mut Vec<Validated>, incoming: Vec<Validated>) -> Result<()> {
     let mut seen: HashSet<_> = target
         .iter()

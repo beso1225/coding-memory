@@ -54,12 +54,12 @@ project or explicit global scope, verification (`observed`, `user_stated`, or
 `unverified`), and exact supplied evidence digest/native item IDs.
 
 Unknown fields/kinds, wrong project assignments, foreign/missing locators,
-oversized text, and identical candidates reject the whole batch. Observed
-eligibility requires a referenced completed tool item; user-stated eligibility
-requires a user message. Other support stays held. These mechanical checks cannot
-establish whether the claim follows from the text or a global generalization is
-justified. The prompt excludes progress and speculation; all candidates still
-require independent semantic review before publication.
+oversized text, and identical candidates within one call reject the whole batch.
+Observed eligibility requires a referenced completed tool item; user-stated
+eligibility requires a user message. Other support stays held. These mechanical
+checks cannot establish whether the claim follows from the text or a global
+generalization is justified. The prompt excludes progress and speculation; all
+candidates still require independent semantic review before publication.
 
 Job states distinguish `succeeded`, `succeeded_empty`, `held`, retry `queued`, and
 `exhausted`. Invalid evidence, indivisible oversized input, invalid candidates,
@@ -97,8 +97,11 @@ facts requiring context across chunks may remain unextracted and need independen
 review rather than invented support. Metadata is repeated without truncation.
 
 All chunks must succeed before candidates and job completion commit in one
-transaction. Exact candidate duplicates are removed; distinct citations,
-verification or applicability conditions remain distinct for consolidation/review.
+transaction. Chunks share no item and every candidate cites at least one supplied
+item, so two calls cannot produce the same candidate; merging is a defensive exact
+check rather than a deduplication guarantee. Distinct citations, verification or
+applicability conditions remain distinct for consolidation/review, and candidates
+that overlap semantically are deliberately left for review rather than merged.
 The combined result can exceed twenty candidates, with the twenty-candidate and
 64 KiB output limits applying separately to each call. A failed chunk stages
 nothing. Automatic or deliberate retries restart all chunks; successful chunks
