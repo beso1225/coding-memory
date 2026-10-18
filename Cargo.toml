@@ -1,6 +1,6 @@
 [package]
 name = "coding-memory"
-version = "0.1.0-rc.3"
+version = "0.1.0-rc.4"
 edition = "2024"
 description = "Long-term memory for coding agents"
 license = "MIT OR Apache-2.0"
