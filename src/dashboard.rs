@@ -292,7 +292,12 @@ fn reason(code: Option<&str>) -> &'static str {
         Some(
             "held_context_too_large"
             | "held_context_unavailable"
-            | "held_invalid_or_oversized_evidence",
+            | "held_invalid_or_oversized_evidence"
+            | "held_missing_evidence"
+            | "held_invalid_evidence"
+            | "held_oversized_evidence_source"
+            | "held_oversized_evidence_framing"
+            | "held_oversized_evidence_item",
         ) => {
             "Evidence/context unavailable or too large; inspect consolidation preflight or extraction status"
         }

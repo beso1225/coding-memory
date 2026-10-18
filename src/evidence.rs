@@ -6,6 +6,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Maximum local captured-evidence artifact the Engine will parse, independent of
+/// the model input budget. Capture bounds native items separately (8 MiB); this
+/// allows room for the JSON envelope.
+pub const MAX_SOURCE_BYTES: usize = 16 * 1024 * 1024;
 pub fn save(root: &Path, evidence: &Evidence) -> Result<String> {
     let bytes = serde_json::to_vec(evidence)?;
     let digest = hash(&bytes);

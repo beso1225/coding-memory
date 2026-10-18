@@ -66,10 +66,7 @@ pub fn cleanup(
             "Nonregular evidence prevents cleanup"
         );
         ensure!(
-            hash(&evidence::read_bounded(
-                &path,
-                crate::extraction::MAX_INPUT
-            )?) == digest,
+            hash(&evidence::read_bounded(&path, evidence::MAX_SOURCE_BYTES)?) == digest,
             "Corrupt no-value evidence"
         );
         eligible.push(digest.clone());
