@@ -139,10 +139,16 @@ fn route<'a>(request: &'a str, authority: &str) -> std::result::Result<&'a str, 
 }
 
 fn shell() -> String {
-    let mut html = include_str!("dashboard.html").replace(
+    let html = include_str!("dashboard.html").replace(
         "default-src 'none';",
         "default-src 'none'; script-src 'self'; connect-src 'self';",
     );
-    html.push_str("<p id=\"refresh-status\" class=timestamp role=status aria-live=polite>Connecting to the local viewer…</p><noscript>JavaScript is required for live updates. Use the dashboard command without --serve for a static snapshot.</noscript></main><script src=\"/dashboard.js\" defer></script></body></html>");
+    // Keep the live status line as the first child of <main> so snapshot
+    // refreshes, which prepend it, never move it down the page.
+    let mut html = html.replace(
+        "<body><main>",
+        "<body><main><p id=\"refresh-status\" class=timestamp role=status aria-live=polite>Connecting to the local viewer…</p><noscript>JavaScript is required for live updates. Use the dashboard command without --serve for a static snapshot.</noscript>",
+    );
+    html.push_str("</main><script src=\"/dashboard.js\" defer></script></body></html>");
     html
 }

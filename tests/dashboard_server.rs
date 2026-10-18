@@ -68,6 +68,7 @@ fn live_snapshots_refresh_existing_state_without_claims_or_content() -> Result<(
     let page = server.get("/")?;
     assert!(page.starts_with("HTTP/1.1 200"));
     assert!(page.contains("/dashboard.js"));
+    assert!(page.contains("<main><p id=\"refresh-status\""));
     assert!(page.contains("script-src 'self'"));
     assert!(page.contains("connect-src 'self'"));
     let first = server.get("/snapshot")?;

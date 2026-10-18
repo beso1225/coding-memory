@@ -247,28 +247,34 @@ fn meaning(table: &str, state: &str) -> &'static str {
 }
 
 fn grouped(state: &State, name: &str) -> Result<String> {
-    // Table names come only from the fixed list in render().
-    let outcome = if name == "runs" { "outcome" } else { "NULL" };
+    // Table names come only from the fixed list in render(). Only runs record a
+    // run outcome, so other tables omit that column instead of showing "—".
+    let with_outcome = name == "runs";
+    let outcome = if with_outcome { "outcome" } else { "NULL" };
     let mut q = state.db.prepare(&format!(
         "SELECT project,state,count(*),{outcome} FROM {name} GROUP BY project,state,{outcome} ORDER BY project,state,{outcome}"
     ))?;
     let rows = q
         .query_map([], |r| {
             let status: String = r.get(1)?;
-            Ok(vec![
+            let mut row = vec![
                 r.get(0)?,
                 status.clone(),
                 r.get::<_, i64>(2)?.to_string(),
                 meaning(name, &status).into(),
-                r.get::<_, Option<String>>(3)?.unwrap_or_else(|| "—".into()),
-            ])
+            ];
+            if with_outcome {
+                row.push(r.get::<_, Option<String>>(3)?.unwrap_or_else(|| "—".into()));
+            }
+            Ok(row)
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(table(
-        &["Project", "State", "Count", "Meaning", "Run outcome"],
-        rows,
-        "0 records (data available).",
-    ))
+    let headers: &[&str] = if with_outcome {
+        &["Project", "State", "Count", "Meaning", "Run outcome"]
+    } else {
+        &["Project", "State", "Count", "Meaning"]
+    };
+    Ok(table(headers, rows, "0 records (data available)."))
 }
 
 fn reason(code: Option<&str>) -> &'static str {
