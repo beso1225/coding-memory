@@ -9,7 +9,7 @@ use crate::{
     evidence, extraction,
     generation::{Backend, Request},
     ingestion,
-    notes::Review,
+    notes::{self, Review},
     search::{Scope, Search},
     state::State,
     vault,
@@ -88,8 +88,10 @@ fn prompt(role: &str, input: &Value) -> Result<String> {
     Ok(text)
 }
 
-fn input_budget(input: &Value) -> Result<InputBudget> {
-    let consolidation_bytes = prompt_prefix("consolidation").len() + serialized_size(input)?;
+fn input_budget(input: &Value, consolidation_schema: &Value) -> Result<InputBudget> {
+    let consolidation_bytes = prompt_prefix("consolidation").len()
+        + serialized_size(input)?
+        + serialized_size(consolidation_schema)?;
     // Match the actual review wrapper by borrowing context. Count bytes without
     // building an over-limit prompt or cloning a potentially large note context.
     #[derive(serde::Serialize)]
@@ -105,10 +107,26 @@ fn input_budget(input: &Value) -> Result<InputBudget> {
     Ok(InputBudget {
         consolidation_bytes,
         consolidation_target: CONSOLIDATION_TARGET,
-        review_max_bytes: review_base - "null".len() + extraction::MAX_OUTPUT,
+        review_max_bytes: review_base - "null".len()
+            + extraction::MAX_OUTPUT
+            + review_schema_allowance()?,
         input_limit: extraction::MAX_INPUT,
         proposal_limit: extraction::MAX_OUTPUT,
     })
+}
+/// Response schemas count against the request budget, so planning reserves their size as
+/// well. The review schema repeats the operation identities the proposer returns: its
+/// envelope is measured from an empty proposal and its tail is bounded by the accepted
+/// proposal size (`consolidation::OPERATION_LIMIT` operations of at most
+/// `notes::IDENTITY_LIMIT` bytes, two quotes and one separator each).
+fn review_schema_allowance() -> Result<usize> {
+    let empty = Proposal {
+        schema_version: 1,
+        role: "review".into(),
+        operations: Vec::new(),
+    };
+    Ok(serialized_size(&consolidation::review_schema(&empty))?
+        + consolidation::OPERATION_LIMIT * (notes::IDENTITY_LIMIT + 3))
 }
 
 struct ModelContext {
@@ -241,7 +259,7 @@ fn prepare_context(
             }
         }
         let base = json!({"batch":batch,"existing":existing,"evidence":{}});
-        let mut budget = input_budget(&base)?;
+        let mut budget = input_budget(&base, &consolidation::proposal_schema(batch, &existing))?;
         budget.consolidation_bytes += map_bytes - 2;
         budget.review_max_bytes += map_bytes - 2;
         diagnostic.budget = Some(budget.clone());
@@ -367,7 +385,10 @@ async fn generate(
     provenance: &mut Value,
 ) -> Result<Vec<u8>> {
     let prompt = prompt(role, input)?;
-    ensure!(prompt.len() <= extraction::MAX_INPUT, INPUT_TOO_LARGE);
+    ensure!(
+        extraction::input_bytes(&prompt, &schema)? <= extraction::MAX_INPUT,
+        INPUT_TOO_LARGE
+    );
     let mut p = backend.provenance();
     ensure!(p.is_object(), "Backend provenance must be an object");
     p["role"] = json!(role);
@@ -648,9 +669,10 @@ mod tests {
             "existing":[{"markdown":"Japanese: 日本語\n\"quoted\"\\path".repeat(100)}],
             "batch":{"candidates":[{"claim":"x"}]},"evidence":{},"padding":""
         });
-        let fixed = prompt("consolidation", &input)?.len();
+        let schema = json!({"type":"object"});
+        let fixed = prompt("consolidation", &input)?.len() + serde_json::to_vec(&schema)?.len();
         input["padding"] = json!("x".repeat(CONSOLIDATION_TARGET - fixed));
-        let budget = input_budget(&input)?;
+        let budget = input_budget(&input, &schema)?;
         assert_eq!(budget.consolidation_bytes, CONSOLIDATION_TARGET);
         assert!(budget.fits());
         // An exactly 64 KiB serialized JSON proposal, including escaped strings.
@@ -658,11 +680,17 @@ mod tests {
         let fixed = serde_json::to_vec(&proposal)?.len();
         proposal["padding"] = json!("x".repeat(extraction::MAX_OUTPUT - fixed));
         assert_eq!(serde_json::to_vec(&proposal)?.len(), extraction::MAX_OUTPUT);
-        let review_bytes = prompt("review", &json!({"context":input,"proposal":proposal}))?.len();
-        assert_eq!(review_bytes, budget.review_max_bytes);
-        assert!(review_bytes <= extraction::MAX_INPUT);
+        let review_input = json!({"context":input,"proposal":proposal});
+        let review_bytes = prompt("review", &review_input)?.len();
+        // The reservation covers the review prompt with a maximum proposal plus the
+        // bounded review-schema allowance, and still fits the model input cap.
+        assert_eq!(
+            review_bytes + review_schema_allowance()?,
+            budget.review_max_bytes
+        );
+        assert!(budget.review_max_bytes <= extraction::MAX_INPUT);
         input["padding"] = json!(input["padding"].as_str().unwrap().to_owned() + "x");
-        assert!(!input_budget(&input)?.fits());
+        assert!(!input_budget(&input, &schema)?.fits());
         Ok(())
     }
     #[test]
@@ -697,7 +725,7 @@ mod tests {
             let attempt = prepare_context(&state, d.path(), &search, &batch, false)?;
             let expected: HashMap<_, _> = [(first_hash, first), (second_hash, second)].into();
             let input = json!({"batch":batch,"existing":[],"evidence":projections(&expected)});
-            let actual = input_budget(&input)?;
+            let actual = input_budget(&input, &consolidation::proposal_schema(&batch, &[]))?;
             assert_eq!(
                 serde_json::to_value(attempt.diagnostic.budget.as_ref().unwrap())?,
                 serde_json::to_value(&actual)?

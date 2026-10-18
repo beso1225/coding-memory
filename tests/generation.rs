@@ -1,6 +1,9 @@
 #![cfg(unix)]
 use anyhow::Result;
-use coding_memory::generation::{Backend, CodexExec, Failure, Request};
+use coding_memory::{
+    extraction,
+    generation::{Backend, CodexExec, Failure, Request},
+};
 use serde_json::json;
 use std::{
     fs,
@@ -112,6 +115,47 @@ async fn exec_requires_native_identity_and_rejects_tools_and_malformed_streams()
             assert_eq!(result.bytes, b"{}\n");
         }
     }
+    Ok(())
+}
+#[tokio::test]
+async fn input_budget_is_prompt_plus_schema_and_refuses_one_byte_over() -> Result<()> {
+    let d = tempdir()?;
+    let sentinel = d.path().join("reached-runtime");
+    let backend = fixture(d.path(), &format!("touch '{}'", sentinel.display()))?;
+    let schema = json!({"type": "object"});
+    let at_cap = extraction::MAX_INPUT - serde_json::to_vec(&schema)?.len();
+    let mut exact = request();
+    exact.prompt = "x".repeat(at_cap);
+    exact.schema = schema.clone();
+    assert_eq!(
+        extraction::input_bytes(&exact.prompt, &exact.schema)?,
+        extraction::MAX_INPUT
+    );
+    let mut over = request();
+    over.prompt = "x".repeat(at_cap + 1);
+    over.schema = schema;
+    assert_eq!(
+        extraction::input_bytes(&over.prompt, &over.schema)?,
+        extraction::MAX_INPUT + 1
+    );
+    // One byte over the documented budget is refused before the runtime starts.
+    assert_eq!(
+        backend.generate(over).await.err(),
+        Some(Failure::OutputLimit)
+    );
+    assert!(
+        !sentinel.exists(),
+        "Over-budget request reached the model runtime"
+    );
+    // Exactly at the budget still reaches the runtime and fails on its (empty) output.
+    assert_eq!(
+        backend.generate(exact).await.err(),
+        Some(Failure::InvalidOutput)
+    );
+    assert!(
+        sentinel.exists(),
+        "At-cap request never reached the runtime"
+    );
     Ok(())
 }
 #[test]

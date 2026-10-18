@@ -90,6 +90,9 @@ Immutable source evidence is read locally up to 16 MiB, hash-checked and validat
 before generation. Every item is assigned once to a contiguous chunk in source
 order. Each call budgets at most 256 KiB for the complete prompt (instructions,
 metadata, digest, JSON escaping and delimiters) plus serialized response schema.
+The generation backend re-checks that same sum before any call, so a request over
+the documented budget is refused as `generation_output_limit` without reaching a
+model and without consuming a generation retry.
 Native IDs and original evidence bytes are preserved. The schema and validator
 permit citations only to items supplied in that call, even if an omitted ID
 exists in the original bundle. Missing context cannot support an inferred claim;

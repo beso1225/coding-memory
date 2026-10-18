@@ -31,7 +31,9 @@ Engine-owned store exclusion. Permission is checked before generation and again
 before review/application planning. Evidence from global notes also requires
 the source project's transmission permission; no disallowed source is silently
 sent via a permitted neighboring project. Combined input is bounded at 256 KiB
-per call and output at 64 KiB. Oversized/unavailable context stays held.
+per call — the complete prompt plus the serialized response schema, the same
+budget extraction uses — and output at 64 KiB. Oversized/unavailable context
+stays held.
 
 ## Referenced evidence projections (Issue #20, first increment)
 
@@ -53,23 +55,29 @@ and review prompts use version 2 for this input contract.
 Local source reads have a separate 16 MiB per-file cap, allowing captured items
 (up to 8 MiB) plus their JSON envelope to be verified without treating them as
 model input. This cap bounds source parsing; it does not increase the 256 KiB
-serialized prompt limit or the 64 KiB output limit. Source project transmission
+prompt-plus-schema limit or the 64 KiB output limit. Source project transmission
 permissions remain required, including for retrieved global notes.
 
 ## Serialized prompt budget (Issue #20, second increment)
 
 Before either model runs, the Engine measures the complete serialized
 consolidation prompt, including instructions, JSON escaping, candidates,
-existing notes and projected evidence. Its initial target is 160 KiB. The Engine
-also measures the review framing/context and reserves 64 KiB for the proposal,
-checking that the resulting review prompt can fit the 256 KiB hard cap. This
-leaves approximately 32 KiB of additional margin. Both measurements use the same
-prompt builder as generation. The final actual prompt is still checked before
-each call, and the actual proposer output remains capped at 64 KiB.
+existing notes and projected evidence, plus the serialized consolidation
+response schema. Its initial target is 160 KiB. The Engine also measures the
+review framing/context and reserves 64 KiB for the proposal plus the review
+schema, whose operation identities are budgeted at the accepted maximum of 20
+operations of 128 bytes each. It checks that the resulting review request fits
+the 256 KiB hard cap, leaving approximately 32 KiB of additional margin. Both
+measurements use the same prompt builder and schemas as generation. The final
+check before each call measures the same sum — complete prompt plus serialized
+response schema — that the generation backend re-checks, so a request over the
+256 KiB budget is held as unavailable context before any model runs. The actual
+proposer output remains capped at 64 KiB.
 
 The local generation provenance records `input_budget` with measured
 `consolidation_bytes`, `consolidation_target`, `review_max_bytes`, `input_limit`
-and `proposal_limit`. These size fields contain no source text. New batch records
+and `proposal_limit`, all counted the way the request is counted, including the
+response schema. These size fields contain no source text. New batch records
 also expose typed `diagnostics` through `consolidation-status`: the selected
 context, individually oversized contexts, deferred count and any preparation
 error. Each context reports candidate IDs/count, related-note count, deduplicated

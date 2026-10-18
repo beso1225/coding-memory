@@ -9,8 +9,16 @@ use serde_json::{Value, json};
 use std::collections::HashSet;
 
 pub const PROMPT_VERSION: &str = "extraction-v2";
+/// Authoritative model input budget for one request: the complete prompt plus the
+/// serialized response schema. `generation::CodexExec` re-checks the same sum before
+/// any call, so no caller can exceed the documented cap.
 pub const MAX_INPUT: usize = 256 * 1024;
 pub const MAX_OUTPUT: usize = 64 * 1024;
+/// Bytes a request spends against [`MAX_INPUT`]: the complete prompt (instructions,
+/// metadata, digest, JSON escaping and delimiters) plus the serialized response schema.
+pub fn input_bytes(prompt: &str, schema: &Value) -> Result<usize> {
+    Ok(prompt.len() + serde_json::to_vec(schema)?.len())
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CandidateKind {
@@ -154,12 +162,11 @@ pub fn chunks(
 ) -> std::result::Result<Vec<std::ops::Range<usize>>, &'static str> {
     let mut empty = evidence.clone();
     empty.items.clear();
-    let base = unbounded_prompt(&empty, digest)
-        .map_err(|_| "held_invalid_evidence")?
-        .len()
-        + serde_json::to_vec(&schema(&evidence.project, digest, &[]))
-            .map_err(|_| "held_invalid_evidence")?
-            .len();
+    let base = input_bytes(
+        &unbounded_prompt(&empty, digest).map_err(|_| "held_invalid_evidence")?,
+        &schema(&evidence.project, digest, &[]),
+    )
+    .map_err(|_| "held_invalid_evidence")?;
     if base > MAX_INPUT {
         return Err("held_oversized_evidence_framing");
     }
@@ -191,10 +198,9 @@ pub fn chunks(
 
 pub fn prompt(evidence: &Evidence, digest: &str) -> Result<String> {
     let prompt = unbounded_prompt(evidence, digest)?;
+    let schema = schema(&evidence.project, digest, &evidence.items);
     ensure!(
-        prompt.len()
-            + serde_json::to_vec(&schema(&evidence.project, digest, &evidence.items))?.len()
-            <= MAX_INPUT,
+        input_bytes(&prompt, &schema)? <= MAX_INPUT,
         "Evidence exceeds generation input limit"
     );
     Ok(prompt)
