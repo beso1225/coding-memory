@@ -49,8 +49,9 @@ original file.
 Each model evidence entry carries `projection_schema_version: 1` and
 `source_bundle`, the hash of the immutable original. The projection is not a new
 evidence artifact and is never saved over the original. References in published
-notes continue to use the original bundle hash and native item ID. Consolidation
-and review prompts use version 2 for this input contract.
+notes continue to use the original bundle hash and native item ID. Review prompts
+use version 2 for this input contract; consolidation uses version 3, which adds
+the applicability-preservation and action contract described below.
 
 Local source reads have a separate 16 MiB per-file cap, allowing captured items
 (up to 8 MiB) plus their JSON envelope to be verified without treating them as
@@ -204,6 +205,30 @@ eligible verification, retained conditions, allowed targets, and note schema
 bounds. They cannot prove a semantic inference, useful granularity, or valid
 general applicability. Fresh model contexts can still share correlated mistakes.
 Separate semantic review is required but is not a proof of correctness.
+
+## Proposal repair and the action contract (Issue #30)
+
+The version-3 consolidation prompt states the applicability-preservation contract
+explicitly: every draft must copy, verbatim, the conditions, verification category
+and evidence of each candidate it consumes, and summarized, reworded, merged or
+dropped conditions, categories or references are rejected. It also binds the
+actions: `skip` needs a supplied existing target, and `hold`, which publishes
+nothing, is the fallback when there is no supplied note to compare against. The
+response schema repeats that binding by construction — each action is paired with
+the target/draft shape `validate` accepts, and without a supplied note only
+`create` and `hold` are representable. `validate` remains the authoritative guard;
+review acceptance still cannot upgrade a draft.
+
+A single mechanical rejection no longer parks a whole batch. After a proposal that
+fails JSON decoding or Engine validation, the Engine re-requests the proposal once
+with the recorded rejection and the same budgeted context before holding. The
+repair budget is bounded (`PROPOSAL_REPAIR_LIMIT`), it never re-requests review, and
+it never writes the Vault: only a decoded proposal that passes `validate` and its
+independent review is planned and applied. The bounded rejection is stored under
+`proposal_repair` in the batch provenance; it contains a short validator reason, no
+source text and no raw prompt. If both attempts fail, the batch is held as
+`held_invalid_proposal` with every candidate preserved, inspectable and deliberately
+retryable exactly as before.
 
 Existing/related candidates come from bounded scoped FTS retrieval. In addition
 to the first eight searchable title chunks, the Engine searches individual terms

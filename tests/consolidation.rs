@@ -404,6 +404,147 @@ impl coding_memory::generation::Backend for Model {
         })
     }
 }
+
+enum Step {
+    Create,
+    DroppedConditions,
+    TargetlessSkip,
+}
+struct Scripted {
+    role: &'static str,
+    steps: Vec<Step>,
+    calls: std::sync::atomic::AtomicUsize,
+}
+impl Scripted {
+    fn new(role: &'static str, steps: Vec<Step>) -> Self {
+        Self {
+            role,
+            steps,
+            calls: 0.into(),
+        }
+    }
+}
+impl coding_memory::generation::Backend for Scripted {
+    fn external(&self) -> bool {
+        false
+    }
+    fn provenance(&self) -> serde_json::Value {
+        json!({"backend":"fixture","model":self.role})
+    }
+    async fn generate(
+        &self,
+        r: coding_memory::generation::Request,
+    ) -> std::result::Result<coding_memory::generation::Output, coding_memory::generation::Failure>
+    {
+        let n = self
+            .calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let input: serde_json::Value =
+            serde_json::from_str(r.prompt.split_once("INPUT_JSON\n").unwrap().1).unwrap();
+        if self.role == "review" {
+            let decisions: Vec<_> = input["proposal"]["operations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|op| {
+                    json!({"operation":op["id"],"decision":"accept","rationale":"Independent synthetic review"})
+                })
+                .collect();
+            return Ok(coding_memory::generation::Output {
+                bytes: serde_json::to_vec(
+                    &json!({"schema_version":1,"role":"review","decisions":decisions}),
+                )
+                .unwrap(),
+                thread_id: None,
+                runtime_version: "fixture".into(),
+            });
+        }
+        if n > 0 {
+            assert!(
+                r.prompt.contains("rejected your previous proposal with:"),
+                "a repair request must state the recorded rejection"
+            );
+            assert!(r.attempt.ends_with("-repair"), "{}", r.attempt);
+        }
+        let batch: coding_memory::consolidation_state::Batch =
+            serde_json::from_value(input["batch"].clone()).unwrap();
+        let mut p = proposal(&batch, "create", None);
+        match self.steps.get(n).expect("unexpected proposal call") {
+            Step::Create => {}
+            Step::DroppedConditions => {
+                p["operations"][0]["draft"]["conditions"] = json!([]);
+            }
+            Step::TargetlessSkip => {
+                p["operations"][0]["action"] = json!("skip");
+                p["operations"][0]["target"] = json!(null);
+                p["operations"][0]["draft"] = json!(null);
+            }
+        }
+        Ok(coding_memory::generation::Output {
+            bytes: serde_json::to_vec(&p).unwrap(),
+            thread_id: Some(format!("{}-thread", self.role)),
+            runtime_version: "fixture".into(),
+        })
+    }
+}
+#[tokio::test]
+async fn mechanical_proposal_defects_are_repaired_once_or_held_without_writing() -> Result<()> {
+    for (steps, state, vault_files) in [
+        (vec![Step::DroppedConditions, Step::Create], "applied", 1),
+        (vec![Step::TargetlessSkip, Step::Create], "applied", 1),
+        (
+            vec![Step::DroppedConditions, Step::DroppedConditions],
+            "held",
+            0,
+        ),
+        (vec![Step::TargetlessSkip, Step::TargetlessSkip], "held", 0),
+    ] {
+        let d = tempdir()?;
+        let root = d.path().join("state");
+        let v = d.path().join("vault");
+        fs::create_dir(&root)?;
+        fs::create_dir(&v)?;
+        let mut s = State::open(&root.join("state.sqlite"))?;
+        s.register_project("alpha", "/repo", 1)?;
+        candidate(&mut s, &root, 0, 10)?;
+        let proposer = Scripted::new("consolidation", steps);
+        let reviewer = Scripted::new("review", Vec::new());
+        let id = coding_memory::consolidation_worker::consolidate(
+            &mut s, &root, &v, "alpha", true, &proposer, &reviewer,
+        )
+        .await?
+        .unwrap();
+        assert_eq!(
+            proposer.calls.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "one request plus one bounded repair"
+        );
+        assert_eq!(
+            reviewer.calls.load(std::sync::atomic::Ordering::Relaxed),
+            usize::from(state == "applied"),
+            "a held proposal never reaches review"
+        );
+        let status = s.consolidation_status()?;
+        assert_eq!(status.len(), 1);
+        assert_eq!(status[0].id, id);
+        assert_eq!(status[0].state, state);
+        let files = fs::read_dir(&v)?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|e| e == "md"))
+            .count();
+        assert_eq!(files, vault_files);
+        if state == "held" {
+            assert_eq!(status[0].reason.as_deref(), Some("held_invalid_proposal"));
+            assert_eq!(s.candidates("alpha")?[0].state, "held");
+            // Held work stays inspectable and deliberately retryable.
+            s.retry_batch(id, 900)?;
+            assert_eq!(s.candidates("alpha")?[0].state, "ready");
+        } else {
+            assert_eq!(s.candidates("alpha")?[0].state, "consumed");
+        }
+    }
+    Ok(())
+}
 #[tokio::test]
 async fn fresh_review_gates_the_complete_foreground_pipeline() -> Result<()> {
     for decision in ["accept", "reject", "hold", "approve"] {
@@ -1058,12 +1199,14 @@ async fn consolidation_projects_large_originals_and_rejects_unsupplied_citations
             &mut state, &root, &v, "alpha", true, &proposer, &reviewer,
         )
         .await?;
+        // A rejected proposal is re-requested once; the repair repeats the
+        // unsupplied citation, so the held batch never reaches review.
         assert_eq!(
             proposer
                 .inner
                 .calls
                 .load(std::sync::atomic::Ordering::Relaxed),
-            1
+            if hidden_citation { 2 } else { 1 }
         );
         assert_eq!(
             reviewer

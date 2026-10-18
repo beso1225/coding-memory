@@ -468,12 +468,17 @@ fn string() -> Value {
 fn array(item: Value) -> Value {
     json!({"type":"array","maxItems":32,"items":item})
 }
-fn supplied(ids: Vec<String>) -> Value {
+fn supplied(ids: &[String]) -> Value {
     if ids.is_empty() {
         json!({"type":"null"})
     } else {
         json!({"anyOf":[{"type":"string","enum":ids},{"type":"null"}]})
     }
+}
+fn operation(action: &[&str], target: Value, draft: Value, candidates: &[String]) -> Value {
+    object(
+        json!({"id":string(),"action":{"type":"string","enum":action},"candidates":array(json!({"type":"string","enum":candidates})),"target":target,"draft":draft,"dependencies":array(string()),"rationale":string()}),
+    )
 }
 pub fn proposal_schema(batch: &Batch, existing: &[Existing]) -> Value {
     let scope = object(
@@ -482,9 +487,35 @@ pub fn proposal_schema(batch: &Batch, existing: &[Existing]) -> Value {
     let draft = object(
         json!({"title":string(),"summary":string(),"body":string(),"scope":{"anyOf":[scope,object(json!({"kind":{"type":"string","enum":["global"]}}))]},"conditions":array(string()),"verification":{"type":"string","enum":["observed","user_stated","unverified"]},"related":array(string()),"evidence":array(object(json!({"bundle":string(),"item":string()})))}),
     );
-    let op = object(
-        json!({"id":string(),"action":{"type":"string","enum":["create","update","supersede","skip","hold"]},"candidates":array(json!({"type":"string","enum":batch.candidates.iter().map(|c|&c.id).collect::<Vec<_>>() })),"target":supplied(existing.iter().map(|n|n.id.clone()).collect()),"draft":{"anyOf":[draft,{"type":"null"}]},"dependencies":array(string()),"rationale":string()}),
-    );
+    let candidates: Vec<String> = batch.candidates.iter().map(|c| c.id.clone()).collect();
+    let targets: Vec<String> = existing.iter().map(|n| n.id.clone()).collect();
+    let nothing = json!({"type":"null"});
+    // Bind every action to the exact target/draft shape `validate` accepts, so a
+    // `skip` cannot be requested without a supplied target and a `create` cannot
+    // name one by construction. With no supplied note the only satisfiable
+    // actions are `create` and `hold`; `skip`, `update` and `supersede` need an
+    // existing target and are omitted. `hold` is the no-new-note fallback.
+    let mut variants = vec![
+        operation(&["create"], nothing.clone(), draft.clone(), &candidates),
+        operation(&["hold"], supplied(&targets), nothing.clone(), &candidates),
+    ];
+    if !targets.is_empty() {
+        let target = json!({"type":"string","enum":targets});
+        variants.push(operation(
+            &["update"],
+            target.clone(),
+            draft.clone(),
+            &candidates,
+        ));
+        variants.push(operation(
+            &["supersede"],
+            target.clone(),
+            draft.clone(),
+            &candidates,
+        ));
+        variants.push(operation(&["skip"], target, nothing, &candidates));
+    }
+    let op = json!({"anyOf":variants});
     object(
         json!({"schema_version":{"type":"integer","enum":[1]},"role":{"type":"string","enum":["consolidation"]},"operations":array(op)}),
     )
@@ -493,4 +524,87 @@ pub fn review_schema(proposal: &Proposal) -> Value {
     object(
         json!({"schema_version":{"type":"integer","enum":[1]},"role":{"type":"string","enum":["review"]},"decisions":array(object(json!({"operation":{"type":"string","enum":proposal.operations.iter().map(|o|&o.id).collect::<Vec<_>>()},"decision":{"type":"string","enum":["accept","reject","hold"]},"rationale":string()})))}),
     )
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::*;
+    fn batch() -> Batch {
+        serde_json::from_value(json!({
+            "id": 1, "project": "alpha",
+            "candidates": [{
+                "id": "c1", "state": "ready", "created_at": 1,
+                "candidate": {
+                    "kind": "constraint", "title": "Use leases", "claim": "Use leases.",
+                    "scope": {"kind":"project","project_id":"alpha"},
+                    "conditions": ["SQLite"], "verification": "user_stated",
+                    "evidence": [{"bundle": "a".repeat(64), "item": "U"}]
+                }
+            }]
+        }))
+        .unwrap()
+    }
+    fn supplied_note() -> Existing {
+        Existing {
+            id: "note-1".into(),
+            path: "note.md".into(),
+            revision: "0".repeat(64),
+            markdown: String::new(),
+        }
+    }
+    fn variants(schema: &Value) -> Vec<Value> {
+        schema["properties"]["operations"]["items"]["anyOf"]
+            .as_array()
+            .unwrap()
+            .clone()
+    }
+    fn variant<'a>(variants: &'a [Value], action: &str) -> &'a Value {
+        variants
+            .iter()
+            .find(|v| v["properties"]["action"]["enum"] == json!([action]))
+            .unwrap()
+    }
+    #[test]
+    fn schema_binds_each_action_to_a_satisfiable_target_and_draft() {
+        let with_note = variants(&proposal_schema(
+            &batch(),
+            std::slice::from_ref(&supplied_note()),
+        ));
+        assert_eq!(
+            variant(&with_note, "create")["properties"]["target"]["type"],
+            "null"
+        );
+        assert_eq!(
+            variant(&with_note, "create")["properties"]["draft"]["type"],
+            "object"
+        );
+        assert_eq!(
+            variant(&with_note, "skip")["properties"]["target"]["type"],
+            "string"
+        );
+        assert_eq!(
+            variant(&with_note, "skip")["properties"]["draft"]["type"],
+            "null"
+        );
+        assert_eq!(
+            variant(&with_note, "update")["properties"]["target"]["type"],
+            "string"
+        );
+        assert_eq!(
+            variant(&with_note, "hold")["properties"]["draft"]["type"],
+            "null"
+        );
+        // With no supplied note only create and hold are expressible by construction.
+        let without_note = variants(&proposal_schema(&batch(), &[]));
+        for action in ["skip", "update", "supersede"] {
+            assert!(
+                without_note
+                    .iter()
+                    .all(|v| v["properties"]["action"]["enum"] != json!([action])),
+                "{action} must be unrepresentable without a supplied note"
+            );
+        }
+        assert!(variant(&without_note, "create")["properties"]["target"]["type"] == "null");
+        assert!(variant(&without_note, "hold")["properties"]["draft"]["type"] == "null");
+    }
 }
