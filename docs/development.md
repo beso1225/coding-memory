@@ -146,9 +146,12 @@ PR updates cancel superseded runs. Main runs are not canceled because a called
 release may already be publishing. Ordinary main pushes run the Linux checks
 once; version-changing pushes reuse that result before publication. The release
 workflow runs its own Linux checks only when dispatched directly. All external
-actions are pinned by commit SHA. Only the release call permits `contents: write`,
-and only its guarded publish job requests a write token; check jobs use read-only
-tokens. CI uses no LLM credentials and operates on isolated synthetic fixtures.
+actions are pinned by commit SHA and must run on the Node.js 24 runtime; the
+pinned cache and artifact majors require Actions Runner `2.327.1` or newer, which
+the hosted `ubuntu-24.04` and `macos-15` runners satisfy. Only the release call
+permits `contents: write`, and only its guarded publish job requests a write
+token; check jobs use read-only tokens. CI uses no LLM credentials and operates on
+isolated synthetic fixtures.
 
 ## Updating tools and keeping state local
 
