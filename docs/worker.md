@@ -122,6 +122,9 @@ state counts by project, grouped attention reasons, recent successful extraction
 outcomes (including `succeeded_empty`), and applied note IDs. Consolidation,
 review and Vault application share the consolidation job state: `generating`,
 `held`, `applying`, `conflict`, and `applied` are not separate independent queues.
+Grouped attention reasons separate extraction evidence holds (absent, unreadable,
+invalid, oversized) from consolidation context and proposal holds, and mark
+evidence the Engine cannot fit as not retryable.
 No candidates is a successful extraction outcome. Cycle attempts and consumed
 candidates are not memory publication counts. Applied note records include
 updates to existing memories; their order uses batch IDs because publication
@@ -162,7 +165,8 @@ model-free preview of held work before deliberate retry; it does not release job
 or rebuild the live index. See [consolidation](consolidation.md#held-batch-preflight-issue-20-final-increment).
 
 Successful empty extraction is `succeeded_empty`; it is distinct from `queued`,
-`held`, `exhausted`, application `conflict` or generation failure. A completed cycle
+`held`, `exhausted`, application `conflict` or generation failure. A bundle with no
+captured items reaches it without a model call. A completed cycle
 may contain failures or held work, so process exit zero is not a quality signal.
 Logs contain cycle counters and static stage codes, rather than captured prompts
 or model stderr. launchd log rotation is an operator responsibility.

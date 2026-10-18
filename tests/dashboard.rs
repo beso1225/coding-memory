@@ -94,6 +94,37 @@ fn dashboard_is_read_only_escapes_metadata_and_distinguishes_outcomes() -> Resul
 }
 
 #[test]
+fn attention_reasons_separate_extraction_and_consolidation_holds() -> Result<()> {
+    let dir = tempdir()?;
+    let path = dir.path().join("state.sqlite");
+    let mut state = State::open(&path)?;
+    state.register_project("alpha", "/repo", 1)?;
+    let db = Connection::open(&path)?;
+    for (i, reason) in [
+        "held_missing_evidence",
+        "held_unreadable_evidence",
+        "held_oversized_evidence_item",
+    ]
+    .iter()
+    .enumerate()
+    {
+        db.execute("INSERT INTO runs(store,thread,turn,project,cwd,state,available_at,outcome) VALUES('s',?1,'t','alpha','/repo','ready',1,'completed')", rusqlite::params![i.to_string()])?;
+        db.execute("INSERT INTO extraction_jobs(store,thread,turn,project,evidence,state,reason,available_at) VALUES('s',?1,'t','alpha','evidence','held',?2,1)", rusqlite::params![i.to_string(), reason])?;
+    }
+    db.execute("INSERT INTO consolidation_jobs(project,state,reason,created_at,lease_until) VALUES('alpha','held','held_context_too_large',1,2)", [])?;
+    let html = render(dir.path())?;
+    for label in [
+        "Extraction source is absent",
+        "Extraction source cannot be read",
+        "not retryable until the source is captured smaller",
+        "Consolidation context unavailable or too large",
+    ] {
+        assert!(html.contains(label), "Missing {label}");
+    }
+    Ok(())
+}
+
+#[test]
 fn missing_section_is_unavailable_while_empty_sections_are_zero() -> Result<()> {
     let dir = tempdir()?;
     let path = dir.path().join("state.sqlite");
