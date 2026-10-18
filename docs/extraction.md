@@ -149,11 +149,12 @@ The opt-in probe creates isolated synthetic source histories and a loopback
 Responses provider. Codex CLI 0.162.1 demonstrated denied transmission before home
 preparation, supported knowledge with retained conditions/locators, empty success,
 actual command denial without its sentinel file being created, exclusion of
-persisted generation sessions from reconciliation, and an oversized synthetic
-bundle extracted through two calls with distinct attempt identities and per-chunk
-schemas. A chunk citing an item outside its own part is held with nothing staged.
-It performs no login or paid-model call. This verifies wiring and controls, not
-actual LLM quality.
+persisted generation sessions from reconciliation, and a synthetic bundle larger
+than one input budget extracted through two calls with distinct attempt identities
+and per-chunk schemas. When a later chunk cites an item that only a different part
+contains, the job is held with no candidate staged, leaving the earlier chunk's
+valid answer uncommitted. It performs no login or paid-model call. This verifies
+wiring and controls, not actual LLM quality.
 Offline tests cover malformed output, tool attempts, timeout/process failure,
 invalid scope/locators, held support, permission gating, lease recovery, bounded
 retries, directory protection, and transactional rollback.
