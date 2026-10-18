@@ -65,9 +65,14 @@ Job states distinguish `succeeded`, `succeeded_empty`, `held`, retry `queued`, a
 `exhausted`. Invalid evidence, indivisible oversized input, invalid candidates,
 missing credentials, unsupported runtimes, and tool attempts hold the job. Timeout/process failures
 retry after ten seconds for at most three attempts. Repeated expired leases also
-exhaust after three attempts. No failure becomes an empty success. Candidate
-insertion and completion commit atomically behind a lease token; stale or
-collector-excluded work cannot stage candidates.
+exhaust after three attempts. No failure becomes an empty success. A captured
+bundle with no native items completes as `succeeded_empty` without a model call,
+and its provenance records zero chunks. Candidate insertion and completion commit
+atomically behind a lease token; stale or collector-excluded work cannot stage
+candidates. Every processing failure records provenance and a bounded reason,
+including a failure while preparing a later chunk, which holds the job with the
+chunks already completed; only a state database that cannot be written falls
+back to lease recovery.
 
 Provenance records backend/provider/model, role, Engine and prompt/schema versions,
 evidence digest, and input/schema hashes. Returned Backend output adds output
@@ -112,13 +117,18 @@ are not checkpointed. Requests have unique attempt/token/chunk identities.
 Lease renewal between calls fences expired or superseded work, and external
 permission is rechecked before each call and at the final commit.
 
-Evidence holds distinguish `held_missing_evidence`, `held_invalid_evidence`
-(including corruption, unsupported schema or mismatched identity),
-`held_oversized_evidence_source` (local 16 MiB ceiling),
+Evidence holds distinguish `held_missing_evidence` (the recorded source file is
+absent), `held_unreadable_evidence` (it cannot be read, for example a permission
+or filesystem error), `held_invalid_evidence` (corruption, unsupported schema or
+mismatched identity, including evidence from a release before bounded
+extraction), `held_oversized_evidence_source` (local 16 MiB ceiling),
 `held_oversized_evidence_framing` (metadata/framing cannot fit), and
-`held_oversized_evidence_item` (one complete item cannot fit). No item is silently
-truncated or omitted, and all chunks are planned before the first call.
-`held_external_policy` remains a separate transmission-policy decision.
+`held_oversized_evidence_item` (one complete item cannot fit). Evidence the
+Engine cannot fit is not retryable until the source is captured smaller; a
+missing or unreadable source becomes retryable when it is restored or made
+readable. No item is silently truncated or omitted, and all chunks are planned
+before the first call. `held_external_policy` remains a separate
+transmission-policy decision.
 Diagnostics record source bytes/limit, input bytes/limit, item/chunk counts,
 completed chunk count and current chunk index (zero-based), without source text
 or model stderr. Input/schema/output hashes and generation-thread fields describe

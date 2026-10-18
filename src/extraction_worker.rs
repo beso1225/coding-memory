@@ -7,7 +7,7 @@ use crate::{
     state::State,
 };
 use anyhow::{Result, ensure};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::path::Path;
 
 pub async fn extract_one(
@@ -16,14 +16,16 @@ pub async fn extract_one(
     project: &str,
     backend: &impl Backend,
 ) -> Result<bool> {
-    let Some(claim) = state.claim_extraction(project, ingestion::now(), 3600)? else {
-        return Ok(false);
-    };
+    // Validate the backend contract before claiming: otherwise a rejected provenance
+    // object would strand the claim until its lease expires.
     let mut provenance = backend.provenance();
     ensure!(
         provenance.is_object(),
         "Backend provenance must be an object"
     );
+    let Some(claim) = state.claim_extraction(project, ingestion::now(), 3600)? else {
+        return Ok(false);
+    };
     provenance["evidence_hash"] = json!(claim.evidence);
     provenance["external_transmission"] = json!(backend.external());
     if backend.external() && !state.external_allowed(project)? {
@@ -36,70 +38,79 @@ pub async fn extract_one(
         )?;
         return Ok(true);
     }
-    let input = (|| -> Result<_> {
-        ensure!(
-            claim.evidence.len() == 64
-                && claim
-                    .evidence
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
-            "Invalid evidence identity"
-        );
+    let input = (|| -> std::result::Result<Evidence, &'static str> {
+        if claim.evidence.len() != 64
+            || !claim
+                .evidence
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err("held_invalid_evidence");
+        }
         let path = root
             .join("evidence")
             .join(format!("{}.json", claim.evidence));
-        let metadata = std::fs::metadata(&path)?;
-        provenance["source_bytes"] = json!(metadata.len());
         provenance["source_limit"] = json!(evidence::MAX_SOURCE_BYTES);
-        ensure!(
-            metadata.len() <= evidence::MAX_SOURCE_BYTES as u64,
-            "Source exceeds local limit"
-        );
-        let bytes = evidence::read_bounded(&path, evidence::MAX_SOURCE_BYTES)?;
-        provenance["source_bytes"] = json!(bytes.len());
-        ensure!(hash(&bytes) == claim.evidence, "Corrupt captured evidence");
-        let bundle: Evidence = serde_json::from_slice(&bytes)?;
-        ensure!(
-            bundle.schema_version == 1
-                && bundle.run == claim.key
-                && bundle.project == claim.project
-                && bundle.outcome == "completed",
-            "Evidence does not match captured run"
-        );
+        // One size reading classifies the hold, and the bounded read below records what was
+        // actually parsed. An absent source and an unreadable one are different operator
+        // problems, so they keep distinct reasons instead of sharing the corruption hold.
+        let source_bytes = std::fs::metadata(&path)
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::NotFound => "held_missing_evidence",
+                _ => "held_unreadable_evidence",
+            })?
+            .len();
+        provenance["source_bytes"] = json!(source_bytes);
+        if source_bytes > evidence::MAX_SOURCE_BYTES as u64 {
+            return Err("held_oversized_evidence_source");
+        }
+        let bytes =
+            evidence::read_bounded(&path, evidence::MAX_SOURCE_BYTES).map_err(
+                |error| match error.downcast_ref::<std::io::Error>().map(|e| e.kind()) {
+                    Some(std::io::ErrorKind::NotFound) => "held_missing_evidence",
+                    Some(_) => "held_unreadable_evidence",
+                    None => "held_oversized_evidence_source",
+                },
+            )?;
+        if hash(&bytes) != claim.evidence {
+            return Err("held_invalid_evidence");
+        }
+        let bundle: Evidence =
+            serde_json::from_slice(&bytes).map_err(|_| "held_invalid_evidence")?;
+        if bundle.schema_version != 1
+            || bundle.run != claim.key
+            || bundle.project != claim.project
+            || bundle.outcome != "completed"
+        {
+            return Err("held_invalid_evidence");
+        }
         let mut ids = std::collections::HashSet::new();
         for item in &bundle.items {
-            let id = item["id"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("Evidence item lacks identity"))?;
-            ensure!(
-                !id.is_empty() && ids.insert(id),
-                "Ambiguous evidence identity"
-            );
+            let id = item["id"].as_str().ok_or("held_invalid_evidence")?;
+            if id.is_empty() || !ids.insert(id) {
+                return Err("held_invalid_evidence");
+            }
         }
         Ok(bundle)
     })();
     let bundle = match input {
-        Ok(input) => input,
-        Err(error) => {
-            let reason = if error
-                .downcast_ref::<std::io::Error>()
-                .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
-            {
-                "held_missing_evidence"
-            } else if provenance["source_bytes"]
-                .as_u64()
-                .is_some_and(|n| n > evidence::MAX_SOURCE_BYTES as u64)
-            {
-                "held_oversized_evidence_source"
-            } else {
-                "held_invalid_evidence"
-            };
+        Ok(bundle) => bundle,
+        Err(reason) => {
             state.fail_extraction(&claim, reason, false, &provenance, ingestion::now())?;
             return Ok(true);
         }
     };
     provenance["input_limit"] = json!(extraction::MAX_INPUT);
     provenance["item_count"] = json!(bundle.items.len());
+    if bundle.items.is_empty() {
+        // No native item can be cited, so the response schema would carry an empty item
+        // enum and the call could only return an empty batch. Decide the empty success
+        // locally instead of spending one.
+        provenance["chunk_count"] = json!(0);
+        provenance["completed_chunks"] = json!(0);
+        state.finish_extraction(&claim, &[], &provenance, ingestion::now())?;
+        return Ok(true);
+    }
     let ranges = match extraction::chunks(&bundle, &claim.evidence) {
         Ok(ranges) => ranges,
         Err(reason) => {
@@ -112,6 +123,10 @@ pub async fn extract_one(
     let mut metadata = bundle;
     let items = std::mem::take(&mut metadata.items);
     let mut candidates = Vec::new();
+    // Processing failures below hold the job with a bounded reason and the provenance of
+    // the chunks that completed. Only state-database errors propagate: a job that cannot
+    // be written relies on lease recovery, which records `generation_lease_expired` once
+    // its attempts are exhausted.
     for (index, range) in ranges.into_iter().enumerate() {
         // A fenced, superseded or excluded claim must not send another chunk. Surfaced
         // as an error rather than a hold: fail/finish would be rejected on the same
@@ -132,11 +147,16 @@ pub async fn extract_one(
             items: items[range].to_vec(),
             ..metadata.clone()
         };
-        let prompt = extraction::prompt(&supplied, &claim.evidence)?;
-        let schema = extraction::schema(project, &claim.evidence, &supplied.items);
-        let schema_bytes = serde_json::to_vec(&schema)?;
         provenance["chunk_index"] = json!(index);
         provenance["chunk_items"] = json!(supplied.items.len());
+        let (prompt, schema, schema_bytes) =
+            match chunk_request(project, &claim.evidence, &supplied) {
+                Ok(request) => request,
+                Err(reason) => {
+                    state.fail_extraction(&claim, reason, false, &provenance, ingestion::now())?;
+                    return Ok(true);
+                }
+            };
         provenance["input_bytes"] = json!(prompt.len() + schema_bytes.len());
         provenance["input_hash"] = json!(hash(prompt.as_bytes()));
         provenance["schema_hash"] = json!(hash(&schema_bytes));
@@ -178,7 +198,16 @@ pub async fn extract_one(
                 return Ok(true);
             }
         };
-        extraction::merge(&mut candidates, chunk_candidates)?;
+        if extraction::merge(&mut candidates, chunk_candidates).is_err() {
+            state.fail_extraction(
+                &claim,
+                "held_invalid_candidates",
+                false,
+                &provenance,
+                ingestion::now(),
+            )?;
+            return Ok(true);
+        }
         provenance["completed_chunks"] = json!(index + 1);
     }
     // Revocation during generation prevents staging; it cannot undo a request already sent.
@@ -194,4 +223,54 @@ pub async fn extract_one(
         state.finish_extraction(&claim, &candidates, &provenance, ingestion::now())?;
     }
     Ok(true)
+}
+
+/// Build one chunk request. `chunks` already proves the supplied items fit the input
+/// budget, so a failure here is defensive: it is still reported as a bounded evidence
+/// hold instead of leaving the claimed job `running`.
+fn chunk_request(
+    project: &str,
+    digest: &str,
+    supplied: &Evidence,
+) -> std::result::Result<(String, Value, Vec<u8>), &'static str> {
+    let prompt = extraction::prompt(supplied, digest).map_err(|_| "held_invalid_evidence")?;
+    let schema = extraction::schema(project, digest, &supplied.items);
+    let schema_bytes = serde_json::to_vec(&schema).map_err(|_| "held_invalid_evidence")?;
+    Ok((prompt, schema, schema_bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn unframeable_chunk_is_a_bounded_evidence_hold() -> Result<()> {
+        let supplied = Evidence {
+            schema_version: 1,
+            run: crate::domain::RunKey {
+                store: "source".into(),
+                thread: "thread".into(),
+                turn: "turn".into(),
+            },
+            project: "alpha".into(),
+            runtime_version: "fixture".into(),
+            capture_runtime: None,
+            outcome: "completed".into(),
+            started_at: 1,
+            completed_at: 2,
+            cwd: None,
+            terminal_error: None,
+            items: vec![
+                json!({"id":"E1","type":"commandExecution","text":"x".repeat(extraction::MAX_INPUT)}),
+            ],
+            coverage: vec![],
+        };
+        // `chunks` rejects this item; the request builder must never leave the job without
+        // a reason if it is reached anyway.
+        assert_eq!(
+            chunk_request("alpha", &"a".repeat(64), &supplied).unwrap_err(),
+            "held_invalid_evidence"
+        );
+        Ok(())
+    }
 }

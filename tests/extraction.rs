@@ -346,6 +346,64 @@ async fn missing_evidence_is_held_before_backend_invocation() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn empty_bundle_completes_without_a_model_call() -> Result<()> {
+    let d = tempdir()?;
+    let mut b = bundle();
+    b.items.clear();
+    let (mut state, _) = captured_bundle(d.path(), &b)?;
+    let backend = ChunkBackend {
+        calls: 0.into(),
+        fail_at: None,
+        omitted_citation: false,
+    };
+    assert!(
+        coding_memory::extraction_worker::extract_one(&mut state, d.path(), "alpha", &backend)
+            .await?
+    );
+    assert_eq!(backend.calls.load(std::sync::atomic::Ordering::Relaxed), 0);
+    let status = state.extraction_status("alpha")?;
+    assert_eq!(status[0].state, "succeeded_empty");
+    assert_eq!(status[0].reason.as_deref(), None);
+    let p: serde_json::Value = serde_json::from_str(status[0].provenance.as_ref().unwrap())?;
+    assert_eq!(p["item_count"], 0);
+    assert_eq!(p["chunk_count"], 0);
+    assert_eq!(p["completed_chunks"], 0);
+    assert!(state.candidates("alpha")?.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn unreadable_evidence_is_held_without_sharing_the_corruption_reason() -> Result<()> {
+    let d = tempdir()?;
+    let (mut state, digest) = captured(d.path())?;
+    state.set_external_policy("alpha", true)?;
+    let path = d.path().join("evidence").join(format!("{digest}.json"));
+    // A directory can be measured as small but not read as a file, so this exercises the
+    // read failure without depending on file permissions.
+    std::fs::remove_file(&path)?;
+    std::fs::create_dir(&path)?;
+    let backend = ChunkBackend {
+        calls: 0.into(),
+        fail_at: None,
+        omitted_citation: false,
+    };
+    coding_memory::extraction_worker::extract_one(&mut state, d.path(), "alpha", &backend).await?;
+    assert_eq!(backend.calls.load(std::sync::atomic::Ordering::Relaxed), 0);
+    let status = state.extraction_status("alpha")?;
+    assert_eq!(
+        status[0].reason.as_deref(),
+        Some("held_unreadable_evidence")
+    );
+    let p: serde_json::Value = serde_json::from_str(status[0].provenance.as_ref().unwrap())?;
+    assert!(p["source_bytes"].as_u64().is_some());
+    assert_eq!(
+        p["source_limit"].as_u64(),
+        Some(evidence::MAX_SOURCE_BYTES as u64)
+    );
+    Ok(())
+}
+
 fn large_bundle() -> Evidence {
     let mut b = bundle();
     b.items = (0..3).map(|i| json!({"id":format!("E{i}"),"type":"commandExecution","status":"completed","text":"界\\\"".repeat(14000)})).collect();

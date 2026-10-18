@@ -289,17 +289,27 @@ fn reason(code: Option<&str>) -> &'static str {
             | "generation_lease_expired"
             | "worker_interrupted",
         ) => "Generation interrupted or failed; check runtime and retry limits",
+        Some("held_context_too_large" | "held_context_unavailable") => {
+            "Consolidation context unavailable or too large; inspect consolidation preflight or consolidation-status"
+        }
+        Some("held_missing_evidence") => {
+            "Extraction source is absent; restore or re-capture it before a deliberate extraction-retry"
+        }
+        Some("held_unreadable_evidence") => {
+            "Extraction source cannot be read; check storage and permissions, then retry deliberately"
+        }
+        Some("held_invalid_evidence" | "held_invalid_or_oversized_evidence") => {
+            "Extraction evidence is invalid, corrupt or from an older release; re-capture before a deliberate retry"
+        }
         Some(
-            "held_context_too_large"
-            | "held_context_unavailable"
-            | "held_invalid_or_oversized_evidence"
-            | "held_missing_evidence"
-            | "held_invalid_evidence"
-            | "held_oversized_evidence_source"
+            "held_oversized_evidence_source"
             | "held_oversized_evidence_framing"
             | "held_oversized_evidence_item",
         ) => {
-            "Evidence/context unavailable or too large; inspect consolidation preflight or extraction status"
+            "Extraction evidence exceeds the local or model input limit; not retryable until the source is captured smaller"
+        }
+        Some("held_invalid_candidates") => {
+            "Generated candidates failed validation; inspect extraction status before a deliberate retry"
         }
         Some("revision_conflict") => {
             "Revision conflict; inspect Vault revisions before vault-recover"
