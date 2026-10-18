@@ -1,4 +1,4 @@
-"""Select native CI from the complete Git diff, without API file-count limits."""
+"""Select archive CI from the complete Git diff, without API file-count limits."""
 import json
 import os
 from pathlib import Path
@@ -9,18 +9,12 @@ import subprocess
 SHARED = {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "build.rs", "build_inputs.rs",
           "flake.nix", "flake.lock", "Taskfile.pkl", "scripts/ci_scope.py",
           "scripts/tests/test_ci_scope.py"}
-MACOS = {f"src/{name}.rs" for name in ["main", "lib", "codex", "compatibility", "runtime_probe",
-                                     "generation", "service", "worker", "ingestion"]}
-MACOS |= {f"tests/{name}.rs" for name in ["generation", "worker", "reader", "compatibility", "ingestion"]}
 
 
 def select(paths):
     def shared(path):
         return path in SHARED or path.startswith((".github/", ".cargo/"))
     return {
-        "macos": any(shared(p) or p in MACOS or p.startswith((
-            "experiments/codex_capture/", "experiments/codex_generation/", "experiments/worker/"
-        )) for p in paths),
         "archive": any(shared(p) or p in {"CHANGELOG.md", "dist-workspace.toml"}
                        or p.startswith(("LICENSE", "licenses/", "third-party/", "scripts/release", "scripts/build_release",
                                         "scripts/install_dist", "scripts/tests/test_release")) for p in paths),
@@ -45,7 +39,7 @@ def main():
     event = os.environ["GITHUB_EVENT_NAME"]
     payload = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
     if event == "workflow_dispatch":
-        result = {"macos": True, "archive": True}
+        result = {"archive": True}
     elif event in {"push", "pull_request"}:
         pr = event == "pull_request"
         base = payload["pull_request"]["base"]["sha"] if pr else payload["before"]

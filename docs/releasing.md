@@ -52,11 +52,13 @@ triggering another workflow, avoiding GITHUB_TOKEN event-chaining limitations.
 
 Repository settings must allow GitHub Actions and the pinned actions, including
 the Nix installer/cache action. Protect main with the Linux development check
-and CI `Required checks` aggregate. The aggregate requires any selected Mac and
-archive jobs to succeed, and permits intentionally skipped native jobs. Update
-required-check names if existing branch protection references the previous
-standalone workflows. Any rules restricting tag creation must permit the release
-workflow.
+and the CI `Required checks` aggregate. The aggregate requires the Linux
+development check, requires the archive dry run when packaging inputs change, and
+permits that dry run to be skipped otherwise. Pull requests do not run the macOS
+regression suite; it remains in the separate runtime compatibility workflow
+described in `development.md`, so merging does not wait for macOS results. Keep
+the required-check names in sync if workflow or job names change. Any rules
+restricting tag creation must permit the release workflow.
 No Apple Developer signing/notarization credentials are used at this stage.
 
 Draft discovery uses the authenticated paginated release list, not the by-tag
