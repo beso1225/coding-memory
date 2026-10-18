@@ -76,10 +76,12 @@ path without replacing its prior result; the old token is then invalidated.
 fixture hashes identify local results; a wrapper's hash does not fingerprint its
 interpreter or all dependencies, which periodic rechecks help cover.
 
-The Runtime compatibility Actions workflow runs on PRs, manually, and every Monday
-at 03:17 UTC. It downloads the latest official Codex CLI release and runs the same
-Rust fixture on an isolated macOS runner. Actions failure provides an early signal
-for upstream changes; success does not certify a user's installed executable hash.
+The Runtime compatibility Actions workflow runs manually and every Monday at
+03:17 UTC; the regular CI workflow no longer calls it on pull requests, so macOS
+regression results are not a merge gate. It downloads the latest official Codex
+CLI release and runs the same Rust fixture on an isolated macOS runner. Actions
+failure provides an early signal for upstream changes; success does not certify
+a user's installed executable hash.
 The App-bundled executable is checked locally rather than downloaded by this job.
 
 The fixture creates two synthetic turns through a private producer, then captures

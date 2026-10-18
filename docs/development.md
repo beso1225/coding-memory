@@ -116,23 +116,22 @@ on `ubuntu-24.04`: it evaluates the flake with `nix flake check --no-build` and
 runs `nix develop --command pkf run check`. The pinned toolchain, Nix lock file,
 and check commands are shared with local development.
 
-Native checks are selected from the full Git change range by
+Archive checks are selected from the full Git change range by
 [`scripts/ci_scope.py`](../scripts/ci_scope.py). PR comparisons use the merge
 base; deleted and renamed inputs are included. A failed comparison fails the
-selection job rather than silently skipping validation. Normal consolidation,
-retrieval, and documentation changes run Linux checks only. Changes to platform
-integration (capture, runtime probes, generation, service/worker startup), their
-tests, dependencies, build inputs, or CI configuration also run the macOS
-regression suite and latest official Codex CLI capture fixture. Keep the native
-path list current when adding platform integration modules.
+selection job rather than silently skipping validation. Every PR runs the Linux
+development checks. The regular CI workflow does not call the macOS regression
+and latest official Codex CLI capture job. Dependency, build-input, packaging,
+license, and CI configuration changes still select the archive dry run.
 
 The [runtime compatibility workflow](../.github/workflows/runtime-compatibility.yml)
-also runs the full native checks and credential-free CLI fixture every Monday
-at 03:17 UTC, and on manual dispatch. One Mac job shares the build between
+independently runs the full macOS checks and credential-free CLI fixture every
+Monday at 03:17 UTC, and on manual dispatch. One Mac job shares the build between
 regression tests and the runtime fixture. Local Worker runtime verification
-continues independently. A manual CI dispatch requests all native checks and
-an archive dry run. See [release operations](releasing.md) for selective archive
-builds and publication.
+continues independently. A manual CI dispatch requests Linux checks and an
+archive dry run. Use the separate runtime compatibility workflow for manual
+macOS regression and CLI fixture checks. See [release operations](releasing.md)
+for selective archive builds and publication.
 
 The shared setup action caches the Nix store by OS, architecture, flake inputs,
 and toolchain. Cargo development dependencies and `target/debug` are separately

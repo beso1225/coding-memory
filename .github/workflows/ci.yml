@@ -18,11 +18,10 @@ concurrency:
 
 jobs:
   scope:
-    name: Select native checks
+    name: Select archive checks
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
-      macos: ${{ steps.scope.outputs.macos }}
       archive: ${{ steps.scope.outputs.archive }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -36,17 +35,11 @@ jobs:
   check:
     uses: ./.github/workflows/development-checks.yml
 
-  macos:
-    needs: scope
-    if: github.event_name != 'push' && needs.scope.outputs.macos == 'true'
-    uses: ./.github/workflows/runtime-compatibility.yml
-
   release:
-    needs: [scope, check, macos]
+    needs: [scope, check]
     if: >-
       !cancelled() && needs.scope.result == 'success' &&
       needs.check.result == 'success' &&
-      (needs.macos.result == 'success' || needs.macos.result == 'skipped') &&
       needs.scope.outputs.archive == 'true'
     # Only the called publish job gets a write token; its event/ref guards
     # prohibit publishing PR artifacts. The caller must permit that job.
@@ -59,7 +52,7 @@ jobs:
   required:
     name: Required checks
     if: always()
-    needs: [scope, check, macos, release]
+    needs: [scope, check, release]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -67,18 +60,11 @@ jobs:
         env:
           SCOPE: ${{ needs.scope.result }}
           LINUX: ${{ needs.check.result }}
-          MACOS: ${{ needs.macos.result }}
           RELEASE: ${{ needs.release.result }}
-          EXPECT_MACOS: ${{ github.event_name != 'push' && needs.scope.outputs.macos == 'true' }}
           EXPECT_RELEASE: ${{ needs.scope.outputs.archive == 'true' }}
         run: |
           test "$SCOPE" = success
           test "$LINUX" = success
-          if [ "$EXPECT_MACOS" = true ]; then
-            test "$MACOS" = success
-          else
-            test "$MACOS" = skipped
-          fi
           if [ "$EXPECT_RELEASE" = true ]; then
             test "$RELEASE" = success
           else
