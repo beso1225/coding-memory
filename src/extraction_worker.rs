@@ -24,6 +24,11 @@ pub async fn extract_one(
         provenance.is_object(),
         "Backend provenance must be an object"
     );
+    // A resumed prefix belongs to the generator that produced it: another model, backend,
+    // provider or Engine version must not reuse those candidates or label them with its own
+    // provenance. Only the backend's own fields are hashed, before this attempt adds its
+    // evidence digest and transmission decision.
+    let generator = hash(provenance.to_string().as_bytes());
     let Some(claim) = state.claim_extraction(project, ingestion::now(), 3600)? else {
         return Ok(false);
     };
@@ -121,12 +126,14 @@ pub async fn extract_one(
     };
     provenance["chunk_count"] = json!(ranges.len());
     // A prefix recorded by an earlier attempt is reused only for the same evidence, prompt
-    // version and partition; anything else restarts every chunk. Fences clear the record and
-    // a fenced attempt cannot write it, so a takeover never resumes an offset it lost.
+    // version, generator and partition; anything else restarts every chunk. Fences clear the
+    // record and a fenced attempt cannot write it, so a takeover never resumes an offset it
+    // lost.
     let signature = plan_signature(&ranges);
     let plan = ChunkPlanId {
         evidence: &claim.evidence,
         prompt_version: extraction::PROMPT_VERSION,
+        generator: &generator,
         signature: &signature,
         chunks: ranges.len(),
     };
@@ -135,6 +142,7 @@ pub async fn extract_one(
         .as_ref()
         .map_or(0, |progress| progress.completed_chunks);
     provenance["plan_hash"] = json!(signature);
+    provenance["generator_hash"] = json!(generator);
     provenance["resumed_chunks"] = json!(resumed_chunks);
     provenance["completed_chunks"] = json!(resumed_chunks);
     let mut metadata = bundle;
@@ -218,6 +226,15 @@ pub async fn extract_one(
                 return Ok(true);
             }
         };
+        // The chunk is durable before the next call, so a later failure cannot repeat calls
+        // that already succeeded. It publishes no candidate until the final commit.
+        state.record_extraction_progress(
+            &claim,
+            &plan,
+            index,
+            &chunk_candidates,
+            ingestion::now(),
+        )?;
         if extraction::merge(&mut candidates, chunk_candidates).is_err() {
             state.fail_extraction(
                 &claim,
@@ -229,15 +246,6 @@ pub async fn extract_one(
             return Ok(true);
         }
         provenance["completed_chunks"] = json!(index + 1);
-        // The prefix is durable before the next call, so a later failure cannot repeat calls
-        // that already succeeded. It publishes no candidate until the final commit.
-        state.record_extraction_progress(
-            &claim,
-            &plan,
-            index + 1,
-            &candidates,
-            ingestion::now(),
-        )?;
     }
     // Revocation during generation prevents staging; it cannot undo a request already sent.
     if backend.external() && !state.external_allowed(project)? {

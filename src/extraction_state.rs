@@ -1,6 +1,6 @@
 use crate::{
     domain::{RunKey, hash},
-    extraction::{Candidate, Validated},
+    extraction::{Candidate, Validated, merge},
     state::State,
 };
 use anyhow::{Result, ensure};
@@ -31,20 +31,21 @@ pub struct StagedCandidate {
     pub candidate: Candidate,
     pub created_at: i64,
 }
-/// Completed chunk prefix recorded by an earlier attempt of the same job. Its candidates
-/// stay out of `candidates` until every chunk succeeds.
+/// Completed chunk prefix recorded by earlier attempts of the same job. Its candidates stay
+/// out of `candidates` until every chunk succeeds.
 #[derive(Debug)]
 pub struct ExtractionProgress {
     pub completed_chunks: usize,
     pub candidates: Vec<Validated>,
 }
-/// Identity of the chunk plan a recorded prefix belongs to. A prefix is reused only when
-/// every field matches, so changed evidence, prompt version or partition restarts all
-/// chunks instead of mixing candidates from incompatible calls.
+/// Identity a recorded chunk belongs to. A prefix is reused only when every field matches,
+/// so different evidence, prompt, generator or partition restarts all chunks instead of
+/// mixing candidates from incompatible calls or attributing them to another generator.
 #[derive(Debug)]
 pub struct ChunkPlanId<'a> {
     pub evidence: &'a str,
     pub prompt_version: &'a str,
+    pub generator: &'a str,
     pub signature: &'a str,
     pub chunks: usize,
 }
@@ -128,68 +129,80 @@ impl State {
         ensure!(n == 1, "Stale or excluded extraction claim");
         Ok(())
     }
-    /// Load the completed chunk prefix recorded by an earlier attempt, reused only while the
-    /// evidence digest, prompt version and chunk plan still match.
+    /// Load the completed chunk prefix recorded by earlier attempts, which is reused only
+    /// while every recorded chunk still matches the evidence digest, prompt version,
+    /// generator and chunk plan and forms a prefix that starts at the first chunk.
     pub fn extraction_progress(
         &self,
         key: &RunKey,
         plan: &ChunkPlanId,
     ) -> Result<Option<ExtractionProgress>> {
-        let row = self
-            .db
-            .query_row(
-                "SELECT evidence,prompt_version,plan,completed_chunks,candidates FROM extraction_progress WHERE store=?1 AND thread=?2 AND turn=?3",
-                params![key.store, key.thread, key.turn],
-                |r| {
+        let rows = {
+            let mut statement = self.db.prepare(
+                "SELECT chunk,evidence,prompt_version,generator,plan,candidates FROM extraction_progress WHERE store=?1 AND thread=?2 AND turn=?3 ORDER BY chunk",
+            )?;
+            statement
+                .query_map(params![key.store, key.thread, key.turn], |r| {
                     Ok((
-                        r.get::<_, String>(0)?,
+                        r.get::<_, i64>(0)?,
                         r.get::<_, String>(1)?,
                         r.get::<_, String>(2)?,
-                        r.get::<_, i64>(3)?,
+                        r.get::<_, String>(3)?,
                         r.get::<_, String>(4)?,
+                        r.get::<_, String>(5)?,
                     ))
-                },
-            )
-            .optional()?;
-        let Some((evidence, prompt_version, signature, completed, candidates)) = row else {
-            return Ok(None);
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?
         };
-        if evidence != plan.evidence
-            || prompt_version != plan.prompt_version
-            || signature != plan.signature
-            || completed <= 0
-            || completed > i64::try_from(plan.chunks)?
-        {
+        let mut candidates = Vec::new();
+        let mut completed_chunks = 0;
+        for (chunk, evidence, prompt_version, generator, signature, recorded) in rows {
+            if evidence != plan.evidence
+                || prompt_version != plan.prompt_version
+                || generator != plan.generator
+                || signature != plan.signature
+                || usize::try_from(chunk)? != completed_chunks
+            {
+                break;
+            }
+            let Ok(recorded) = serde_json::from_str::<Vec<Recorded>>(&recorded) else {
+                // Progress is derived cache, not authoritative state: an unreadable row
+                // restarts every chunk instead of stranding the job on a state error.
+                break;
+            };
+            let recorded = recorded
+                .into_iter()
+                .map(|candidate| Validated {
+                    candidate: candidate.candidate,
+                    state: candidate.state,
+                })
+                .collect();
+            if merge(&mut candidates, recorded).is_err() {
+                break;
+            }
+            completed_chunks += 1;
+        }
+        if completed_chunks == 0 || completed_chunks > plan.chunks {
             return Ok(None);
         }
-        let Ok(candidates) = serde_json::from_str::<Vec<Recorded>>(&candidates) else {
-            // Progress is derived cache, not authoritative state: an unreadable row restarts
-            // every chunk instead of stranding the job on a state error.
-            return Ok(None);
-        };
         Ok(Some(ExtractionProgress {
-            completed_chunks: usize::try_from(completed)?,
-            candidates: candidates
-                .into_iter()
-                .map(|recorded| Validated {
-                    candidate: recorded.candidate,
-                    state: recorded.state,
-                })
-                .collect(),
+            completed_chunks,
+            candidates,
         }))
     }
-    /// Record the completed prefix of a running attempt. The write is fenced by the claim
+    /// Record one completed chunk of a running attempt. Every write is fenced by the claim
     /// token, lease and exclusion state, so a superseded or excluded attempt can neither
-    /// publish nor replace an offset it no longer owns.
+    /// publish nor replace an offset it no longer owns. Only the new chunk is written, so a
+    /// long run does not rewrite its whole prefix on every call.
     pub fn record_extraction_progress(
         &mut self,
         c: &ExtractionClaim,
         plan: &ChunkPlanId,
-        completed_chunks: usize,
+        chunk: usize,
         candidates: &[Validated],
         now: i64,
     ) -> Result<()> {
-        let n=self.db.execute("INSERT INTO extraction_progress(store,thread,turn,evidence,prompt_version,plan,completed_chunks,candidates) SELECT ?1,?2,?3,?4,?5,?6,?7,?8 WHERE EXISTS(SELECT 1 FROM extraction_jobs j WHERE j.store=?1 AND j.thread=?2 AND j.turn=?3 AND j.state='running' AND j.token=?9 AND j.lease_until>?10 AND NOT EXISTS(SELECT 1 FROM owned_stores WHERE id=?1) AND NOT EXISTS(SELECT 1 FROM exclusions e WHERE e.store=?1 AND e.thread=?2 AND e.turn=?3)) ON CONFLICT(store,thread,turn) DO UPDATE SET evidence=excluded.evidence,prompt_version=excluded.prompt_version,plan=excluded.plan,completed_chunks=excluded.completed_chunks,candidates=excluded.candidates",params![c.key.store,c.key.thread,c.key.turn,plan.evidence,plan.prompt_version,plan.signature,i64::try_from(completed_chunks)?,serde_json::to_string(candidates)?,c.token,now])?;
+        let n=self.db.execute("INSERT INTO extraction_progress(store,thread,turn,chunk,evidence,prompt_version,generator,plan,candidates) SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9 WHERE EXISTS(SELECT 1 FROM extraction_jobs j WHERE j.store=?1 AND j.thread=?2 AND j.turn=?3 AND j.state='running' AND j.token=?10 AND j.lease_until>?11 AND NOT EXISTS(SELECT 1 FROM owned_stores WHERE id=?1) AND NOT EXISTS(SELECT 1 FROM exclusions e WHERE e.store=?1 AND e.thread=?2 AND e.turn=?3)) ON CONFLICT(store,thread,turn,chunk) DO UPDATE SET evidence=excluded.evidence,prompt_version=excluded.prompt_version,generator=excluded.generator,plan=excluded.plan,candidates=excluded.candidates",params![c.key.store,c.key.thread,c.key.turn,i64::try_from(chunk)?,plan.evidence,plan.prompt_version,plan.generator,plan.signature,serde_json::to_string(candidates)?,c.token,now])?;
         ensure!(n == 1, "Stale or excluded extraction claim");
         Ok(())
     }

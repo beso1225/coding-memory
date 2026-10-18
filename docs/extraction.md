@@ -113,15 +113,17 @@ applicability conditions remain distinct for consolidation/review, and candidate
 that overlap semantically are deliberately left for review rather than merged.
 The combined result can exceed twenty candidates, with the twenty-candidate and
 64 KiB output limits applying separately to each call. A failed chunk stages
-nothing. Each completed chunk is recorded with the evidence digest, prompt version
-and partition signature, so an automatic or deliberate retry resumes at the first
-failed chunk instead of repeating calls that already succeeded. The record never
-publishes candidates: they enter `candidates` only when the last chunk succeeds and
-the completion transaction commits, which drops the record. Changed evidence,
-prompt version or partition restarts every chunk, and a fence event (exclusion or
-an Engine-owned source) clears the record. A superseded or excluded attempt cannot
-write the record, so no takeover resumes an offset it does not own. Requests have
-unique attempt/token/chunk identities.
+nothing. Each completed chunk is recorded with the evidence digest, prompt
+version, generator provenance and partition signature, and only the new chunk is
+written, so a long run does not rewrite its prefix on every call. An automatic or
+deliberate retry resumes at the first failed chunk instead of repeating calls
+that already succeeded. The record never publishes candidates: they enter
+`candidates` only when the last chunk succeeds and the completion transaction
+commits, which drops the record. Changed evidence, prompt version, generator
+(another model, backend or Engine version) or partition restarts every chunk, and
+a fence event (exclusion or an Engine-owned source) clears the record. A
+superseded or excluded attempt cannot write the record, so no takeover resumes an
+offset it does not own. Requests have unique attempt/token/chunk identities.
 Lease renewal between calls fences expired or superseded work, and external
 permission is rechecked before each call and at the final commit.
 
