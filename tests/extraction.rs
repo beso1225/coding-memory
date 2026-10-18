@@ -355,7 +355,8 @@ async fn empty_bundle_completes_without_a_model_call() -> Result<()> {
     let backend = ChunkBackend {
         calls: 0.into(),
         fail_at: None,
-        omitted_citation: false,
+        omit_citation_at: None,
+        model: "fixture",
     };
     assert!(
         coding_memory::extraction_worker::extract_one(&mut state, d.path(), "alpha", &backend)
@@ -386,7 +387,8 @@ async fn unreadable_evidence_is_held_without_sharing_the_corruption_reason() -> 
     let backend = ChunkBackend {
         calls: 0.into(),
         fail_at: None,
-        omitted_citation: false,
+        omit_citation_at: None,
+        model: "fixture",
     };
     coding_memory::extraction_worker::extract_one(&mut state, d.path(), "alpha", &backend).await?;
     assert_eq!(backend.calls.load(std::sync::atomic::Ordering::Relaxed), 0);
@@ -401,6 +403,231 @@ async fn unreadable_evidence_is_held_without_sharing_the_corruption_reason() -> 
         p["source_limit"].as_u64(),
         Some(evidence::MAX_SOURCE_BYTES as u64)
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn retryable_chunk_failure_resumes_at_the_first_failed_chunk() -> Result<()> {
+    let d = tempdir()?;
+    let b = large_bundle();
+    let (mut state, _) = captured_bundle(d.path(), &b)?;
+    let first = ChunkBackend {
+        calls: 0.into(),
+        fail_at: Some(1),
+        omit_citation_at: None,
+        model: "fixture",
+    };
+    coding_memory::extraction_worker::extract_one(&mut state, d.path(), "alpha", &first).await?;
+    assert_eq!(first.calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+    assert!(state.candidates("alpha")?.is_empty());
+    let status = state.extraction_status("alpha")?;
+    assert_eq!(status[0].state, "queued");
+    let provenance: serde_json::Value =
+        serde_json::from_str(status[0].provenance.as_ref().unwrap())?;
+    assert_eq!(provenance["completed_chunks"], 1);
+    assert_eq!(provenance["resumed_chunks"], 0);
+    make_retry_due(&mut state, coding_memory::ingestion::now())?;
+    let resumed = ChunkBackend {
+        calls: 0.into(),
+        fail_at: None,
+        omit_citation_at: None,
+        model: "fixture",
+    };
+    coding_memory::extraction_worker::extract_one(&mut state, d.path(), "alpha", &resumed).await?;
+    assert_eq!(resumed.calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+    let status = state.extraction_status("alpha")?;
+    assert_eq!(status[0].state, "succeeded");
+    let provenance: serde_json::Value =
+        serde_json::from_str(status[0].provenance.as_ref().unwrap())?;
+    assert_eq!(provenance["resumed_chunks"], 1);
+    assert_eq!(provenance["completed_chunks"], provenance["chunk_count"]);
+    assert_eq!(
+        candidate_ids(&state, "alpha")?,
+        full_run_candidates().await?
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn rejected_chunk_then_deliberate_retry_resumes_without_repeating_the_prefix() -> Result<()> {
+    let d = tempdir()?;
+    let b = large_bundle();
+    let (mut state, _) = captured_bundle(d.path(), &b)?;
+    let rejected = ChunkBackend {
+        calls: 0.into(),
+        fail_at: None,
+        omit_citation_at: Some(1),
+        model: "fixture",
+    };
+    coding_memory::extraction_worker::extract_one(&mut state, d.path(), "alpha", &rejected).await?;
+    assert_eq!(rejected.calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+    let status = state.extraction_status("alpha")?;
+    assert_eq!(status[0].state, "held");
+    assert_eq!(status[0].reason.as_deref(), Some("held_invalid_candidates"));
+    let provenance: serde_json::Value =
+        serde_json::from_str(status[0].provenance.as_ref().unwrap())?;
+    assert_eq!(provenance["completed_chunks"], 1);
+    assert!(state.candidates("alpha")?.is_empty());
+    state.retry_extraction(&b.run, coding_memory::ingestion::now())?;
+    let retried = ChunkBackend {
+        calls: 0.into(),
+        fail_at: None,
+        omit_citation_at: None,
+        model: "fixture",
+    };
+    coding_memory::extraction_worker::extract_one(&mut state, d.path(), "alpha", &retried).await?;
+    assert_eq!(retried.calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(state.extraction_status("alpha")?[0].state, "succeeded");
+    assert_eq!(
+        candidate_ids(&state, "alpha")?,
+        full_run_candidates().await?
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn resume_requires_matching_evidence_prompt_and_plan() -> Result<()> {
+    for field in ["evidence", "prompt_version", "plan"] {
+        let d = tempdir()?;
+        let b = large_bundle();
+        let (mut state, _) = captured_bundle(d.path(), &b)?;
+        let first = ChunkBackend {
+            calls: 0.into(),
+            fail_at: Some(1),
+            omit_citation_at: None,
+            model: "fixture",
+        };
+        coding_memory::extraction_worker::extract_one(&mut state, d.path(), "alpha", &first)
+            .await?;
+        assert_eq!(first.calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+        // Change one identity field of a genuinely recorded prefix: the prefix must be
+        // rejected, not reinterpreted.
+        {
+            let db = rusqlite::Connection::open(d.path().join("state.sqlite"))?;
+            match field {
+                "evidence" => {
+                    db.execute(
+                        "UPDATE extraction_progress SET evidence=?1",
+                        ["b".repeat(64)],
+                    )?;
+                }
+                "prompt_version" => {
+                    db.execute(
+                        "UPDATE extraction_progress SET prompt_version=?1",
+                        ["extraction-v1"],
+                    )?;
+                }
+                _ => {
+                    db.execute("UPDATE extraction_progress SET plan=?1", ["0".repeat(64)])?;
+                }
+            }
+        }
+        make_retry_due(&mut state, coding_memory::ingestion::now())?;
+        let restarted = ChunkBackend {
+            calls: 0.into(),
+            fail_at: None,
+            omit_citation_at: None,
+            model: "fixture",
+        };
+        coding_memory::extraction_worker::extract_one(&mut state, d.path(), "alpha", &restarted)
+            .await?;
+        assert_eq!(
+            restarted.calls.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "{field}"
+        );
+        assert_eq!(state.extraction_status("alpha")?[0].state, "succeeded");
+        assert_eq!(
+            candidate_ids(&state, "alpha")?,
+            full_run_candidates().await?
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn fenced_and_excluded_claims_never_publish_a_resumable_prefix() -> Result<()> {
+    let d = tempdir()?;
+    let b = large_bundle();
+    let (mut state, digest) = captured_bundle(d.path(), &b)?;
+    let first = ChunkBackend {
+        calls: 0.into(),
+        fail_at: Some(1),
+        omit_citation_at: None,
+        model: "fixture",
+    };
+    coding_memory::extraction_worker::extract_one(&mut state, d.path(), "alpha", &first).await?;
+    assert_eq!(first.calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+    // A superseded attempt cannot publish over the claim that owns the job now.
+    let stale = coding_memory::extraction_state::ExtractionClaim {
+        key: b.run.clone(),
+        project: "alpha".into(),
+        evidence: digest,
+        token: 0,
+        attempts: 1,
+    };
+    let signature = "0".repeat(64);
+    let generator = "0".repeat(64);
+    let plan = coding_memory::extraction_state::ChunkPlanId {
+        evidence: &stale.evidence,
+        prompt_version: extraction::PROMPT_VERSION,
+        generator: &generator,
+        signature: &signature,
+        chunks: 2,
+    };
+    assert!(
+        state
+            .record_extraction_progress(&stale, &plan, 2, &[], coding_memory::ingestion::now())
+            .is_err()
+    );
+    // Excluding the source fences the job and clears the recorded prefix.
+    state.exclude(&b.run, "test")?;
+    assert!(
+        state
+            .claim_extraction("alpha", coding_memory::ingestion::now() + 30, 3600)?
+            .is_none()
+    );
+    let status = state.extraction_status("alpha")?;
+    assert_eq!(status[0].state, "held");
+    assert_eq!(status[0].reason.as_deref(), Some("source_excluded"));
+    let db = rusqlite::Connection::open(d.path().join("state.sqlite"))?;
+    let recorded: i64 =
+        db.query_row("SELECT COUNT(*) FROM extraction_progress", [], |r| r.get(0))?;
+    assert_eq!(recorded, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn another_generator_restarts_every_chunk() -> Result<()> {
+    let d = tempdir()?;
+    let b = large_bundle();
+    let (mut state, _) = captured_bundle(d.path(), &b)?;
+    let first = ChunkBackend {
+        calls: 0.into(),
+        fail_at: Some(1),
+        omit_citation_at: None,
+        model: "fixture-a",
+    };
+    coding_memory::extraction_worker::extract_one(&mut state, d.path(), "alpha", &first).await?;
+    assert_eq!(first.calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+    make_retry_due(&mut state, coding_memory::ingestion::now())?;
+    // A retry with another model or backend cannot reuse candidates generated by the first
+    // one, nor describe them with its own provenance.
+    let other = ChunkBackend {
+        calls: 0.into(),
+        fail_at: None,
+        omit_citation_at: None,
+        model: "fixture-b",
+    };
+    coding_memory::extraction_worker::extract_one(&mut state, d.path(), "alpha", &other).await?;
+    assert_eq!(other.calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+    let status = state.extraction_status("alpha")?;
+    assert_eq!(status[0].state, "succeeded");
+    let provenance: serde_json::Value =
+        serde_json::from_str(status[0].provenance.as_ref().unwrap())?;
+    assert_eq!(provenance["resumed_chunks"], 0);
+    assert_eq!(provenance["model"], "fixture-b");
+    assert_eq!(candidate_ids(&state, "alpha")?.len(), 2);
     Ok(())
 }
 
@@ -440,14 +667,15 @@ fn chunks_budget_framing_schema_and_preserve_every_native_item() -> Result<()> {
 struct ChunkBackend {
     calls: std::sync::atomic::AtomicUsize,
     fail_at: Option<usize>,
-    omitted_citation: bool,
+    omit_citation_at: Option<usize>,
+    model: &'static str,
 }
 impl coding_memory::generation::Backend for ChunkBackend {
     fn external(&self) -> bool {
         true
     }
     fn provenance(&self) -> serde_json::Value {
-        json!({"backend":"fixture"})
+        json!({"backend":"fixture","model":self.model})
     }
     async fn generate(
         &self,
@@ -466,10 +694,18 @@ impl coding_memory::generation::Backend for ChunkBackend {
         let input: serde_json::Value =
             serde_json::from_str(request.prompt.split_once("INPUT_JSON\n").unwrap().1).unwrap();
         let mut out = output(input["bundle"].as_str().unwrap());
-        let id = if self.omitted_citation {
-            "E2"
+        let supplied: Vec<&str> = input["evidence"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["id"].as_str().unwrap())
+            .collect();
+        let id = if self.omit_citation_at == Some(n) {
+            // Cite a native id the bundle contains but this chunk cannot have supplied, so
+            // the validator rejects it across the chunk boundary.
+            if supplied.contains(&"E2") { "E0" } else { "E2" }
         } else {
-            input["evidence"]["items"][0]["id"].as_str().unwrap()
+            supplied[0]
         };
         out["candidates"][0]["evidence"][0]["item"] = json!(id);
         Ok(coding_memory::generation::Output {
@@ -478,6 +714,36 @@ impl coding_memory::generation::Backend for ChunkBackend {
             runtime_version: "fixture".into(),
         })
     }
+}
+fn candidate_ids(state: &State, project: &str) -> Result<Vec<String>> {
+    let mut ids: Vec<String> = state
+        .candidates(project)?
+        .into_iter()
+        .map(|candidate| candidate.id)
+        .collect();
+    ids.sort();
+    Ok(ids)
+}
+/// Candidates of an undisturbed run of the same bundle, used to prove that a resumed or
+/// restarting attempt stages exactly what a full run would.
+async fn full_run_candidates() -> Result<Vec<String>> {
+    let d = tempdir()?;
+    let (mut state, _) = captured_bundle(d.path(), &large_bundle())?;
+    let backend = ChunkBackend {
+        calls: 0.into(),
+        fail_at: None,
+        omit_citation_at: None,
+        model: "fixture",
+    };
+    coding_memory::extraction_worker::extract_one(&mut state, d.path(), "alpha", &backend).await?;
+    candidate_ids(&state, "alpha")
+}
+/// A retryable failure waits ten seconds before the next claim. Record the next automatic
+/// attempt as already due so a resumed run starts without sleeping in the test.
+fn make_retry_due(state: &mut State, now: i64) -> Result<()> {
+    let c = state.claim_extraction("alpha", now + 20, 3600)?.unwrap();
+    state.fail_extraction(&c, "generation_timeout", true, &json!({}), now - 20)?;
+    Ok(())
 }
 fn captured_bundle(root: &std::path::Path, b: &Evidence) -> Result<(State, String)> {
     let digest = evidence::save(root, b)?;
@@ -501,7 +767,8 @@ async fn chunk_failure_stages_nothing_and_deliberate_retry_commits_once() -> Res
     let backend = ChunkBackend {
         calls: 0.into(),
         fail_at: Some(1),
-        omitted_citation: false,
+        omit_citation_at: None,
+        model: "fixture",
     };
     coding_memory::extraction_worker::extract_one(&mut state, d.path(), "alpha", &backend).await?;
     assert_eq!(backend.calls.load(std::sync::atomic::Ordering::Relaxed), 2);
@@ -522,7 +789,8 @@ async fn chunk_failure_stages_nothing_and_deliberate_retry_commits_once() -> Res
     let backend = ChunkBackend {
         calls: 0.into(),
         fail_at: None,
-        omitted_citation: false,
+        omit_citation_at: None,
+        model: "fixture",
     };
     coding_memory::extraction_worker::extract_one(&mut state, d.path(), "alpha", &backend).await?;
     assert_eq!(state.extraction_status("alpha")?[0].state, "succeeded");
@@ -559,7 +827,8 @@ async fn omitted_original_item_and_oversized_single_item_are_held() -> Result<()
         let backend = ChunkBackend {
             calls: 0.into(),
             fail_at: None,
-            omitted_citation: true,
+            omit_citation_at: Some(0),
+            model: "fixture",
         };
         coding_memory::extraction_worker::extract_one(&mut state, d.path(), "alpha", &backend)
             .await?;
@@ -646,7 +915,8 @@ async fn corrupt_unsupported_and_local_oversize_never_generate() -> Result<()> {
         let backend = ChunkBackend {
             calls: 0.into(),
             fail_at: None,
-            omitted_citation: false,
+            omit_citation_at: None,
+            model: "fixture",
         };
         coding_memory::extraction_worker::extract_one(&mut state, d.path(), "alpha", &backend)
             .await?;
@@ -708,7 +978,8 @@ async fn revocation_between_chunks_stops_transmission_and_staging() -> Result<()
         inner: ChunkBackend {
             calls: 0.into(),
             fail_at: None,
-            omitted_citation: false,
+            omit_citation_at: None,
+            model: "fixture",
         },
     };
     coding_memory::extraction_worker::extract_one(&mut state, d.path(), "alpha", &backend).await?;
