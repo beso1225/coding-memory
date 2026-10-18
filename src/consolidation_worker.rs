@@ -367,7 +367,10 @@ async fn generate(
     provenance: &mut Value,
 ) -> Result<Vec<u8>> {
     let prompt = prompt(role, input)?;
-    ensure!(prompt.len() <= extraction::MAX_INPUT, INPUT_TOO_LARGE);
+    ensure!(
+        extraction::input_bytes(&prompt, &schema)? <= extraction::MAX_INPUT,
+        INPUT_TOO_LARGE
+    );
     let mut p = backend.provenance();
     ensure!(p.is_object(), "Backend provenance must be an object");
     p["role"] = json!(role);

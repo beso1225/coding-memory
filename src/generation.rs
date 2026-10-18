@@ -153,8 +153,11 @@ impl CodexExec {
         Ok(home)
     }
     async fn execute(&self, request: Request) -> std::result::Result<Output, Failure> {
-        if request.prompt.len() > extraction::MAX_INPUT + 4096
-            || serde_json::to_vec(&request.schema).map_or(true, |s| s.len() > extraction::MAX_INPUT)
+        // The documented cap is one measured budget: the complete prompt plus the serialized
+        // response schema. A request over that sum is a sizing failure that never reached a
+        // model, so it is not an invalid output and never earns a retry.
+        if extraction::input_bytes(&request.prompt, &request.schema)
+            .map_or(true, |bytes| bytes > extraction::MAX_INPUT)
         {
             return Err(Failure::OutputLimit);
         }
