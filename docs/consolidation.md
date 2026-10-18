@@ -196,12 +196,15 @@ there is no supplied existing note the only fallback is `hold`, which publishes
 nothing. The response schema binds each action to the target and draft shape
 `validate` accepts, so a `skip` cannot be requested without a supplied target and
 a `create` cannot name an existing one by construction; with no supplied note,
-`update`, `supersede` and `skip` are not offered at all.
+`update`, `supersede` and `skip` are not offered at all. This contract is a
+proposer obligation: the consolidation prompt is `consolidation-v3`, while the
+independent review prompt is deliberately unchanged and stays byte-identical to
+`review-v2`.
 
 A single mechanically invalid operation no longer parks the whole batch. On a
 decode or `validate` failure the Engine records the bounded rejection in
-`proposal_repair` and re-requests the proposal once, with the rejected proposal's
-error echoed to the proposer; the repair attempt uses its own attempt directory.
+`proposal_repair` and re-requests the proposal once, echoing the rejection into
+the input's `repair` object; the repair attempt uses its own attempt directory.
 `validate` remains the authority: a repair that still fails, a second decode
 failure, or an over-limit repair prompt holds the batch with `held_invalid_proposal`
 exactly as before, so one defect cannot silently discard the batch's other
