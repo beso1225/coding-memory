@@ -525,6 +525,10 @@ fn retention_deletes_only_old_unreferenced_no_value_evidence() -> Result<()> {
         .clone();
     let mut bundle = evidence::load(&root, &kept)?;
     bundle.run.thread = "empty".into();
+    // Empty extraction can now succeed for sources larger than one model input.
+    bundle
+        .items
+        .push(json!({"id":"large", "text":"x".repeat(extraction::MAX_INPUT + 1)}));
     let digest = evidence::save(&root, &bundle)?;
     s.enqueue(&bundle.run, "alpha", "/repo", 2)?;
     let c = s.claim(3, 10)?.unwrap();

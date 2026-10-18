@@ -41,12 +41,14 @@ There is no external fallback.
 `extract` enqueues completed captured runs once and drains currently eligible
 jobs. Deferred retries need a later invocation or the [background worker](worker.md).
 `extraction-retry STORE THREAD TURN` explicitly requeues a held
-or exhausted job. Inspect and fix its reason first.
+or exhausted job. Inspect and fix its reason first. Existing jobs held as
+`held_invalid_or_oversized_evidence` are preserved; deliberately retry them after
+upgrading to use bounded extraction. Upgrading does not automatically transmit them.
 
 ## Candidate and persistence contracts
 
 The closed version-1 batch carries role `extraction`, source project ID, and zero
-to twenty candidates. Each records kind (`failure_solution`, `procedure`,
+to twenty candidates per chunk. Each records kind (`failure_solution`, `procedure`,
 `constraint`, or `design_decision`), English title/claim, applicability conditions,
 project or explicit global scope, verification (`observed`, `user_stated`, or
 `unverified`), and exact supplied evidence digest/native item IDs.
@@ -60,8 +62,8 @@ justified. The prompt excludes progress and speculation; all candidates still
 require independent semantic review before publication.
 
 Job states distinguish `succeeded`, `succeeded_empty`, `held`, retry `queued`, and
-`exhausted`. Invalid/oversized evidence, invalid candidates, missing credentials,
-unsupported runtimes, and tool attempts hold the job. Timeout/process failures
+`exhausted`. Invalid evidence, indivisible oversized input, invalid candidates,
+missing credentials, unsupported runtimes, and tool attempts hold the job. Timeout/process failures
 retry after ten seconds for at most three attempts. Repeated expired leases also
 exhaust after three attempts. No failure becomes an empty success. Candidate
 insertion and completion commit atomically behind a lease token; stale or
@@ -84,8 +86,40 @@ contents. Detected tool attempts reject the batch. Engine-owned exclusion applie
 to both live capture and reconciliation. Symlinked generation directories,
 policy, and output are refused.
 
-Evidence is capped at 256 KiB, final output at 64 KiB, exec stdout at 1 MiB, and
-exec stderr at 256 KiB. Timeout is configurable from one to 600 seconds. Timeout
+Immutable source evidence is read locally up to 16 MiB, hash-checked and validated
+before generation. Every item is assigned once to a contiguous chunk in source
+order. Each call budgets at most 256 KiB for the complete prompt (instructions,
+metadata, digest, JSON escaping and delimiters) plus serialized response schema.
+Native IDs and original evidence bytes are preserved. The schema and validator
+permit citations only to items supplied in that call, even if an omitted ID
+exists in the original bundle. Missing context cannot support an inferred claim;
+facts requiring context across chunks may remain unextracted and need independent
+review rather than invented support. Metadata is repeated without truncation.
+
+All chunks must succeed before candidates and job completion commit in one
+transaction. Exact candidate duplicates are removed; distinct citations,
+verification or applicability conditions remain distinct for consolidation/review.
+The combined result can exceed twenty candidates, with the twenty-candidate and
+64 KiB output limits applying separately to each call. A failed chunk stages
+nothing. Automatic or deliberate retries restart all chunks; successful chunks
+are not checkpointed. Requests have unique attempt/token/chunk identities.
+Lease renewal between calls fences expired or superseded work, and external
+permission is rechecked before each call and at the final commit.
+
+Evidence holds distinguish `held_missing_evidence`, `held_invalid_evidence`
+(including corruption, unsupported schema or mismatched identity),
+`held_oversized_evidence_source` (local 16 MiB ceiling),
+`held_oversized_evidence_framing` (metadata/framing cannot fit), and
+`held_oversized_evidence_item` (one complete item cannot fit). No item is silently
+truncated or omitted, and all chunks are planned before the first call.
+`held_external_policy` remains a separate transmission-policy decision.
+Diagnostics record source bytes/limit, input bytes/limit, item/chunk counts,
+completed chunk count and current chunk index (zero-based), without source text
+or model stderr. Input/schema/output hashes and generation-thread fields describe
+the latest attempted chunk; output fields are cleared before another call.
+
+Final output is capped at 64 KiB per call, exec stdout at 1 MiB, and exec stderr
+at 256 KiB. Timeout is configurable from one to 600 seconds. Timeout
 or bounded-I/O failure kills the process group owned by that invocation. Supported
 generation versions remain exactly gated to `0.162.1` and `0.162.0-alpha.17.2`.
 Capture admission and its periodic fixture do not validate tool-denial isolation

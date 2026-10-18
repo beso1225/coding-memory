@@ -68,7 +68,7 @@ pub fn cleanup(
         ensure!(
             hash(&evidence::read_bounded(
                 &path,
-                crate::extraction::MAX_INPUT
+                crate::extraction::MAX_SOURCE_BYTES
             )?) == digest,
             "Corrupt no-value evidence"
         );

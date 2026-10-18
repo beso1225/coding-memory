@@ -88,6 +88,17 @@ impl State {
         tx.commit()?;
         Ok(claim)
     }
+    /// Renew between bounded model calls; expired, superseded or excluded claims
+    /// cannot send another chunk. No transaction spans generation.
+    pub fn renew_extraction(&mut self, c: &ExtractionClaim, now: i64, lease: i64) -> Result<()> {
+        ensure!(lease > 0, "Extraction lease must be positive");
+        let until = now
+            .checked_add(lease)
+            .ok_or_else(|| anyhow::anyhow!("Lease overflow"))?;
+        let n = self.db.execute("UPDATE extraction_jobs SET lease_until=?5 WHERE store=?1 AND thread=?2 AND turn=?3 AND state='running' AND token=?4 AND lease_until>?6 AND NOT EXISTS(SELECT 1 FROM owned_stores WHERE id=?1) AND NOT EXISTS(SELECT 1 FROM exclusions WHERE store=?1 AND thread=?2 AND turn=?3)", params![c.key.store,c.key.thread,c.key.turn,c.token,until,now])?;
+        ensure!(n == 1, "Stale or excluded extraction claim");
+        Ok(())
+    }
     pub fn finish_extraction(
         &mut self,
         c: &ExtractionClaim,
