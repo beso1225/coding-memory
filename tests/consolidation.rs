@@ -371,7 +371,7 @@ impl coding_memory::generation::Backend for Model {
     {
         self.calls
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        assert!(r.prompt.len() <= extraction::MAX_INPUT);
+        assert!(extraction::input_bytes(&r.prompt, &r.schema).unwrap() <= extraction::MAX_INPUT);
         assert!(r.attempt.starts_with(self.role));
         assert_eq!(r.schema["properties"]["role"]["enum"][0], self.role);
         let input: serde_json::Value =
@@ -1170,7 +1170,7 @@ impl coding_memory::generation::Backend for PartitionModel {
         r: coding_memory::generation::Request,
     ) -> std::result::Result<coding_memory::generation::Output, coding_memory::generation::Failure>
     {
-        assert!(r.prompt.len() <= extraction::MAX_INPUT);
+        assert!(extraction::input_bytes(&r.prompt, &r.schema).unwrap() <= extraction::MAX_INPUT);
         let input: serde_json::Value =
             serde_json::from_str(r.prompt.split_once("INPUT_JSON\n").unwrap().1).unwrap();
         let context = if self.role == "review" {

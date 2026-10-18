@@ -61,10 +61,13 @@ pub struct Note {
     pub metadata: Metadata,
     pub body: String,
 }
+/// Longest accepted memory/project identity, and the bound planning uses for schemas
+/// that enumerate operation identities.
+pub const IDENTITY_LIMIT: usize = 128;
 pub fn identity(value: &str) -> Result<()> {
     ensure!(
         !value.is_empty()
-            && value.len() <= 128
+            && value.len() <= IDENTITY_LIMIT
             && value
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),

@@ -55,6 +55,9 @@ pub struct Proposal {
     pub role: String,
     pub operations: Vec<Operation>,
 }
+/// Largest accepted proposal, and the bound planning uses for the review schema, which
+/// repeats those operation identities.
+pub const OPERATION_LIMIT: usize = 20;
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Decision {
@@ -86,7 +89,7 @@ pub fn validate(
         proposal.schema_version == 1
             && proposal.role == "consolidation"
             && !proposal.operations.is_empty()
-            && proposal.operations.len() <= 20,
+            && proposal.operations.len() <= OPERATION_LIMIT,
         "Invalid consolidation batch"
     );
     let candidates: HashMap<_, _> = batch
