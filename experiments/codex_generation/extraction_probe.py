@@ -22,12 +22,13 @@ def main():
     base = [str(args.engine.resolve()), "--state-dir", str(state)]
     runtime = ["--codex-home", str(rt.HOME_DIR), "--codex-binary", args.codex, "--project", str(rt.WORK)]
 
-    def run(command, *options):
-        return subprocess.run(base + [command, *options], check=True, text=True, capture_output=True, timeout=45).stdout
+    def run(command, *options, timeout=45):
+        return subprocess.run(base + [command, *options], check=True, text=True, capture_output=True, timeout=timeout).stdout
 
     project = run("register", *runtime).strip()
     time.sleep(2)
-    options = ["--project-id", project, "--codex-binary", args.codex, "--model", "capture-extraction", "--timeout-seconds", "30", "--loopback", f"127.0.0.1:{rt.SERVER.server_port}"]
+    model_timeout = 30
+    options = ["--project-id", project, "--codex-binary", args.codex, "--model", "capture-extraction", "--timeout-seconds", str(model_timeout), "--loopback", f"127.0.0.1:{rt.SERVER.server_port}"]
     client = rt.Client(args.codex)
     results = []
     try:
@@ -109,6 +110,10 @@ def main():
                 drained += 1
             return drained
 
+        def extraction_timeout(items):
+            """One backend-bounded call per chunk, and chunks cannot outnumber the items."""
+            return model_timeout * len(items) + 45
+
         def bulk_turn(label):
             """Capture one own turn whose completed items exceed two chunk budgets."""
             for index in range(6):
@@ -167,7 +172,7 @@ def main():
             before_candidates = json.loads(run("candidates", "--project-id", project))
             calls, cites = [], []
             rt.PLANS.put(chunk_plan(bundle["items"], calls, cites=cites, renew=True))
-            extracted = next(r for r in json.loads(run("extract", *options)) if r["key"]["turn"] == row["key"]["turn"])
+            extracted = next(r for r in json.loads(run("extract", *options, timeout=extraction_timeout(bundle["items"]))) if r["key"]["turn"] == row["key"]["turn"])
             assert extracted["state"] == "succeeded", extracted
             provenance = json.loads(extracted["provenance"])
             chunk_count = provenance["chunk_count"]
@@ -192,7 +197,7 @@ def main():
             before_candidates = json.loads(run("candidates", "--project-id", project))
             calls, cites = [], []
             rt.PLANS.put(chunk_plan(bundle["items"], calls, cites=cites, foreign_on=1, renew=True))
-            extracted = next(r for r in json.loads(run("extract", *options)) if r["key"]["turn"] == row["key"]["turn"])
+            extracted = next(r for r in json.loads(run("extract", *options, timeout=extraction_timeout(bundle["items"]))) if r["key"]["turn"] == row["key"]["turn"])
             assert extracted["state"] == "held", extracted
             assert extracted["reason"] == "held_invalid_candidates", extracted
             # The first call answered validly and only the second cited an omitted part, so the
