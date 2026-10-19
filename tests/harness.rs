@@ -259,6 +259,8 @@ fn paths_with_spaces_round_trip_in_position() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The bound itself is owned by `harness::tests::server_names_are_bounded_and_bare`;
+/// this covers a boundary-length name reaching every rendered format intact.
 #[test]
 fn a_boundary_length_server_name_renders_for_every_harness() -> anyhow::Result<()> {
     let f = fixture()?;
@@ -267,18 +269,6 @@ fn a_boundary_length_server_name_renders_for_every_harness() -> anyhow::Result<(
         let text = mcp_config(harness, &name, &f.binary, &f.state, &f.vault, "p")?;
         assert!(text.contains(&name), "{harness:?} dropped the server name");
     }
-    assert!(
-        mcp_config(
-            Harness::Codex,
-            &"a".repeat(33),
-            &f.binary,
-            &f.state,
-            &f.vault,
-            "p"
-        )
-        .is_err(),
-        "a 33-byte server name must be rejected"
-    );
     Ok(())
 }
 

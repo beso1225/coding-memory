@@ -143,9 +143,18 @@ and vault must already exist. Build the index first (`index-rebuild`), and repla
 
 The `dsh` overlay leaves `failOnStartupError` at the `dsh-mcp-client` default
 (`false`): a server that cannot be reached logs an error and contributes no tools
-while the harness starts anyway. Add `failOnStartupError: true` to the entry to
-reject that entry's activation instead, which is the form the runtime probe below
-verifies.
+while the harness starts anyway. Add the field to the generated entry to reject
+that entry's activation instead, which is the form the runtime probe below
+verifies:
+
+```yaml
+config:
+  serverName: coding_memory
+  transport: stdio
+  command: /absolute/coding-memory
+  args: [...]
+  failOnStartupError: true
+```
 
 For example, `--harness codex` prints:
 
