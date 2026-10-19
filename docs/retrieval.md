@@ -195,8 +195,23 @@ live `coding-memory … mcp …` child of `opencode serve`. DeepSeek Harness
 `web --dump-config --patch`, then activated it: with `failOnStartupError: true` the
 real command started the documented stdio probe and serving processes without an
 error, while a deliberately missing command failed activation with "initial
-connection or tool synchronization failed". Neither check used a model call, so
-both confirm the client-side connection and tool discovery, not answer quality.
+connection or tool synchronization failed".
+
+A local DeepSeek Harness `0.2.1-rc.2` checkout then completed a model-driven call in
+the browser UI: a `web` session routed through a non-DeepSeek route (Ollama Cloud,
+model `deepseek-v4.1-flash:1017`) invoked `mcp__coding_memory__memory_search` and
+returned the project-scoped result, with `scope.project_id` matching the bound
+project. That covers the client-side connection, tool discovery, and one real
+answer, not the model's autonomous query selection or the usefulness of what it
+returns.
+
+DeepSeek Harness patches Node.js internals through a native addon that matches
+compiled instruction patterns, so it can reject a Node.js build it does not
+recognize: a self-built Node (for example a nixpkgs `nodejs-slim`) fails host
+preparation with `node-addon-require-builtin unsupported: Unsupported/no-getter`
+before any plugin mounts, while the official builds work (verified on `22.23.3`,
+`24.20.0`, and `24.21.0`). `--dump-config` still succeeds under the rejected build,
+so only a real profile boot exercises the addon.
 
 Repeat after building:
 
