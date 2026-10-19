@@ -306,5 +306,24 @@ Compare additional generation backends against the same evidence and quality
 fixtures. Ollama Cloud capability must be checked independently of Local. Local
 model speed is not a blocking requirement for this project's first useful version.
 
+Consolidation context still spends most of its budget on projected evidence, not
+on note bodies: observed `held_context_too_large` candidates were dominated by a
+single 60–66 KiB captured tool result, or by the evidence referenced by three
+retrieved notes (roughly 80–160 KiB), while note bodies stayed near 2 KiB each.
+The 184 KiB target only raises the ceiling. If sizing holds recur, evaluate two
+bounded options before accepting truncation by default:
+
+- Cap one projected evidence item (for example 16 KiB) with an explicit
+  truncation marker and provenance. This targets the dominant cost, but weakens
+  the current rule that evidence items are never truncated and can hide a
+  contradiction near the end of a long output.
+- Stop projecting the evidence referenced by retrieved existing notes and pass
+  only the references already recorded in their frontmatter. This removes the
+  largest block in the observed cases, but the proposer and reviewer can no
+  longer judge that support directly; `validate` still enforces preservation.
+
+Measure either change with `consolidation-preflight` over real held work, and
+keep both the consolidation and review measurements inside the 256 KiB cap.
+
 Create later detailed issues from these results rather than expanding all future
 work into tickets now.
