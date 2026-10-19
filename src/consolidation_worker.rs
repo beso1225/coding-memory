@@ -487,11 +487,12 @@ async fn propose(
     let schema = consolidation::proposal_schema(batch, existing);
     let attempts = PROPOSAL_REPAIR_LIMIT + 1;
     let external = proposer.external();
-    // `echoed` is the rejection handed back in the repair request; `final_rejection` is the
-    // rejection that held the batch. Both are kept so the record says what was asked of the
-    // model and what finally failed.
+    // `proposal_repair` documents the repair: `attempts` is how many proposals were
+    // generated, `echoed` is the rejection handed back in the repair request, and
+    // `final` is the rejection that held the batch when validation was exhausted. The
+    // first rejection is written before the next fallible attempt, so a repair that exits
+    // early (revocation, timeout, over-limit prompt) still leaves it inspectable.
     let mut echoed: Option<String> = None;
-    let mut final_rejection: Option<String> = None;
     let mut last_error: Option<anyhow::Error> = None;
     for attempt in 1..=attempts {
         if external {
@@ -521,9 +522,8 @@ async fn propose(
             });
         match outcome {
             Ok(proposal) => {
-                if let Some(reason) = &echoed {
-                    provenance["proposal_repair"] =
-                        json!({"attempts": attempt - 1, "echoed": reason});
+                if echoed.is_some() {
+                    provenance["proposal_repair"] = json!({"attempts": attempt, "echoed": &echoed});
                 }
                 return Ok(proposal);
             }
@@ -532,18 +532,15 @@ async fn propose(
                 if echoed.is_none() {
                     echoed = Some(reason.clone());
                 }
-                final_rejection = Some(reason);
+                let mut record = json!({"attempts": attempt, "echoed": &echoed});
+                if attempt == attempts {
+                    record["final"] = json!(reason);
+                }
+                provenance["proposal_repair"] = record;
                 last_error = Some(error);
             }
         }
     }
-    // The bounded loop exhausted its attempts, so the batch will hold. Record the repair
-    // that was asked for and the rejection that outlasted it.
-    provenance["proposal_repair"] = json!({
-        "attempts": attempts - 1,
-        "echoed": echoed,
-        "final": final_rejection,
-    });
     Err(last_error.expect("a bounded proposal loop records its last failure"))
 }
 /// Classify a consolidation failure for `hold_batch`. Model generation failures
@@ -1000,6 +997,21 @@ mod tests {
         );
         assert_eq!(variant("skip")["properties"]["draft"]["type"], "null");
     }
+    fn proposal_fixture() -> Result<(tempfile::TempDir, State, Batch)> {
+        let d = tempdir()?;
+        let mut state = State::open(&d.path().join("state.sqlite"))?;
+        state.register_project("alpha", "/repo", 1)?;
+        let batch: Batch = serde_json::from_value(json!({
+            "id":1,"project":"alpha","candidates":[{
+                "id":"c","state":"ready","created_at":1,"candidate":{
+                    "kind":"constraint","title":"t","claim":"c.","conditions":[],
+                    "scope":{"kind":"project","project_id":"alpha"},
+                    "verification":"user_stated","evidence":[]
+                }
+            }]
+        }))?;
+        Ok((d, state, batch))
+    }
     #[tokio::test]
     async fn repair_records_the_echoed_and_final_rejections() -> Result<()> {
         use crate::generation::{Failure, Output};
@@ -1034,18 +1046,7 @@ mod tests {
                 })
             }
         }
-        let d = tempdir()?;
-        let mut state = State::open(&d.path().join("state.sqlite"))?;
-        state.register_project("alpha", "/repo", 1)?;
-        let batch: Batch = serde_json::from_value(json!({
-            "id":1,"project":"alpha","candidates":[{
-                "id":"c","state":"ready","created_at":1,"candidate":{
-                    "kind":"constraint","title":"t","claim":"c.","conditions":[],
-                    "scope":{"kind":"project","project_id":"alpha"},
-                    "verification":"user_stated","evidence":[]
-                }
-            }]
-        }))?;
+        let (_d, state, batch) = proposal_fixture()?;
         let proposer = TwoRejections { calls: 0.into() };
         let input = json!({"batch":&batch});
         let mut provenance = json!({});
@@ -1062,7 +1063,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(proposer.calls.load(std::sync::atomic::Ordering::Relaxed), 2);
         let record = &provenance["proposal_repair"];
-        assert_eq!(record["attempts"], 1);
+        assert_eq!(record["attempts"], 2);
         // Both the rejection echoed to the model and the one that held are kept.
         let echoed = record["echoed"].as_str().unwrap();
         assert!(!echoed.is_empty());
@@ -1071,6 +1072,61 @@ mod tests {
             "Invalid consolidation batch"
         );
         assert_ne!(echoed, record["final"].as_str().unwrap());
+        Ok(())
+    }
+    #[tokio::test]
+    async fn repair_rejection_survives_a_repair_that_fails_before_decoding() -> Result<()> {
+        use crate::generation::{Failure, Output};
+        // First attempt is undecodable; the repair exceeds the output cap, so `generate`
+        // returns through `?` before either branch of the match records a proposal.
+        struct RepairOverLimit {
+            calls: std::sync::atomic::AtomicUsize,
+        }
+        impl Backend for RepairOverLimit {
+            fn external(&self) -> bool {
+                false
+            }
+            fn provenance(&self) -> Value {
+                json!({"backend":"fixture","model":"repair-over-limit"})
+            }
+            async fn generate(&self, _: Request) -> std::result::Result<Output, Failure> {
+                let call = self
+                    .calls
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let bytes = if call == 0 {
+                    b"not json".to_vec()
+                } else {
+                    vec![b'x'; extraction::MAX_OUTPUT + 1]
+                };
+                Ok(Output {
+                    bytes,
+                    thread_id: None,
+                    runtime_version: "fixture".into(),
+                })
+            }
+        }
+        let (_d, state, batch) = proposal_fixture()?;
+        let proposer = RepairOverLimit { calls: 0.into() };
+        let input = json!({"batch":&batch});
+        let mut provenance = json!({});
+        let error = propose(
+            &proposer,
+            &state,
+            &batch,
+            &[],
+            &HashMap::new(),
+            &input,
+            &mut provenance,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.to_string(), "Output too large");
+        // The rejection that triggered the repair stays recorded even though the repair
+        // attempt never produced a proposal; there is no `final` validation rejection.
+        let record = &provenance["proposal_repair"];
+        assert_eq!(record["attempts"], 1);
+        assert!(!record["echoed"].as_str().unwrap().is_empty());
+        assert!(record.get("final").is_none());
         Ok(())
     }
 }

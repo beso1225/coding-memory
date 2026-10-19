@@ -205,10 +205,13 @@ A single invalid operation no longer parks the whole batch: every decode or
 `validate` failure, mechanical or semantic, records the rejection in
 `proposal_repair` and the Engine re-requests the proposal once, echoing the
 rejection into the input's `repair` object; the repair attempt uses its own
-attempt directory. The record keeps both the rejection that was `echoed` to the
-model and, when the batch still holds, the `final` one. Because the repair
-transmits the same evidence a second time, the external policy is re-authorized
-before every attempt; a revocation stops the next send and holds the batch as
+attempt directory. The record is written as soon as a proposal is rejected, so a
+repair that exits early (revocation, timeout, over-limit prompt) still leaves the
+trigger inspectable: `attempts` counts the proposals generated, `echoed` is the
+rejection sent back to the model, and `final` is the rejection that held the
+batch when validation was exhausted. Because the repair transmits the same
+evidence a second time, the external policy is re-authorized before every
+attempt; a revocation stops the next send and holds the batch as
 `held_external_policy`. `validate` remains the authority: a repair that still
 fails, a second decode failure, or an over-limit repair prompt holds the batch
 with `held_invalid_proposal` exactly as before, so one defect cannot silently
