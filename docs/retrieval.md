@@ -117,21 +117,64 @@ Both call the same service as the CLI. The tools cannot rebuild the index, chang
 notes, start generation, or access a user-supplied file path. Stdout contains only
 MCP protocol messages.
 
-Configure a project-specific server with absolute paths; these arguments bind its
-default project. Replace `REGISTERED_PROJECT_ID` with that project's registered ID:
+The server is harness-agnostic, but its declaration is not: each client names the
+same command in its own format. `mcp-config` renders that entry from one set of
+inputs, resolves the state directory and vault to absolute canonical paths, records
+the running binary unless `--executable` is given, and writes nothing:
+
+```sh
+coding-memory --state-dir /absolute/engine-state mcp-config \
+  --harness opencode \
+  --vault /absolute/coding-memory-vault \
+  --project-id REGISTERED_PROJECT_ID
+```
+
+`--harness` is `codex`, `opencode`, or `dsh`. `--server-name` overrides the default
+`coding_memory`; it must be a bare identifier of ASCII letters, digits, `-`, and `_`,
+at most 32 bytes (the tightest bound, from DeepSeek Harness). The state directory
+and vault must already exist. Build the index first (`index-rebuild`), and replace
+`REGISTERED_PROJECT_ID` with that project's registered ID.
+
+| Harness | Output | Placement |
+| --- | --- | --- |
+| `codex` | TOML table | `[mcp_servers.<name>]` in `$CODEX_HOME/config.toml` or a project `config.toml` |
+| `opencode` | JSON document | `opencode.json` in the project root, merged into `mcp.servers`; the global config works too, but still binds one project |
+| `dsh` | Cordis overlay | `dsh <profile> --patch <file>` (repeatable), or merge the `insert` entry into `$DSH_HOME/cordis.patch.yml` or `$DSH_HOME/profiles/<name>/cordis.patch.yml` |
+
+The `dsh` overlay leaves `failOnStartupError` at the `dsh-mcp-client` default
+(`false`): a server that cannot be reached logs an error and contributes no tools
+while the harness starts anyway. Add the field to the generated entry to reject
+that entry's activation instead, which is the form the runtime probe below
+verifies:
+
+```yaml
+config:
+  serverName: coding_memory
+  transport: stdio
+  command: /absolute/coding-memory
+  args: [...]
+  failOnStartupError: true
+```
+
+For example, `--harness codex` prints:
 
 ```toml
 [mcp_servers.coding_memory]
 command = "/absolute/coding-memory"
-args = ["--state-dir", "/absolute/engine-state", "mcp",
-        "--vault", "/absolute/coding-memory-vault",
-        "--project-id", "REGISTERED_PROJECT_ID"]
+args = ["--state-dir", "/absolute/engine-state", "mcp", "--vault", "/absolute/coding-memory-vault", "--project-id", "REGISTERED_PROJECT_ID"]
 ```
 
-The engine does not install this configuration into normal Codex settings. Build
-the index first. Do not reuse a server bound to one project as the default for an
-unrelated project's work; configure that project's ID, or deliberately select the
-other project in a tool request. The shared vault remains local and read-only to MCP.
+Tool names differ per client. Codex exposes this server as the `mcp__coding_memory`
+namespace, with function calls carrying the namespace and the unprefixed tool name.
+DeepSeek Harness connects through `@deepseek-ai/dsh-mcp-client` and names each tool
+`mcp__coding_memory__memory_search`; it scrubs credential-shaped and `DSH_*`
+variables before launching the child, which this server does not need. OpenCode
+registers `<name>_<tool>`, for example `coding_memory_memory_search`.
+
+The engine does not install any of this; paste or merge the entry yourself, and do
+not reuse a server bound to one project as the default for an unrelated project's
+work. Configure that project's ID, or deliberately select the other project in a
+tool request. The shared vault remains local and read-only to MCP.
 
 `memory_search` accepts `query`, optional `limit`, `other_projects`, and
 `include_historical`. `memory_read` accepts `id` and the same scope-expansion options.
@@ -158,6 +201,32 @@ against the synthetic fixture. Both returned `queue-leases`; read included the k
 exposes this server as namespace `mcp__coding_memory`, with function calls carrying
 `namespace` and the unprefixed tool name. Flattened names from older assumptions
 were rejected, so the reproducible probe uses the observed current form.
+
+The generated entries were also checked against installed clients. OpenCode
+`2.0.30` loaded a project `opencode.json`, reported `coding_memory` as `connected`
+through both `opencode mcp list` and `GET /api/mcp` for that directory, and held a
+live `coding-memory … mcp …` child of `opencode serve`. DeepSeek Harness
+`@deepseek-ai/dsh` `0.2.0-rc.2` composed the generated overlay with
+`web --dump-config --patch`, then activated it: with `failOnStartupError: true` the
+real command started the documented stdio probe and serving processes without an
+error, while a deliberately missing command failed activation with "initial
+connection or tool synchronization failed".
+
+A local DeepSeek Harness `0.2.1-rc.2` checkout then completed a model-driven call in
+the browser UI: a `web` session routed through a non-DeepSeek route (Ollama Cloud,
+model `deepseek-v4.1-flash:1017`) invoked `mcp__coding_memory__memory_search` and
+returned the project-scoped result, with `scope.project_id` matching the bound
+project. That covers the client-side connection, tool discovery, and one real
+answer, not the model's autonomous query selection or the usefulness of what it
+returns.
+
+DeepSeek Harness patches Node.js internals through a native addon that matches
+compiled instruction patterns, so it can reject a Node.js build it does not
+recognize: a self-built Node (for example a nixpkgs `nodejs-slim`) fails host
+preparation with `node-addon-require-builtin unsupported: Unsupported/no-getter`
+before any plugin mounts, while the official builds work (verified on `22.23.3`,
+`24.20.0`, and `24.21.0`). `--dump-config` still succeeds under the rejected build,
+so only a real profile boot exercises the addon.
 
 Repeat after building:
 

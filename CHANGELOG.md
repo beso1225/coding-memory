@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+- Add `mcp-config --harness codex|opencode|dsh`, which prints the project-bound MCP
+  server entry for a supported client as Codex TOML, OpenCode JSON, or a DeepSeek
+  Harness Cordis overlay, with the state directory and vault resolved to absolute
+  canonical paths. The stdio server and its two read-only tools are unchanged; the
+  harness-side declaration is now documented and verified against Codex, OpenCode
+  `2.0.30`, and `@deepseek-ai/dsh` `0.2.0-rc.2`.
+
 ## [0.1.0]
 
 First stable release for Apple Silicon Macs running macOS 15 or later. It promotes

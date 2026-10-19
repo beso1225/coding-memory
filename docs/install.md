@@ -59,7 +59,9 @@ and the Markdown Vault must remain outside installed version directories.
 
 Follow [scoped retrieval](https://github.com/beso1225/coding-memory/blob/main/docs/retrieval.md) for MCP setup and
 [background worker](https://github.com/beso1225/coding-memory/blob/main/docs/worker.md) for Worker configuration and independent Codex
-login. Installing the CLI does not start a Worker or grant external transmission
+login. `mcp-config --harness codex|opencode|dsh` renders the server entry for a
+supported client; the engine never installs or edits that configuration for you.
+Installing the CLI does not start a Worker or grant external transmission
 permission. Activate the LaunchAgent explicitly after reviewing its configuration.
 
 ## Update

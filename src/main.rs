@@ -9,6 +9,7 @@ use coding_memory::{
     state::State,
 };
 use coding_memory::{
+    harness::Harness,
     mcp,
     search::{Scope, Search},
 };
@@ -235,6 +236,21 @@ enum Commands {
         #[arg(long)]
         project_id: String,
     },
+    /// Print a harness MCP server entry for this project's state and Vault.
+    McpConfig {
+        #[arg(long)]
+        vault: PathBuf,
+        #[arg(long)]
+        project_id: String,
+        #[arg(long, value_enum)]
+        harness: Harness,
+        /// Executable recorded in the entry; defaults to this running binary.
+        #[arg(long)]
+        executable: Option<PathBuf>,
+        /// Server name used by the harness; must be a bare identifier.
+        #[arg(long, default_value = "coding_memory")]
+        server_name: String,
+    },
     Register(Runtime),
     Reconcile(Runtime),
     Capture(Runtime),
@@ -314,10 +330,36 @@ async fn main() -> Result<()> {
         }
         return Ok(());
     }
+    if let Commands::McpConfig {
+        vault,
+        project_id,
+        harness,
+        executable,
+        server_name,
+    } = &cli.command
+    {
+        let executable = match executable {
+            Some(path) => path.clone(),
+            None => std::env::current_exe()?,
+        };
+        println!(
+            "{}",
+            coding_memory::harness::mcp_config(
+                *harness,
+                server_name,
+                &executable,
+                &cli.state_dir,
+                vault,
+                project_id
+            )?
+        );
+        return Ok(());
+    }
     let root = evidence::private_directory(&cli.state_dir)?;
     let mut state = State::open(&root.join("state.sqlite"))?;
     match cli.command {
         Commands::Dashboard { .. } => unreachable!("Handled before state setup"),
+        Commands::McpConfig { .. } => unreachable!("Handled before state setup"),
         Commands::ConsolidationPreflight { .. } => {
             unreachable!("Handled read-only before state setup")
         }
