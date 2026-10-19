@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.1.0]
+
+First stable release for Apple Silicon Macs running macOS 15 or later. It promotes
+the `0.1.0-rc.1` to `0.1.0-rc.4` series and adds bounded consolidation-proposal
+repair. State schema version 1, existing Worker configuration, Markdown notes,
+immutable evidence and independent generation login are unchanged.
+
+- Capture completed Codex runs from the CLI and the local App into immutable local
+  evidence, with bounded chunked reads and a metadata-only `capture-diagnose` that
+  separates the installed reader version from a thread's creation version.
+- Extract reusable knowledge through bounded, resumable chunked extraction that
+  commits candidates only after every chunk succeeds.
+- Consolidate candidates into Markdown Vault notes through an independent review.
+  A proposal the schema cannot represent is rejected up front and otherwise repaired
+  once, echoing the rejection, before the batch holds; a single invalid operation no
+  longer discards the batch's other candidates or publishes without validation.
+- Retrieve scoped memories through read-only MCP tools and a live read-only
+  `dashboard`, and run a bounded background Worker with explicit macOS LaunchAgent
+  configuration.
+
+Capture admits reader versions at or above `0.162.0-alpha.17.2` and history creation
+versions at or above `0.162.0-alpha.2`, with format validation and periodic reader
+verification: a changed Engine fixture queues revalidation and a failed check blocks
+new capture until it passes. Generation stays gated to `0.162.1` or
+`0.162.0-alpha.17.2`; this release does not expand that generation allowlist.
+
+Stop the Worker, MCP clients and other writers and back up the state directory,
+Worker configuration and the Vault before replacing the binary. No state migration
+is required. Restart the Worker and MCP clients, then check `worker-status`,
+`runtime-check-status` and memory search. Held work from earlier releases is never
+released automatically: inspect the specific reason and retry deliberately with
+`retry STORE THREAD TURN` for capture, `extraction-retry` for held extraction and
+`consolidation-preflight` then `consolidation-retry` for consolidation. Jobs held as
+`held_invalid_or_oversized_evidence` are preserved and need a deliberate
+`extraction-retry`; jobs held as `held_invalid_proposal` are retried deliberately and
+now succeed after one bounded proposal repair.
+
 ## [0.1.0-rc.4]
 
 Bounded, resumable extraction and a live read-only status dashboard for Apple
