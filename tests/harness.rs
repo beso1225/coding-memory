@@ -21,18 +21,24 @@ fn fixture() -> anyhow::Result<Fixture> {
     fs::create_dir_all(&state)?;
     fs::create_dir_all(&vault)?;
     let binary = root.path().join("coding-memory");
-    fs::write(&binary, b"#!/bin/sh\n")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755))?;
-    }
+    make_executable(&binary)?;
     Ok(Fixture {
         _root: root,
         state: state.canonicalize()?,
         vault: vault.canonicalize()?,
         binary,
     })
+}
+
+/// Write an executable file, the shape `worker::executable` accepts.
+fn make_executable(path: &Path) -> anyhow::Result<()> {
+    fs::write(path, b"#!/bin/sh\n")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+    }
+    Ok(())
 }
 
 fn argv(state: &Path, vault: &Path, project: &str) -> Vec<String> {
@@ -180,25 +186,140 @@ fn a_custom_server_name_is_used_by_every_harness() -> anyhow::Result<()> {
 }
 
 #[test]
-fn paths_with_spaces_round_trip() -> anyhow::Result<()> {
+fn paths_with_spaces_round_trip_in_position() -> anyhow::Result<()> {
     let root = tempfile::tempdir()?;
     let state = root
         .path()
         .join("Application Support")
         .join("coding-memory");
+    let vault = root.path().join("Shared Support").join("memory-vault");
     fs::create_dir_all(&state)?;
+    fs::create_dir_all(&vault)?;
     let binary = root.path().join("coding-memory");
-    fs::write(&binary, b"#!/bin/sh\n")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755))?;
-    }
+    make_executable(&binary)?;
     let state = state.canonicalize()?;
-    let vault = state.clone();
+    let vault = vault.canonicalize()?;
+    assert_ne!(state, vault);
+    let expected = argv(&state, &vault, "p");
+
+    // Codex renders one line, so its ordered argument list is asserted verbatim.
+    let codex = mcp_config(
+        Harness::Codex,
+        "coding_memory",
+        &binary,
+        &state,
+        &vault,
+        "p",
+    )?;
+    let quoted = expected
+        .iter()
+        .map(|value| format!("\"{value}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert!(codex.contains(&format!("args = [{quoted}]")), "{codex}");
+
+    // The other two are read back, so a swap of the state directory and Vault
+    // in `arguments` cannot pass.
+    let opencode: serde_json::Value = serde_json::from_str(&mcp_config(
+        Harness::Opencode,
+        "coding_memory",
+        &binary,
+        &state,
+        &vault,
+        "p",
+    )?)?;
+    let command = opencode["mcp"]["servers"]["coding_memory"]["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap())
+        .collect::<Vec<_>>();
+    let mut with_binary = vec![binary.to_str().unwrap()];
+    with_binary.extend(expected.iter().map(String::as_str));
+    assert_eq!(command, with_binary);
+
+    let dsh: serde_yaml_ng::Value = serde_yaml_ng::from_str(&mcp_config(
+        Harness::Dsh,
+        "coding_memory",
+        &binary,
+        &state,
+        &vault,
+        "p",
+    )?)?;
+    let args = dsh[0]["insert"][0]["config"]["args"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        args,
+        expected.iter().map(String::as_str).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_boundary_length_server_name_renders_for_every_harness() -> anyhow::Result<()> {
+    let f = fixture()?;
+    let name = "a".repeat(32);
     for harness in [Harness::Codex, Harness::Opencode, Harness::Dsh] {
-        let text = mcp_config(harness, "coding_memory", &binary, &state, &vault, "p")?;
-        assert!(text.contains(state.to_str().unwrap()));
+        let text = mcp_config(harness, &name, &f.binary, &f.state, &f.vault, "p")?;
+        assert!(text.contains(&name), "{harness:?} dropped the server name");
+    }
+    assert!(
+        mcp_config(
+            Harness::Codex,
+            &"a".repeat(33),
+            &f.binary,
+            &f.state,
+            &f.vault,
+            "p"
+        )
+        .is_err(),
+        "a 33-byte server name must be rejected"
+    );
+    Ok(())
+}
+
+/// The `text` guard rejects a path the entry cannot carry even when the path is
+/// otherwise a valid absolute executable file.
+#[test]
+fn unrecordable_binary_paths_are_rejected() -> anyhow::Result<()> {
+    let f = fixture()?;
+    let control = f._root.path().join("bad\nname");
+    make_executable(&control)?;
+    assert!(
+        mcp_config(
+            Harness::Codex,
+            "coding_memory",
+            &control,
+            &f.state,
+            &f.vault,
+            "p"
+        )
+        .is_err(),
+        "a control character in the binary path must be rejected"
+    );
+    // macOS refuses a non-UTF8 filename outright, so only Linux can build this
+    // end-to-end case; `text`'s unit test covers the guard on every platform.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+        let raw = f._root.path().join(OsStr::from_bytes(b"bad\xffname"));
+        make_executable(&raw)?;
+        assert!(
+            mcp_config(
+                Harness::Codex,
+                "coding_memory",
+                &raw,
+                &f.state,
+                &f.vault,
+                "p"
+            )
+            .is_err(),
+            "a non-UTF8 binary path must be rejected"
+        );
     }
     Ok(())
 }
@@ -206,35 +327,57 @@ fn paths_with_spaces_round_trip() -> anyhow::Result<()> {
 #[test]
 fn invalid_inputs_are_rejected() -> anyhow::Result<()> {
     let f = fixture()?;
-    let cases: [(&str, PathBuf); 2] = [
-        ("relative state", PathBuf::from("relative")),
-        ("missing vault", f._root.path().join("missing")),
-    ];
-    for (label, path) in cases {
+    let relative = PathBuf::from("relative");
+    let missing = f._root.path().join("missing");
+    let file = f._root.path().join("not-a-directory");
+    fs::write(&file, b"x")?;
+
+    // Both directory inputs reject the same three shapes in either position.
+    for (label, state, vault) in [
+        ("relative state", &relative, &f.vault),
+        ("relative vault", &f.state, &relative),
+        ("missing state", &missing, &f.vault),
+        ("missing vault", &f.state, &missing),
+        ("file state", &file, &f.vault),
+        ("file vault", &f.state, &file),
+    ] {
         assert!(
             mcp_config(
                 Harness::Codex,
                 "coding_memory",
                 &f.binary,
-                &f.state,
-                &path,
+                state,
+                vault,
                 "p"
             )
             .is_err(),
             "{label} must be rejected"
         );
     }
-    assert!(
-        mcp_config(
-            Harness::Codex,
-            "coding_memory",
-            std::path::Path::new("/nonexistent-coding-memory"),
-            &f.state,
-            &f.vault,
-            "p"
-        )
-        .is_err()
-    );
+
+    let unexecutable = f._root.path().join("not-executable");
+    fs::write(&unexecutable, b"#!/bin/sh\n")?;
+    for (label, binary) in [
+        (
+            "missing binary",
+            PathBuf::from("/nonexistent-coding-memory"),
+        ),
+        ("non-executable binary", unexecutable),
+    ] {
+        assert!(
+            mcp_config(
+                Harness::Codex,
+                "coding_memory",
+                &binary,
+                &f.state,
+                &f.vault,
+                "p"
+            )
+            .is_err(),
+            "{label} must be rejected"
+        );
+    }
+
     for name in ["", "has space", "has.dot"] {
         assert!(
             mcp_config(Harness::Codex, name, &f.binary, &f.state, &f.vault, "p").is_err(),
@@ -250,7 +393,8 @@ fn invalid_inputs_are_rejected() -> anyhow::Result<()> {
             &f.vault,
             "has space"
         )
-        .is_err()
+        .is_err(),
+        "an invalid project id must be rejected"
     );
     Ok(())
 }

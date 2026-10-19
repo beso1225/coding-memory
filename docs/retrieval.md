@@ -141,6 +141,12 @@ and vault must already exist. Build the index first (`index-rebuild`), and repla
 | `opencode` | JSON document | `opencode.json` in the project root, merged into `mcp.servers`; the global config works too, but still binds one project |
 | `dsh` | Cordis overlay | `dsh <profile> --patch <file>` (repeatable), or merge the `insert` entry into `$DSH_HOME/cordis.patch.yml` or `$DSH_HOME/profiles/<name>/cordis.patch.yml` |
 
+The `dsh` overlay leaves `failOnStartupError` at the `dsh-mcp-client` default
+(`false`): a server that cannot be reached logs an error and contributes no tools
+while the harness starts anyway. Add `failOnStartupError: true` to the entry to
+reject that entry's activation instead, which is the form the runtime probe below
+verifies.
+
 For example, `--harness codex` prints:
 
 ```toml

@@ -6,7 +6,7 @@
 //! one server entry per supported harness from identical inputs. It writes no
 //! configuration and never modifies a harness installation.
 use crate::notes;
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use std::{fmt::Write as _, path::Path};
 
 /// Tightest server-name bound among the supported harnesses (DeepSeek Harness).
@@ -29,7 +29,9 @@ pub enum Harness {
 ///
 /// The state directory and Vault must already exist; both are canonicalized so
 /// the entry does not depend on a symlinked or relative location. The binary is
-/// recorded as given after verifying it is an executable file.
+/// validated and recorded exactly as given, the way `service-plist` records it:
+/// the documented install exposes a stable symlink whose target is a versioned
+/// directory, so canonicalizing it would pin the entry to a single release.
 pub fn mcp_config(
     harness: Harness,
     name: &str,
@@ -53,8 +55,12 @@ pub fn mcp_config(
     let args = arguments(&root, &vault, project_id);
     match harness {
         Harness::Codex => Ok(codex(name, &binary, &args)),
-        Harness::Opencode => opencode(name, &binary, &args),
-        Harness::Dsh => dsh(name, &binary, &args),
+        Harness::Opencode => {
+            opencode(name, &binary, &args).context("Failed to render the OpenCode configuration")
+        }
+        Harness::Dsh => {
+            dsh(name, &binary, &args).context("Failed to render the DeepSeek Harness overlay")
+        }
     }
 }
 /// The shared `--state-dir ... mcp --vault ... --project-id ...` argument tail.
@@ -68,8 +74,8 @@ fn arguments(root: &str, vault: &str, project_id: &str) -> Vec<String> {
         "--project-id",
         project_id,
     ]
-    .iter()
-    .map(|value| (*value).to_owned())
+    .into_iter()
+    .map(str::to_owned)
     .collect()
 }
 /// Codex `config.toml` table with a single-line argument array.
@@ -213,10 +219,22 @@ mod tests {
     fn server_names_are_bounded_and_bare() {
         assert!(server_name("coding_memory").is_ok());
         assert!(server_name("a-b_c1").is_ok());
+        assert!(server_name(&"a".repeat(SERVER_NAME_LIMIT)).is_ok());
         assert!(server_name("").is_err());
         assert!(server_name(&"a".repeat(SERVER_NAME_LIMIT + 1)).is_err());
         assert!(server_name("has space").is_err());
         assert!(server_name("has.dot").is_err());
         assert!(server_name("a\"b").is_err());
+    }
+    #[test]
+    fn configuration_paths_must_be_utf8_and_control_free() {
+        assert!(text(Path::new("/tmp/state")).is_ok());
+        assert!(text(Path::new("/tmp/two\nlines")).is_err());
+        assert!(text(Path::new("/tmp/tab\there")).is_err());
+        #[cfg(unix)]
+        {
+            use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+            assert!(text(Path::new(OsStr::from_bytes(b"/tmp/\xff"))).is_err());
+        }
     }
 }

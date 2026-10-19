@@ -338,7 +338,6 @@ async fn main() -> Result<()> {
         server_name,
     } = &cli.command
     {
-        let root = cli.state_dir.canonicalize()?;
         let executable = match executable {
             Some(path) => path.clone(),
             None => std::env::current_exe()?,
@@ -349,7 +348,7 @@ async fn main() -> Result<()> {
                 *harness,
                 server_name,
                 &executable,
-                &root,
+                &cli.state_dir,
                 vault,
                 project_id
             )?
