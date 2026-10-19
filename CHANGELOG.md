@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.1.2-rc.1]
+
+Consolidation context sizing for Apple Silicon macOS 15+. This release preserves
+state schema version 1, existing state, Worker configuration, Markdown notes,
+immutable evidence, independent generation login, and the MCP server and its
+read-only tools.
+
+- Raise the consolidation prompt target from 160 KiB to 184 KiB, derived as the
+  256 KiB hard input cap less the 64 KiB proposal reserve and an 8 KiB margin.
+  Single candidates whose complete context includes large projected evidence or
+  heavy retrieved notes no longer hold as `held_context_too_large` while the
+  review request still fits the cap. The target remains a planning threshold:
+  selection still requires both the consolidation and review measurements to fit.
+- Existing `held_context_too_large` work becomes selectable through an explicit
+  `consolidation-retry`, which re-measures the current Vault when the candidate is
+  next selected.
+
+No state migration is required. Stop the Worker, MCP clients and other writers and
+back up the state directory and Vault, then install this archive into a new version
+directory and repoint the stable `$HOME/.local/bin/coding-memory` symlink as
+documented. The generated entries reference that symlink, so they keep resolving
+after the switch. To roll back, repoint the symlink at the previous version
+directory; both share state schema version 1.
+
 ## [0.1.1-rc.1]
 
 MCP harness configuration generation for Apple Silicon macOS 15+. This release adds
