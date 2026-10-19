@@ -9,6 +9,7 @@ pub mod extraction;
 pub mod extraction_state;
 pub mod extraction_worker;
 pub mod generation;
+pub mod harness;
 pub mod ingestion;
 pub mod mcp;
 pub mod notes;
