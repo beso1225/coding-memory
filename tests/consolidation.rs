@@ -966,6 +966,281 @@ async fn retrieved_paraphrases_reach_both_roles_for_update_skip_and_distinct_rel
     Ok(())
 }
 
+/// Emits a mechanically invalid proposal first, then a valid one when asked to
+/// repair. `repair == false` keeps emitting the defect so the bounded attempt count
+/// can be observed.
+struct ContractModel {
+    role: &'static str,
+    /// `skip` is a targetless skip; `conditions` drops a candidate condition.
+    defect: &'static str,
+    repair: bool,
+    calls: std::sync::atomic::AtomicUsize,
+    prompts: std::sync::Mutex<Vec<String>>,
+}
+impl ContractModel {
+    fn new(role: &'static str, defect: &'static str, repair: bool) -> Self {
+        Self {
+            role,
+            defect,
+            repair,
+            calls: 0.into(),
+            prompts: Default::default(),
+        }
+    }
+}
+impl coding_memory::generation::Backend for ContractModel {
+    fn external(&self) -> bool {
+        false
+    }
+    fn provenance(&self) -> serde_json::Value {
+        json!({"backend":"fixture","model":self.role})
+    }
+    async fn generate(
+        &self,
+        r: coding_memory::generation::Request,
+    ) -> std::result::Result<coding_memory::generation::Output, coding_memory::generation::Failure>
+    {
+        let call = self
+            .calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.prompts.lock().unwrap().push(r.prompt.clone());
+        assert!(extraction::input_bytes(&r.prompt, &r.schema).unwrap() <= extraction::MAX_INPUT);
+        let input: serde_json::Value =
+            serde_json::from_str(r.prompt.split_once("INPUT_JSON\n").unwrap().1).unwrap();
+        if self.role == "review" {
+            let output = json!({"schema_version":1,"role":"review","decisions":[{"operation":"op1","decision":"accept","rationale":"Synthetic independent review"}]});
+            return Ok(coding_memory::generation::Output {
+                bytes: serde_json::to_vec(&output).unwrap(),
+                thread_id: None,
+                runtime_version: "fixture".into(),
+            });
+        }
+        let batch: coding_memory::consolidation_state::Batch =
+            serde_json::from_value(input["batch"].clone()).unwrap();
+        let output = if call == 0 || !self.repair {
+            match self.defect {
+                "skip" => {
+                    let mut p = proposal(&batch, "skip", None);
+                    p["operations"][0]["draft"] = json!(null);
+                    p
+                }
+                "conditions" => {
+                    let mut p = proposal(&batch, "create", None);
+                    p["operations"][0]["draft"]["conditions"] = json!([]);
+                    p
+                }
+                other => panic!("unknown synthetic defect {other}"),
+            }
+        } else {
+            proposal(&batch, "create", None)
+        };
+        Ok(coding_memory::generation::Output {
+            bytes: serde_json::to_vec(&output).unwrap(),
+            thread_id: None,
+            runtime_version: "fixture".into(),
+        })
+    }
+}
+fn repair_fixture(
+    defect: &'static str,
+    repair: bool,
+) -> Result<(
+    tempfile::TempDir,
+    State,
+    std::path::PathBuf,
+    std::path::PathBuf,
+    ContractModel,
+    ContractModel,
+)> {
+    let d = tempdir()?;
+    let root = d.path().join("state");
+    let vault = d.path().join("vault");
+    fs::create_dir(&root)?;
+    fs::create_dir(&vault)?;
+    let mut state = State::open(&root.join("state.sqlite"))?;
+    state.register_project("alpha", "/repo", 1)?;
+    candidate(&mut state, &root, 0, 10)?;
+    Ok((
+        d,
+        state,
+        root,
+        vault,
+        ContractModel::new("consolidation", defect, repair),
+        ContractModel::new("review", defect, repair),
+    ))
+}
+#[tokio::test]
+async fn dropped_conditions_and_targetless_skip_hold_after_one_bounded_repair() -> Result<()> {
+    for defect in ["skip", "conditions"] {
+        let (d, mut state, root, vault, proposer, reviewer) = repair_fixture(defect, false)?;
+        let id = coding_memory::consolidation_worker::consolidate(
+            &mut state, &root, &vault, "alpha", true, &proposer, &reviewer,
+        )
+        .await?
+        .unwrap();
+        // Bounded: the initial proposal plus exactly one repair attempt, then hold.
+        assert_eq!(
+            proposer.calls.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "{defect}"
+        );
+        // Review is never reached, and nothing is published or silently discarded.
+        assert_eq!(
+            reviewer.calls.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "{defect}"
+        );
+        let status = state.consolidation_status()?;
+        let batch = status.iter().find(|b| b.id == id).unwrap();
+        assert_eq!(batch.state, "held", "{defect}");
+        assert_eq!(
+            batch.reason.as_deref(),
+            Some("held_invalid_proposal"),
+            "{defect}"
+        );
+        assert_eq!(state.candidates("alpha")?[0].state, "held", "{defect}");
+        assert_eq!(fs::read_dir(&vault)?.count(), 0, "{defect}");
+        // The held batch stays inspectable and deliberately retryable.
+        state.retry_batch(id, 11)?;
+        assert_eq!(state.candidates("alpha")?[0].state, "ready", "{defect}");
+        drop(d);
+    }
+    Ok(())
+}
+#[tokio::test]
+async fn one_rejected_proposal_is_repaired_before_review_and_publication() -> Result<()> {
+    for (defect, rejection) in [
+        ("skip", "Skip requires supplied existing knowledge"),
+        ("conditions", "Support/conditions lost during consolidation"),
+    ] {
+        let (d, mut state, root, vault, proposer, reviewer) = repair_fixture(defect, true)?;
+        let id = coding_memory::consolidation_worker::consolidate(
+            &mut state, &root, &vault, "alpha", true, &proposer, &reviewer,
+        )
+        .await?
+        .unwrap();
+        assert_eq!(
+            proposer.calls.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "{defect}"
+        );
+        assert_eq!(
+            reviewer.calls.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "{defect}"
+        );
+        assert_eq!(
+            state
+                .consolidation_status()?
+                .iter()
+                .find(|b| b.id == id)
+                .unwrap()
+                .state,
+            "applied",
+            "{defect}"
+        );
+        assert_eq!(state.candidates("alpha")?[0].state, "consumed", "{defect}");
+        assert_eq!(fs::read_dir(&vault)?.count(), 1, "{defect}");
+        let prompts = proposer.prompts.lock().unwrap();
+        assert_eq!(prompts.len(), 2, "{defect}");
+        // The first request already carries the applicability and action contract.
+        assert!(
+            prompts[0].contains("conditions, verification category and evidence"),
+            "{defect}"
+        );
+        assert!(
+            prompts[0].contains("skip requires a supplied existing target"),
+            "{defect}"
+        );
+        // The repair request adds the rejected proposal's exact contract error.
+        assert!(prompts[1].contains("`repair` object"), "{defect}");
+        assert!(prompts[1].contains("validation_error"), "{defect}");
+        assert!(prompts[1].contains(rejection), "{defect}");
+        drop(prompts);
+        drop(d);
+    }
+    Ok(())
+}
+
+/// An external proposer that revokes its own project's policy during the first call and
+/// returns an invalid proposal, so a repair would otherwise be transmitted.
+struct RevokingProposer {
+    db: std::path::PathBuf,
+    calls: std::sync::atomic::AtomicUsize,
+}
+impl coding_memory::generation::Backend for RevokingProposer {
+    fn external(&self) -> bool {
+        true
+    }
+    fn provenance(&self) -> serde_json::Value {
+        json!({"backend":"fixture","model":"revoking"})
+    }
+    async fn generate(
+        &self,
+        r: coding_memory::generation::Request,
+    ) -> std::result::Result<coding_memory::generation::Output, coding_memory::generation::Failure>
+    {
+        let call = self
+            .calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if call == 0 {
+            // Simulate a revocation that lands while the first response is in flight.
+            let mut state = State::open(&self.db).unwrap();
+            state.set_external_policy("alpha", false).unwrap();
+        }
+        let input: serde_json::Value =
+            serde_json::from_str(r.prompt.split_once("INPUT_JSON\n").unwrap().1).unwrap();
+        let batch: coding_memory::consolidation_state::Batch =
+            serde_json::from_value(input["batch"].clone()).unwrap();
+        let mut proposal = proposal(&batch, "create", None);
+        proposal["operations"][0]["draft"]["conditions"] = json!([]);
+        Ok(coding_memory::generation::Output {
+            bytes: serde_json::to_vec(&proposal).unwrap(),
+            thread_id: None,
+            runtime_version: "fixture".into(),
+        })
+    }
+}
+#[tokio::test]
+async fn repair_reauthorizes_the_external_policy_before_a_second_send() -> Result<()> {
+    let d = tempdir()?;
+    let root = d.path().join("state");
+    let vault = d.path().join("vault");
+    fs::create_dir(&root)?;
+    fs::create_dir(&vault)?;
+    let mut state = State::open(&root.join("state.sqlite"))?;
+    state.register_project("alpha", "/repo", 1)?;
+    state.set_external_policy("alpha", true)?;
+    candidate(&mut state, &root, 0, 10)?;
+    let proposer = RevokingProposer {
+        db: root.join("state.sqlite"),
+        calls: 0.into(),
+    };
+    let reviewer = Model {
+        role: "review",
+        decision: "accept",
+        calls: 0.into(),
+    };
+    let id = coding_memory::consolidation_worker::consolidate(
+        &mut state, &root, &vault, "alpha", true, &proposer, &reviewer,
+    )
+    .await?
+    .unwrap();
+    // The first response was invalid, but revocation landed before the repair, so the
+    // evidence is not sent a second time.
+    assert_eq!(proposer.calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(reviewer.calls.load(std::sync::atomic::Ordering::Relaxed), 0);
+    let batch = state
+        .consolidation_status()?
+        .into_iter()
+        .find(|b| b.id == id)
+        .unwrap();
+    assert_eq!(batch.state, "held");
+    assert_eq!(batch.reason.as_deref(), Some("held_external_policy"));
+    assert_eq!(fs::read_dir(&vault)?.count(), 0);
+    Ok(())
+}
+
 struct ProjectionModel {
     inner: Model,
     hidden_citation: bool,
@@ -1058,12 +1333,15 @@ async fn consolidation_projects_large_originals_and_rejects_unsupplied_citations
             &mut state, &root, &v, "alpha", true, &proposer, &reviewer,
         )
         .await?;
+        // An unsupplied citation is rejected by the Engine, so the single bounded
+        // repair re-requests the proposal; the fixture re-emits the same defect, so
+        // the batch still holds and the attempt count stays capped at two.
         assert_eq!(
             proposer
                 .inner
                 .calls
                 .load(std::sync::atomic::Ordering::Relaxed),
-            1
+            1 + usize::from(hidden_citation)
         );
         assert_eq!(
             reviewer
