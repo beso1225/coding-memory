@@ -20,7 +20,12 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     path::Path,
 };
-const CONSOLIDATION_TARGET: usize = 160 * 1024;
+/// Margin kept under the model input cap beyond the review's proposal reserve. The same
+/// measured context is reused for review, which adds a maximum-size proposal and the
+/// review response schema, so the target cannot spend the whole cap on consolidation.
+const CONSOLIDATION_MARGIN: usize = 8 * 1024;
+const CONSOLIDATION_TARGET: usize =
+    extraction::MAX_INPUT - extraction::MAX_OUTPUT - CONSOLIDATION_MARGIN;
 // The complete prompt is measured after serialization. An over-limit prompt is a
 // context-sizing failure that never reached a model, not an invalid proposal/review.
 const INPUT_TOO_LARGE: &str = "consolidation_input_too_large";
@@ -822,6 +827,35 @@ mod tests {
         assert!(budget.review_max_bytes <= extraction::MAX_INPUT);
         input["padding"] = json!(input["padding"].as_str().unwrap().to_owned() + "x");
         assert!(!input_budget(&input, &schema)?.fits());
+        Ok(())
+    }
+    #[test]
+    fn consolidation_target_keeps_a_maximum_proposal_under_the_input_cap() -> Result<()> {
+        assert_eq!(
+            CONSOLIDATION_TARGET + extraction::MAX_OUTPUT + CONSOLIDATION_MARGIN,
+            extraction::MAX_INPUT
+        );
+        // One candidate is the smallest consolidation schema relative to the review
+        // framing, so it is the worst case for the review reserve at the target.
+        let batch: Batch = serde_json::from_value(json!({
+            "id":1,"project":"alpha","candidates":[{
+                "id":"c","state":"ready","created_at":1,"candidate":{
+                    "kind":"constraint","title":"t","claim":"c.","conditions":[],
+                    "scope":{"kind":"project","project_id":"alpha"},
+                    "verification":"user_stated","evidence":[]
+                }
+            }]
+        }))?;
+        let schema = consolidation::proposal_schema(&batch, &[]);
+        let mut input = json!({"batch":batch,"existing":[],"evidence":{},"padding":""});
+        let base = input_budget(&input, &schema)?;
+        input["padding"] = json!("x".repeat(CONSOLIDATION_TARGET - base.consolidation_bytes));
+        let budget = input_budget(&input, &schema)?;
+        assert_eq!(budget.consolidation_bytes, CONSOLIDATION_TARGET);
+        // `fits` still checks the review request against the hard cap, so selection only
+        // accepts a context that leaves room for a maximum-size proposal and its schema.
+        assert!(budget.fits());
+        assert!(budget.review_max_bytes < extraction::MAX_INPUT);
         Ok(())
     }
     #[test]

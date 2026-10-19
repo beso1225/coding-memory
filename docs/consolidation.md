@@ -63,11 +63,12 @@ permissions remain required, including for retrieved global notes.
 Before either model runs, the Engine measures the complete serialized
 consolidation prompt, including instructions, JSON escaping, candidates,
 existing notes and projected evidence, plus the serialized consolidation
-response schema. Its initial target is 160 KiB. The Engine also measures the
-review framing/context and reserves 64 KiB for the proposal plus the review
-schema, whose operation identities are budgeted at the accepted maximum of 20
-operations of 128 bytes each. It checks that the resulting review request fits
-the 256 KiB hard cap, leaving approximately 32 KiB of additional margin. Both
+response schema. Its initial target is 184 KiB: the 256 KiB hard cap less the
+64 KiB proposal reserve and an 8 KiB margin. The Engine also measures the review
+framing/context and reserves 64 KiB for the proposal plus the review schema,
+whose operation identities are budgeted at the accepted maximum of 20 operations
+of 128 bytes each. It checks that the resulting review request fits the 256 KiB
+hard cap as well, so a context is selected only when both measurements fit. Both
 measurements use the same prompt builder and schemas as generation. The final
 check before each call measures the same sum — complete prompt plus serialized
 response schema — that the generation backend re-checks, so a request over the
@@ -96,7 +97,9 @@ for a later invocation. Their original creation times remain intact, preserving
 the count/age trigger. If it cannot fit alone, only that candidate is held as
 `held_context_too_large` and selection can continue with later candidates.
 Evidence items are not truncated, and retrieved neighbors are not removed to
-force a candidate through the budget.
+force a candidate through the budget. Both rules are deliberate;
+[roadmap.md](roadmap.md) records the bounded alternatives considered if sizing
+holds recur.
 
 The reservation update is one lease-checked SQLite transaction. Selected
 candidates remain reserved; deferred candidates lose their reservation links
