@@ -24,8 +24,11 @@ const CONSOLIDATION_TARGET: usize = 160 * 1024;
 // The complete prompt is measured after serialization. An over-limit prompt is a
 // context-sizing failure that never reached a model, not an invalid proposal/review.
 const INPUT_TOO_LARGE: &str = "consolidation_input_too_large";
-// A rejected proposal is re-requested at most this many times. One repair lets a
-// single mechanical defect be corrected without an unbounded proposal/review loop.
+// An external transmission is re-authorized before every attempt. Revocation is surfaced
+// as this bounded marker so a repair attempt cannot send after a policy change.
+const EXTERNAL_REVOKED: &str = "consolidation_external_revoked";
+// A rejected proposal is re-requested at most this many times. One repair lets a single
+// decode or `validate` failure be corrected without an unbounded proposal/review loop.
 const PROPOSAL_REPAIR_LIMIT: usize = 1;
 // Longest Engine rejection echoed back to the proposer and retained in provenance.
 const REPAIR_REASON_LIMIT: usize = 256;
@@ -467,11 +470,14 @@ fn proposal_attempt(id: i64, attempt: usize) -> String {
 }
 /// Fresh proposal with one bounded repair. A decode or `validate` failure records the
 /// rejection, then re-requests the proposal once with that rejection in the input, so a
-/// single mechanical defect cannot park the whole batch. `validate` remains the
+/// single invalid operation cannot park the whole batch. `validate` remains the
 /// authority: a repair that still fails, or a second decode failure, holds the batch
-/// exactly as before and no review or publication happens.
+/// exactly as before and no review or publication happens. Because a repair sends the
+/// same evidence to an external provider a second time, the external policy is
+/// re-authorized before every transmission, exactly as the extraction chunk loop does.
 async fn propose(
     proposer: &impl Backend,
+    state: &State,
     batch: &Batch,
     existing: &[Existing],
     bundles: &HashMap<String, Evidence>,
@@ -480,11 +486,22 @@ async fn propose(
 ) -> Result<Proposal> {
     let schema = consolidation::proposal_schema(batch, existing);
     let attempts = PROPOSAL_REPAIR_LIMIT + 1;
-    let mut repair: Option<String> = None;
+    let external = proposer.external();
+    // `echoed` is the rejection handed back in the repair request; `final_rejection` is the
+    // rejection that held the batch. Both are kept so the record says what was asked of the
+    // model and what finally failed.
+    let mut echoed: Option<String> = None;
+    let mut final_rejection: Option<String> = None;
     let mut last_error: Option<anyhow::Error> = None;
     for attempt in 1..=attempts {
+        if external {
+            ensure!(state.external_allowed(&batch.project)?, EXTERNAL_REVOKED);
+            for bundle in bundles.values() {
+                ensure!(state.external_allowed(&bundle.project)?, EXTERNAL_REVOKED);
+            }
+        }
         let mut request = input.clone();
-        if let Some(reason) = &repair {
+        if let Some(reason) = &echoed {
             request["repair"] = json!({"validation_error": reason});
         }
         let bytes = generate(
@@ -504,23 +521,29 @@ async fn propose(
             });
         match outcome {
             Ok(proposal) => {
-                if let Some(reason) = &repair {
+                if let Some(reason) = &echoed {
                     provenance["proposal_repair"] =
-                        json!({"attempts": attempt - 1, "reason": reason});
+                        json!({"attempts": attempt - 1, "echoed": reason});
                 }
                 return Ok(proposal);
             }
             Err(error) => {
-                repair = Some(repair_reason(&error));
+                let reason = repair_reason(&error);
+                if echoed.is_none() {
+                    echoed = Some(reason.clone());
+                }
+                final_rejection = Some(reason);
                 last_error = Some(error);
             }
         }
     }
-    // The bounded loop exhausted its attempts, so the batch will hold. Record the one
-    // repair that ran and the rejection that outlasted it.
-    if let Some(reason) = &repair {
-        provenance["proposal_repair"] = json!({"attempts": attempts - 1, "reason": reason});
-    }
+    // The bounded loop exhausted its attempts, so the batch will hold. Record the repair
+    // that was asked for and the rejection that outlasted it.
+    provenance["proposal_repair"] = json!({
+        "attempts": attempts - 1,
+        "echoed": echoed,
+        "final": final_rejection,
+    });
     Err(last_error.expect("a bounded proposal loop records its last failure"))
 }
 /// Classify a consolidation failure for `hold_batch`. Model generation failures
@@ -538,6 +561,8 @@ fn hold_reason(error: &anyhow::Error, failure_stage: &str) -> String {
     let message = error.to_string();
     if message == INPUT_TOO_LARGE {
         "held_context_unavailable".into()
+    } else if message == EXTERNAL_REVOKED {
+        "held_external_policy".into()
     } else if message.starts_with("generation_") {
         message
     } else {
@@ -584,6 +609,7 @@ pub async fn consolidate(
         failure_stage = "held_invalid_proposal";
         let proposal = propose(
             proposer,
+            state,
             &batch,
             &existing,
             &bundles,
@@ -954,16 +980,97 @@ mod tests {
             actions(&schema),
             vec!["create", "hold", "update", "supersede", "skip"]
         );
-        let skip = schema["properties"]["operations"]["items"]["anyOf"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|v| v["properties"]["action"]["enum"][0] == "skip")
-            .unwrap();
+        let variant = |action: &str| {
+            schema["properties"]["operations"]["items"]["anyOf"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|v| v["properties"]["action"]["enum"][0] == action)
+                .unwrap()
+        };
+        // `create` and `hold` never name a target; only `skip`/`update`/`supersede` do,
+        // and `skip` names a required supplied enum, never null.
+        assert_eq!(variant("create")["properties"]["target"]["type"], "null");
+        assert_eq!(variant("hold")["properties"]["target"]["type"], "null");
+        assert_eq!(variant("hold")["properties"]["draft"]["type"], "null");
+        assert_eq!(variant("update")["properties"]["target"]["type"], "string");
         assert_eq!(
-            skip["properties"]["target"]["enum"],
+            variant("skip")["properties"]["target"]["enum"],
             json!(["queue-leases"])
         );
-        assert_eq!(skip["properties"]["draft"]["type"], "null");
+        assert_eq!(variant("skip")["properties"]["draft"]["type"], "null");
+    }
+    #[tokio::test]
+    async fn repair_records_the_echoed_and_final_rejections() -> Result<()> {
+        use crate::generation::{Failure, Output};
+        // First attempt is undecodable; the repair returns a decodable proposal that
+        // fails `validate`, so the two rejections differ.
+        struct TwoRejections {
+            calls: std::sync::atomic::AtomicUsize,
+        }
+        impl Backend for TwoRejections {
+            fn external(&self) -> bool {
+                false
+            }
+            fn provenance(&self) -> Value {
+                json!({"backend":"fixture","model":"two-rejections"})
+            }
+            async fn generate(&self, _: Request) -> std::result::Result<Output, Failure> {
+                let call = self
+                    .calls
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let bytes = if call == 0 {
+                    b"not json".to_vec()
+                } else {
+                    serde_json::to_vec(
+                        &json!({"schema_version":1,"role":"consolidation","operations":[]}),
+                    )
+                    .unwrap()
+                };
+                Ok(Output {
+                    bytes,
+                    thread_id: None,
+                    runtime_version: "fixture".into(),
+                })
+            }
+        }
+        let d = tempdir()?;
+        let mut state = State::open(&d.path().join("state.sqlite"))?;
+        state.register_project("alpha", "/repo", 1)?;
+        let batch: Batch = serde_json::from_value(json!({
+            "id":1,"project":"alpha","candidates":[{
+                "id":"c","state":"ready","created_at":1,"candidate":{
+                    "kind":"constraint","title":"t","claim":"c.","conditions":[],
+                    "scope":{"kind":"project","project_id":"alpha"},
+                    "verification":"user_stated","evidence":[]
+                }
+            }]
+        }))?;
+        let proposer = TwoRejections { calls: 0.into() };
+        let input = json!({"batch":&batch});
+        let mut provenance = json!({});
+        propose(
+            &proposer,
+            &state,
+            &batch,
+            &[],
+            &HashMap::new(),
+            &input,
+            &mut provenance,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(proposer.calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+        let record = &provenance["proposal_repair"];
+        assert_eq!(record["attempts"], 1);
+        // Both the rejection echoed to the model and the one that held are kept.
+        let echoed = record["echoed"].as_str().unwrap();
+        assert!(!echoed.is_empty());
+        assert_eq!(
+            record["final"].as_str().unwrap(),
+            "Invalid consolidation batch"
+        );
+        assert_ne!(echoed, record["final"].as_str().unwrap());
+        Ok(())
     }
 }

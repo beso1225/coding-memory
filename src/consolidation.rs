@@ -468,14 +468,7 @@ fn string() -> Value {
 fn array(item: Value) -> Value {
     json!({"type":"array","maxItems":32,"items":item})
 }
-fn supplied(ids: &[String]) -> Value {
-    if ids.is_empty() {
-        json!({"type":"null"})
-    } else {
-        json!({"anyOf":[{"type":"string","enum":ids},{"type":"null"}]})
-    }
-}
-/// One operation variant carrying the exact action/target/draft shape `validate`
+/// One operation variant carrying an action/target/draft shape `validate`
 /// accepts, so the response schema cannot request an unsatisfiable combination.
 fn operation(action: &[&str], target: Value, draft: Value, candidates: &[String]) -> Value {
     object(
@@ -493,14 +486,15 @@ pub fn proposal_schema(batch: &Batch, existing: &[Existing]) -> Value {
     let targets: Vec<String> = existing.iter().map(|n| n.id.clone()).collect();
     let no_target = json!({"type":"null"});
     let no_draft = json!({"type":"null"});
-    // Bind every action to the target and draft shape `validate` accepts: a `skip`
+    // Bind every action to a target and draft shape `validate` accepts: a `skip`
     // cannot be requested without a supplied target and a `create` cannot name one,
     // by construction. With no supplied note the only satisfiable actions are
     // `create` and `hold`; `update`, `supersede` and `skip` need an existing target
-    // and are omitted. `hold` is the documented no-new-note fallback.
+    // and are omitted. `hold` is the documented no-new-note fallback and, like
+    // `create`, names no target: `plan` never applies a hold to an existing note.
     let mut variants = vec![
         operation(&["create"], no_target.clone(), draft.clone(), &candidates),
-        operation(&["hold"], supplied(&targets), no_draft.clone(), &candidates),
+        operation(&["hold"], no_target.clone(), no_draft.clone(), &candidates),
     ];
     if !targets.is_empty() {
         let target = json!({"type":"string","enum":targets});

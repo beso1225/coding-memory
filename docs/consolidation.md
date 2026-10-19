@@ -201,15 +201,19 @@ proposer obligation: the consolidation prompt is `consolidation-v3`, while the
 independent review prompt is deliberately unchanged and stays byte-identical to
 `review-v2`.
 
-A single mechanically invalid operation no longer parks the whole batch. On a
-decode or `validate` failure the Engine records the bounded rejection in
-`proposal_repair` and re-requests the proposal once, echoing the rejection into
-the input's `repair` object; the repair attempt uses its own attempt directory.
-`validate` remains the authority: a repair that still fails, a second decode
-failure, or an over-limit repair prompt holds the batch with `held_invalid_proposal`
-exactly as before, so one defect cannot silently discard the batch's other
-candidates, loop unboundedly, or publish an unvalidated draft. Held batches stay
-inspectable and deliberately retryable.
+A single invalid operation no longer parks the whole batch: every decode or
+`validate` failure, mechanical or semantic, records the rejection in
+`proposal_repair` and the Engine re-requests the proposal once, echoing the
+rejection into the input's `repair` object; the repair attempt uses its own
+attempt directory. The record keeps both the rejection that was `echoed` to the
+model and, when the batch still holds, the `final` one. Because the repair
+transmits the same evidence a second time, the external policy is re-authorized
+before every attempt; a revocation stops the next send and holds the batch as
+`held_external_policy`. `validate` remains the authority: a repair that still
+fails, a second decode failure, or an over-limit repair prompt holds the batch
+with `held_invalid_proposal` exactly as before, so one defect cannot silently
+discard the batch's other candidates, loop unboundedly, or publish an unvalidated
+draft. Held batches stay inspectable and deliberately retryable.
 
 The review input includes captured evidence, candidates, scoped existing notes,
 and the entire proposal. A complete decision set names each operation and
