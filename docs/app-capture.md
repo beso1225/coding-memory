@@ -162,5 +162,15 @@ subsequent human-run fresh App GUI directory-check turn was captured as
 `ready`/`completed` at creation version `0.162.0-alpha.17.2`, and extraction finished
 `succeeded_empty`, as expected for a transient directory report. This used the
 existing production Engine, so it confirms the fresh-chat route rather than the
-new provisional policy. Capture of the diagnosed old chat after installing this
-update remains an operator check.
+new provisional policy.
+
+The diagnosed long-lived chat itself was then captured under this policy by the
+installed `0.1.0-rc.4` Engine with reader `0.162.1`. Its creation version stayed
+`0.162.0-alpha.2`, and 30 turns from the one thread were captured across four
+days (15-18 October 2026) and many collection cycles. Twenty-eight bundles
+recorded the turn normally; two recorded a source turn that had ended with its
+own `usageLimitExceeded` terminal error, not a capture-boundary hold. No held rows
+remained, every stored bundle audit was `verified`, and the previously held keys
+had been retried (up to 35 attempts) until they were captured. This confirms
+multiple completed turns, stable per-turn boundaries and repeated cold reads of
+the diagnosed old chat; admission alone still does not promise every shape.

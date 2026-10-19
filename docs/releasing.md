@@ -32,7 +32,7 @@ For a release PR:
 1. Choose the next `X.Y.Z` or `X.Y.Z-rc.N` version. Use `v0.1.0-rc.1` first to
    validate installation before announcing the first stable release. The rc.1
    attempt exposed a draft lookup bug before publication; rc.2 is the first
-   intended installable private release.
+   intended installable release.
 2. Update Cargo.toml and the root package version in Cargo.lock. Add exactly one
    nonempty `## [VERSION]` section to CHANGELOG.md. Describe supported Codex
    versions, state/configuration compatibility, and recovery steps when relevant.
@@ -70,11 +70,9 @@ be stale immediately after creation. The rc.2 publication completed on a retry
 using its existing draft; retaining the creation response removes that initial
 read-after-write dependency for subsequent releases.
 
-The repository was private when this pipeline was prepared. Releases inherit
-that visibility: public distribution requires the owner to review the complete
-repository and history before choosing to make it public, or to design a
-separate public distribution repository. Do not change repository visibility as
-part of a release workflow. Private releases can be tested by authorized users.
+The repository is public, and the owner completed the full repository and
+history review before publication. Releases inherit that visibility. Do not
+change repository visibility as part of a release workflow.
 
 ## Dry runs, failures, and retries
 

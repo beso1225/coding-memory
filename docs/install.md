@@ -3,31 +3,20 @@
 Release support starts with Apple Silicon Macs running macOS 15 or later.
 Intel macOS, Linux, and Windows are not supported release targets yet.
 Codex is installed and authenticated separately. Nix and Rust are not required
-to run a release binary. The initial release candidate validates distribution;
+to run a release binary. The first stable release validates distribution;
 broader runtime and quality validation remains ongoing.
 
 ## Install an archive
 
 Choose a version from [GitHub Releases](https://github.com/beso1225/coding-memory/releases).
-Anonymous downloads require a public repository. While the repository is
-private, only authorized GitHub users can access its releases; use an
-authenticated `gh release download` instead of the curl commands below.
 Prereleases must be selected explicitly; they are not the stable latest release.
-The initial installable release is `v0.1.0-rc.2`; downloads become available only
-after its release workflow succeeds.
+The first stable release is `v0.1.0`; downloads become available only after its
+release workflow succeeds.
 
-For an authorized user of the private repository, GitHub CLI can download the
-same assets into the current directory after `gh auth login`:
-
-```sh
-gh release download v0.1.0-rc.2 --repo beso1225/coding-memory \
-  --pattern coding-memory-aarch64-apple-darwin.tar.gz --pattern SHA256SUMS
-```
-
-For a public repository, download with curl:
+Download anonymously with curl:
 
 ```sh
-version=0.1.0-rc.2
+version=0.1.0
 archive=coding-memory-aarch64-apple-darwin.tar.gz
 curl --fail --location --remote-name \
   "https://github.com/beso1225/coding-memory/releases/download/v$version/$archive"
@@ -41,6 +30,14 @@ mv coding-memory-aarch64-apple-darwin \
 ln -sfn "$HOME/.local/share/coding-memory/versions/$version/coding-memory" \
   "$HOME/.local/bin/coding-memory"
 "$HOME/.local/bin/coding-memory" --version
+```
+
+An authenticated GitHub CLI can fetch the same assets, and earlier `v0.1.0-rc.N`
+prereleases, after `gh auth login`:
+
+```sh
+gh release download v0.1.0 --repo beso1225/coding-memory \
+  --pattern coding-memory-aarch64-apple-darwin.tar.gz --pattern SHA256SUMS
 ```
 
 Keep the whole version directory, including licenses and `release-notices/`.
