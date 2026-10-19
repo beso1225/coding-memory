@@ -1,13 +1,32 @@
 # Changelog
 
-## [Unreleased]
+## [0.1.1-rc.1]
+
+MCP harness configuration generation for Apple Silicon macOS 15+. This release adds
+one CLI command and its documentation. State schema version 1, existing state,
+Worker configuration, Markdown notes, immutable evidence, independent generation
+login, the stdio MCP server and its two read-only tools are unchanged.
 
 - Add `mcp-config --harness codex|opencode|dsh`, which prints the project-bound MCP
   server entry for a supported client as Codex TOML, OpenCode JSON, or a DeepSeek
   Harness Cordis overlay, with the state directory and vault resolved to absolute
-  canonical paths. The stdio server and its two read-only tools are unchanged; the
-  harness-side declaration is now documented and verified against Codex, OpenCode
-  `2.0.30`, and `@deepseek-ai/dsh` `0.2.0-rc.2`.
+  canonical paths. It writes to stdout only and never installs or edits a harness
+  configuration.
+- Document each client's placement and tool naming, and the rule that one entry
+  binds one project and must not be reused across projects: OpenCode exposes
+  `coding_memory_memory_search`, DeepSeek Harness exposes
+  `mcp__coding_memory__memory_search`, and Codex exposes the `mcp__coding_memory`
+  namespace with unprefixed tool names.
+- Verify the rendered entry against Codex, OpenCode `2.0.30`, and
+  `@deepseek-ai/dsh` `0.2.0-rc.2`, including a model-driven retrieval through the
+  DeepSeek Harness web profile on a non-native provider route.
+
+No state migration is required. Stop the Worker, MCP clients and other writers and
+back up the state directory and Vault, then install this archive into a new version
+directory and repoint the stable `$HOME/.local/bin/coding-memory` symlink as
+documented. The generated entries reference that symlink, so they keep resolving
+after the switch. To roll back, repoint the symlink at the previous version
+directory; both share state schema version 1.
 
 ## [0.1.0]
 
