@@ -73,11 +73,19 @@ coding-memory --state-dir /absolute/engine-state dsh --dsh-home /absolute/dsh-ho
 `enqueue` is what the bridge calls on `turn/end`; it accepts a bounded
 `{"kind":"turn-end","session":...,"turn":N,"cwd":...}` hint from stdin or
 `--event`. The hint names the run: capture publishes only a run a live runtime
-hinted (`no_capture_hint` otherwise), a hint recorded before its project is
-registered is kept and resolved by `reconcile`, and `reconcile` itself never
-queues a run. `/compact` and its durable bracket are harness bookkeeping and do
-not reach evidence. `--dsh-home` selects the
-runtime store, so DSH runs never share identity with Codex runs.
+hinted (`no_capture_hint` otherwise), and it claims only the session its
+projection describes. A hint recorded before its project is registered is
+kept and resolved by `reconcile` against that hint's own session;
+`reconcile` itself never queues a run. Re-running `register` for a registered
+project reports `already_registered` and baselines nothing. `/compact` and its
+durable bracket are harness bookkeeping and do not reach evidence.
+`--dsh-home` selects the runtime store, so DSH runs never share identity with
+Codex runs.
+
+Evidence items use the same envelope as Codex — a top-level `id`, the
+extraction vocabulary (`userMessage`, `agentMessage`, `toolCall`,
+`commandExecution`), and a `status` for tool results — with the native DSH type
+kept in `ds_type`, so extraction can cite and verify them.
 
 Registration, the enablement epoch, exclusions, engine-owned stores, dedup,
 size bounds, evidence immutability, `retry`, and held-reason reporting behave as

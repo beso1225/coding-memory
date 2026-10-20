@@ -353,6 +353,20 @@ pub async fn dsh(
         DshOperation::Register { session, project } => {
             let p = project::resolve(project)?;
             let cwd = session_cwd(&p, session)?;
+            if state.project_epoch(&p.id).is_ok() {
+                // Registration is a one-time enablement boundary. Re-running it
+                // must not baseline later turns: those are valid capture work
+                // that a queued run or a retry may still own.
+                return Ok(DshReport {
+                    action: "register",
+                    state: None,
+                    run: None,
+                    reason: Some("already_registered".into()),
+                    evidence: None,
+                    queued: None,
+                    baseline: Some(0),
+                });
+            }
             let epoch = now();
             let baseline = dsh::discover(session, &cwd, store)?;
             state.register_project(
@@ -380,18 +394,22 @@ pub async fn dsh(
             let cwd = session_cwd(&p, session)?;
             let epoch = state.project_epoch(&p.id)?;
             let mut queued = 0;
-            let hinted: Vec<RunKey> = state
-                .pending_hints(store)?
-                .into_iter()
-                .filter(|(_, hint_cwd)| {
-                    project::resolve(Path::new(hint_cwd)).is_ok_and(|h| h.id == p.id)
-                })
-                .map(|(key, _)| key)
-                .collect();
             let projection = dsh::Projection::parse(&evidence::read_bounded(
                 session,
                 evidence::MAX_SOURCE_BYTES,
             )?)?;
+            // Only this projection's session: another session's hint must stay
+            // pending until its own projection is reconciled, not be resolved
+            // (or dropped as `history_missing`) against this one.
+            let hinted: Vec<RunKey> = state
+                .pending_hints(store)?
+                .into_iter()
+                .filter(|(key, hint_cwd)| {
+                    key.thread == projection.session()
+                        && project::resolve(Path::new(hint_cwd)).is_ok_and(|h| h.id == p.id)
+                })
+                .map(|(key, _)| key)
+                .collect();
             ensure!(
                 projection.cwd() == Some(cwd.as_str()),
                 "Projection recorded a different project directory"
@@ -432,11 +450,16 @@ pub async fn dsh(
         } => {
             let p = project::resolve(project)?;
             let cwd = session_cwd(&p, session)?;
-            let document: serde_json::Value = serde_json::from_slice(&evidence::read_bounded(
+            let projection = dsh::Projection::parse(&evidence::read_bounded(
                 session,
                 evidence::MAX_SOURCE_BYTES,
             )?)?;
-            let Some(claim) = state.claim_store(Some(store), now(), 3600)? else {
+            // Claim the exact session this projection describes. Claiming the
+            // oldest run of the whole store would attach this projection's
+            // evidence to another session's run whenever both are queued.
+            let Some(claim) =
+                state.claim_session(Some(store), projection.session(), now(), 3600)?
+            else {
                 return Ok(DshReport {
                     action: "capture",
                     state: None,
@@ -447,6 +470,18 @@ pub async fn dsh(
                     baseline: None,
                 });
             };
+            if claim.key.thread != projection.session() {
+                state.hold(&claim, "projection_session_mismatch", now())?;
+                return Ok(DshReport {
+                    action: "capture",
+                    state: Some("held"),
+                    run: Some(claim.key),
+                    reason: Some("projection_session_mismatch".into()),
+                    evidence: None,
+                    queued: None,
+                    baseline: None,
+                });
+            }
             if !state.hinted(&claim.key)? {
                 // Only a hint can name the turned-ended run this process saw.
                 // Without one, the projection belongs to a different process
@@ -485,6 +520,7 @@ pub async fn dsh(
             }
             let turn_number: u64 = claim.key.turn.parse()?;
             let epoch = state.project_epoch(&claim.project)?;
+            let document = serde_json::to_value(&projection)?;
             let outcome = dsh::decode(&document, store, &cwd, turn_number, epoch)?;
             dsh_capture(state, root, &claim, outcome)
         }

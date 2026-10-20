@@ -124,6 +124,20 @@ covered by `tests/dsh.rs`:
 - Item identities come from the event payload (`message.id`, `toolCallId`,
   `callId`). A collision is `duplicate_item_identity`. Tool results intentionally
   share their call's identity, as `sourceEventSeqs` references it.
+- Items are normalized into the shared evidence envelope before they become
+  evidence: a top-level `id` (`<native identity>@<seq>`), the extraction
+  vocabulary (`userMessage`, `agentMessage`, `toolCall`, `commandExecution`,
+  `hookPrompt`, `other`), a `status` for tool results, and the native type kept
+  in `ds_type`. Extraction builds its citation schema from `id` and verifies
+  support against those predicates, so unnormalized DSH records would admit only
+  an empty candidate list.
+- Record `time` is committed in milliseconds; the adapter converts it to seconds
+  before comparing it with the enablement epoch.
+- The bridge document declares `schema: 1`, checked independently of DSH's
+  logical format version. A discovery or capture from an unknown projection
+  schema is held as `unsupported_projection_schema`.
+- Capture claims only the run of the session the projection names, and
+  reconciliation resolves only hints for that same session.
 - Project attribution uses the session header `cwd`; a projection whose recorded
   session directory no longer resolves to the registered project is held as
   `project_mismatch`.

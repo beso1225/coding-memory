@@ -220,9 +220,34 @@ impl State {
     pub fn claim(&mut self, now: i64, lease: i64) -> Result<Option<Claim>> {
         self.claim_store(None, now, lease)
     }
+    /// Claim the next run of one session in one store.
+    ///
+    /// A capture reads one session's projection, so it may only publish that
+    /// session's run; claiming the store's oldest run could lease, or complete,
+    /// an unrelated session's work.
+    pub fn claim_session(
+        &mut self,
+        store: Option<&str>,
+        thread: &str,
+        now: i64,
+        lease: i64,
+    ) -> Result<Option<Claim>> {
+        let session = format!("/{thread}");
+        self.claim_matching(store, Some(&session), now, lease)
+    }
     pub fn claim_store(
         &mut self,
         store: Option<&str>,
+        now: i64,
+        lease: i64,
+    ) -> Result<Option<Claim>> {
+        self.claim_matching(store, None, now, lease)
+    }
+    /// Claim by store and an optional `"/<thread>"` filter (SQL parameter only).
+    fn claim_matching(
+        &mut self,
+        store: Option<&str>,
+        thread: Option<&str>,
         now: i64,
         lease: i64,
     ) -> Result<Option<Claim>> {
@@ -234,7 +259,7 @@ impl State {
             .db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute("UPDATE runs SET state='held',reason='excluded' WHERE state IN ('queued','capturing') AND (EXISTS(SELECT 1 FROM owned_stores o WHERE o.id=runs.store) OR EXISTS(SELECT 1 FROM exclusions e WHERE e.store=runs.store AND e.thread=runs.thread AND e.turn=runs.turn))",[])?;
-        let claim=tx.query_row("SELECT store,thread,turn,project,cwd,token+1,attempts+1 FROM runs WHERE ((state='queued' AND available_at<=?1) OR (state='capturing' AND lease_until<=?1)) AND (?2 IS NULL OR store=?2) ORDER BY available_at,store,thread,turn LIMIT 1",params![now,store],|r|Ok(Claim {key:RunKey{store:r.get(0)?,thread:r.get(1)?,turn:r.get(2)?},project:r.get(3)?,cwd:r.get(4)?,token:r.get(5)?,attempts:r.get(6)?})).optional()?;
+        let claim=tx.query_row("SELECT store,thread,turn,project,cwd,token+1,attempts+1 FROM runs WHERE ((state='queued' AND available_at<=?1) OR (state='capturing' AND lease_until<=?1)) AND (?2 IS NULL OR store=?2) AND (?3 IS NULL OR ('/'||thread)=?3) ORDER BY available_at,store,thread,turn LIMIT 1",params![now,store,thread],|r|Ok(Claim {key:RunKey{store:r.get(0)?,thread:r.get(1)?,turn:r.get(2)?},project:r.get(3)?,cwd:r.get(4)?,token:r.get(5)?,attempts:r.get(6)?})).optional()?;
         if let Some(c) = &claim {
             tx.execute("UPDATE runs SET state='capturing',lease_until=?4,token=?5,attempts=attempts+1 WHERE store=?1 AND thread=?2 AND turn=?3",params![c.key.store,c.key.thread,c.key.turn,until,c.token])?;
         }

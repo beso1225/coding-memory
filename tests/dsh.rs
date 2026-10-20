@@ -14,7 +14,8 @@ fn header(id: &str, cwd: &str) -> serde_json::Value {
 }
 /// One projected record, shaped exactly as the bridge emits it.
 fn record(seq: u64, kind: &str, data: Value) -> Value {
-    let time = 1000 + seq as i64;
+    // DSH commits milliseconds.
+    let time = (1000 + seq as i64) * 1000;
     json!({"seq": seq, "type": kind, "time": time, "data": data})
 }
 fn human(seq: u64, turn: u64, step: u64) -> Value {
@@ -63,6 +64,10 @@ fn decode(log: &serde_json::Value, turn: u64) -> Capture {
     dsh::decode(log, "storedigest", "/repo", turn, 3).expect("decode")
 }
 
+fn decode_at(log: &serde_json::Value, turn: u64, epoch: i64) -> Capture {
+    dsh::decode(log, "storedigest", "/repo", turn, epoch).expect("decode")
+}
+
 fn two_turn_log() -> serde_json::Value {
     log(vec![
         turn_start(3, 1),
@@ -98,7 +103,26 @@ fn completed_turn_becomes_evidence_scoped_to_its_turn() {
         .iter()
         .map(|i| i["type"].as_str().unwrap())
         .collect();
-    assert_eq!(types, vec!["user/message", "tool/call", "tool/result"]);
+    assert_eq!(
+        types,
+        vec!["userMessage", "toolCall", "commandExecution"],
+        "items use the shared evidence vocabulary extraction understands"
+    );
+    assert_eq!(
+        bundle.items[0]["id"],
+        json!("msg-5@5"),
+        "top-level ids are citable"
+    );
+    assert_eq!(
+        bundle.items[2]["status"],
+        json!("completed"),
+        "tool results carry a status"
+    );
+    assert_eq!(
+        bundle.items[2]["ds_type"],
+        json!("tool/result"),
+        "the native type is retained"
+    );
     let ids: Vec<_> = bundle
         .items
         .iter()
@@ -120,7 +144,10 @@ fn completed_turn_becomes_evidence_scoped_to_its_turn() {
             .any(|c| c.contains("dsh-session") && c.contains("v4")),
         "coverage names the source log"
     );
-    assert_eq!(bundle.started_at, 1003);
+    assert_eq!(
+        bundle.started_at, 1003,
+        "millisecond record times become seconds"
+    );
     assert_eq!(bundle.completed_at, 1008);
     assert!(bundle.run.thread == "session-a" && bundle.run.turn == "1");
 }
@@ -153,7 +180,7 @@ fn a_settled_attempt_does_not_become_an_item() {
         .iter()
         .map(|i| i["type"].as_str().unwrap())
         .collect();
-    assert_eq!(types, vec!["user/message", "assistant/message"]);
+    assert_eq!(types, vec!["userMessage", "agentMessage"]);
 }
 
 #[test]
@@ -221,7 +248,7 @@ fn a_real_completed_turn_is_captured_not_held() {
         .iter()
         .map(|i| i["type"].as_str().unwrap())
         .collect();
-    assert_eq!(types, vec!["user/message", "assistant/message"]);
+    assert_eq!(types, vec!["userMessage", "agentMessage"]);
 }
 
 #[test]
@@ -280,7 +307,7 @@ fn a_capture_after_a_successful_compaction_still_publishes_the_turn() {
         .iter()
         .map(|i| i["type"].as_str().unwrap())
         .collect();
-    assert_eq!(types, vec!["user/message", "assistant/message"]);
+    assert_eq!(types, vec!["userMessage", "agentMessage"]);
 }
 
 #[test]
@@ -315,7 +342,7 @@ fn a_compaction_request_after_the_turn_does_not_hold_or_join_it() {
         .iter()
         .map(|i| i["type"].as_str().unwrap())
         .collect();
-    assert_eq!(types, vec!["user/message"]);
+    assert_eq!(types, vec!["userMessage"]);
 }
 
 /// Messages as DSH actually records them: no `turn` field on a message.
@@ -367,6 +394,70 @@ fn messages_without_a_turn_field_belong_to_the_enclosing_turn() {
             .collect::<Vec<_>>(),
         vec!["1", "2"]
     );
+}
+
+#[test]
+fn items_carry_a_citable_id_and_the_shared_vocabulary() {
+    let Capture::Ready(bundle) = decode(&two_turn_log(), 1) else {
+        panic!("expected a ready capture");
+    };
+    for item in &bundle.items {
+        assert!(
+            item["id"].as_str().is_some_and(|id| !id.is_empty()),
+            "extraction builds its citation enum from a top-level id: {item}"
+        );
+    }
+    let mut ids: Vec<_> = bundle
+        .items
+        .iter()
+        .filter_map(|i| i["id"].as_str())
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), bundle.items.len(), "ids are unique");
+}
+
+#[test]
+fn record_times_are_compared_in_seconds() {
+    // DSH commits milliseconds; an enablement epoch is seconds. Comparing the
+    // units directly made every pre-registration check false.
+    let epoch_second = 1_700_000_000;
+    let before = log(vec![
+        turn_start(3, 1),
+        real_human(4),
+        turn_end(5, 1, json!({"kind": "completed"})),
+    ]);
+    let mut value = before;
+    for record in value["records"].as_array_mut().unwrap() {
+        record["time"] = json!(epoch_second * 1000);
+    }
+    assert!(
+        matches!(decode_at(&value, 1, epoch_second), Capture::Excluded),
+        "a turn ending at the epoch second predates enablement"
+    );
+    let mut later = value.clone();
+    for record in later["records"].as_array_mut().unwrap() {
+        record["time"] = json!((epoch_second + 1) * 1000);
+    }
+    assert!(matches!(
+        decode_at(&later, 1, epoch_second),
+        Capture::Ready(_)
+    ));
+}
+
+#[test]
+fn a_projection_must_declare_a_supported_bridge_schema() {
+    let mut value = two_turn_log();
+    value.as_object_mut().unwrap().remove("schema");
+    assert!(matches!(
+        decode(&value, 1),
+        Capture::Unsupported(Reason::ProjectionSchema)
+    ));
+    value["schema"] = json!(2);
+    assert!(matches!(
+        decode(&value, 1),
+        Capture::Unsupported(Reason::ProjectionSchema)
+    ));
 }
 
 #[test]
@@ -719,7 +810,8 @@ mod ingestion {
         let mut document: Value = serde_json::from_slice(&std::fs::read(&projection)?)?;
         for record in document["records"].as_array_mut().unwrap() {
             let seq = record["seq"].as_u64().unwrap();
-            record["time"] = json!(epoch * 1000 + seq as i64);
+            // DSH commits milliseconds; keep the turn after the epoch second.
+            record["time"] = json!(epoch * 1000 + 1000 + seq as i64);
         }
         std::fs::write(&projection, serde_json::to_vec(&document)?)?;
         let report = ingestion::dsh(
@@ -734,6 +826,17 @@ mod ingestion {
         )
         .await?;
         assert_eq!(report.queued, Some(0), "reconcile is not a capture source");
+        // The harness only flushes later, so make turn 3 end after enablement
+        // (milliseconds, as DSH commits them) and re-read the projection.
+        let epoch = state.project_epoch(&id)?;
+        let mut document: Value = serde_json::from_slice(&std::fs::read(&projection)?)?;
+        for record in document["records"].as_array_mut().unwrap() {
+            if record["data"]["turn"] == json!(3) {
+                let seq = record["seq"].as_u64().unwrap();
+                record["time"] = json!((epoch + 1) * 1000 + seq as i64);
+            }
+        }
+        std::fs::write(&projection, serde_json::to_vec(&document)?)?;
         let signal = json!({"kind":"turn-end","session":"session-x","turn":3,"cwd":cwd});
         let report = ingestion::dsh(
             &mut state,
@@ -820,7 +923,8 @@ mod ingestion {
         let mut document: Value = serde_json::from_slice(&std::fs::read(&projection)?)?;
         for record in document["records"].as_array_mut().unwrap() {
             let seq = record["seq"].as_u64().unwrap();
-            record["time"] = json!(epoch * 1000 + seq as i64);
+            // DSH commits milliseconds; keep the turn after the epoch second.
+            record["time"] = json!(epoch * 1000 + 1000 + seq as i64);
         }
         std::fs::write(&projection, serde_json::to_vec(&document)?)?;
         // Exactly what reconciliation produces: a queued run with no hint.
@@ -925,7 +1029,8 @@ mod ingestion {
         let mut document: Value = serde_json::from_slice(&std::fs::read(&projection)?)?;
         for record in document["records"].as_array_mut().unwrap() {
             let seq = record["seq"].as_u64().unwrap();
-            record["time"] = json!(epoch * 1000 + seq as i64);
+            // DSH commits milliseconds; keep the turn after the epoch second.
+            record["time"] = json!(epoch * 1000 + 1000 + seq as i64);
         }
         std::fs::write(&projection, serde_json::to_vec(&document)?)?;
         let signal = json!({"kind":"turn-end","session":"session-x","turn":2,"cwd":cwd});
@@ -951,6 +1056,258 @@ mod ingestion {
             Enqueue::Duplicate,
             "the hinted run is already queued"
         );
+        Ok(())
+    }
+
+    /// A projection for `session` with one completed human turn after `time_ms`.
+    fn projection_for(path: &Path, cwd: &str, session: &str, time_ms: i64) {
+        let document = json!({"schema":1,"header":{
+        "type":"session","version":4,"id":session,"createdAt":time_ms,"cwd":cwd,"isSeeded":false},
+        "records":[
+            {"seq":0,"type":"turn/start","time":time_ms,"data":{"turn":1}},
+            {"seq":1,"type":"user/message","time":time_ms+1,"surfaceOp":"append","data":{
+                "id":"m1","role":"user","content":[{"type":"text","text":"work"}],"source":{"kind":"user"}}},
+            {"seq":2,"type":"assistant/message","time":time_ms+2,"surfaceOp":"append","data":{
+                "turn":1,"step":1,"message":{"id":"a1","role":"assistant","content":[{"type":"text","text":"done"}],
+                "source":{"kind":"model","provider":"p","model":"m"}}}},
+            {"seq":3,"type":"turn/end","time":time_ms+3,"data":{"turn":1,"reason":{"kind":"completed"}}},
+        ]});
+        std::fs::write(path, serde_json::to_vec(&document).unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn capture_claims_the_session_its_projection_describes() -> anyhow::Result<()> {
+        // Two sessions of one store queued at once: a capture must publish the
+        // projection's own session, never the store's oldest run.
+        let (data, dsh) = runtime();
+        let (repo, id) = project(data.path());
+        let root = data.path().join("state");
+        std::fs::create_dir_all(&root)?;
+        let mut state = State::open(&root.join("state.sqlite"))?;
+        let store = ingestion::store_id(dsh.path())?;
+        let cwd = repo.to_str().unwrap().to_string();
+        let old = data.path().join("old.json");
+        projection_for(&old, &cwd, "session-old", 1);
+        ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Register {
+                session: old.clone(),
+                project: repo.clone(),
+            },
+            None,
+        )
+        .await?;
+        let later = (ingestion::now() + 5) * 1000;
+        for (session, path) in [
+            ("session-a", data.path().join("a.json")),
+            ("session-b", data.path().join("b.json")),
+        ] {
+            projection_for(&path, &cwd, session, later);
+            let signal = json!({"kind":"turn-end","session":session,"turn":1,"cwd":cwd});
+            ingestion::dsh(
+                &mut state,
+                &store,
+                &root,
+                &DshOperation::Enqueue,
+                Some(signal.to_string()),
+            )
+            .await?;
+        }
+        // Capture session-b first; session-a's older run must stay queued.
+        let report = ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Capture {
+                session: data.path().join("b.json"),
+                project: repo.clone(),
+                turn: None,
+            },
+            None,
+        )
+        .await?;
+        assert_eq!(report.state, Some("ready"), "{report:?}");
+        assert_eq!(
+            report.run.as_ref().map(|r| r.thread.as_str()),
+            Some("session-b")
+        );
+        let digest = report.evidence.expect("digest");
+        let evidence = coding_memory::evidence::load(&root, &digest)?;
+        assert_eq!(
+            evidence.run.thread, "session-b",
+            "evidence belongs to the projection"
+        );
+        let status = state.status()?;
+        assert_eq!(status.len(), 2);
+        assert_eq!(
+            status
+                .iter()
+                .find(|s| s.key.thread == "session-a")
+                .map(|s| s.state.as_str()),
+            Some("queued"),
+            "the other session's run is untouched"
+        );
+        assert_eq!(evidence.project, id);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reconciling_one_session_leaves_another_sessions_hint_pending() -> anyhow::Result<()> {
+        let (data, dsh) = runtime();
+        let (repo, _) = project(data.path());
+        let root = data.path().join("state");
+        std::fs::create_dir_all(&root)?;
+        let mut state = State::open(&root.join("state.sqlite"))?;
+        let store = ingestion::store_id(dsh.path())?;
+        let cwd = repo.to_str().unwrap().to_string();
+        let a = data.path().join("a.json");
+        let b = data.path().join("b.json");
+        projection_for(&a, &cwd, "session-a", 1);
+        projection_for(&b, &cwd, "session-b", 1);
+        // Both hints arrive before registration.
+        for session in ["session-a", "session-b"] {
+            let signal = json!({"kind":"turn-end","session":session,"turn":1,"cwd":cwd});
+            ingestion::dsh(
+                &mut state,
+                &store,
+                &root,
+                &DshOperation::Enqueue,
+                Some(signal.to_string()),
+            )
+            .await?;
+        }
+        ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Register {
+                session: a.clone(),
+                project: repo.clone(),
+            },
+            None,
+        )
+        .await?;
+        ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Reconcile {
+                session: a,
+                project: repo.clone(),
+            },
+            None,
+        )
+        .await?;
+        let pending = state.pending_hints(&store)?;
+        assert_eq!(pending.len(), 1, "session-b's hint is not consumed");
+        assert_eq!(pending[0].0.thread, "session-b");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn registering_twice_never_baselines_later_turns() -> anyhow::Result<()> {
+        let (data, dsh) = runtime();
+        let (repo, id) = project(data.path());
+        let root = data.path().join("state");
+        std::fs::create_dir_all(&root)?;
+        let mut state = State::open(&root.join("state.sqlite"))?;
+        let store = ingestion::store_id(dsh.path())?;
+        let cwd = repo.to_str().unwrap().to_string();
+        let path = data.path().join("session.json");
+        session(&path, &cwd, 1);
+        ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Register {
+                session: path.clone(),
+                project: repo.clone(),
+            },
+            None,
+        )
+        .await?;
+        let epoch = state.project_epoch(&id)?;
+        let later = (epoch + 5) * 1000;
+        projection_for(&path, &cwd, "session-x", later);
+        // Register baselines the turns this projection already shows, so the
+        // post-enablement run arrives afterwards, as it does in production.
+        ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Register {
+                session: path.clone(),
+                project: repo.clone(),
+            },
+            None,
+        )
+        .await?;
+        let signal = json!({"kind":"turn-end","session":"session-x","turn":2,"cwd":cwd});
+        ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Enqueue,
+            Some(signal.to_string()),
+        )
+        .await?;
+        // Re-registering must not baseline the queued post-enablement run.
+        let report = ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Register {
+                session: path,
+                project: repo.clone(),
+            },
+            None,
+        )
+        .await?;
+        assert_eq!(report.reason.as_deref(), Some("already_registered"));
+        assert_eq!(
+            state
+                .status()?
+                .iter()
+                .find(|s| s.key.thread == "session-x" && s.key.turn == "2")
+                .map(|s| s.state.as_str()),
+            Some("queued"),
+            "re-registering must not baseline the queued post-enablement run"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_hint_is_persisted_with_its_run_atomically() -> anyhow::Result<()> {
+        let (data, dsh) = runtime();
+        let (repo, _) = project(data.path());
+        let root = data.path().join("state");
+        std::fs::create_dir_all(&root)?;
+        let mut state = State::open(&root.join("state.sqlite"))?;
+        let store = ingestion::store_id(dsh.path())?;
+        let cwd = repo.to_str().unwrap().to_string();
+        let path = data.path().join("session.json");
+        session(&path, &cwd, 1);
+        ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Register {
+                session: path,
+                project: repo,
+            },
+            None,
+        )
+        .await?;
+        let project_id = coding_memory::project::resolve(std::path::Path::new(&cwd))?.id;
+        let key = RunKey {
+            store: store.clone(),
+            thread: "session-y".into(),
+            turn: "1".into(),
+        };
+        state.enqueue_hinted(&key, &project_id, &cwd, 0)?;
+        assert!(state.hinted(&key)?, "a queued run always carries its hint");
         Ok(())
     }
 

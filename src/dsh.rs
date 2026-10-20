@@ -15,6 +15,9 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::{collections::HashSet, path::Path};
 
+/// Bridge document revision this engine interprets. It is separate from the
+/// DSH logical session format: the projection's own shape can change alone.
+pub const PROJECTION_SCHEMA: u32 = 1;
 /// Highest logical session format this adapter interprets. A newer format is
 /// held, not guessed: field meanings can change between generations.
 pub const MAX_LOG_VERSION: u64 = 4;
@@ -25,7 +28,7 @@ const HUMAN: &str = "user";
 
 /// One projected log record. Unused fields are ignored so a newer bridge can add
 /// metadata without breaking an older engine.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 pub struct Record {
     pub seq: Option<u64>,
     #[serde(rename = "type")]
@@ -39,6 +42,7 @@ pub struct Record {
 /// Why a projected run cannot become evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reason {
+    ProjectionSchema,
     HistoryVersion,
     Header,
     Sequence,
@@ -53,6 +57,7 @@ pub enum Reason {
 impl Reason {
     pub fn reason(self) -> &'static str {
         match self {
+            Self::ProjectionSchema => "unsupported_projection_schema",
             Self::HistoryVersion => "unsupported_history_version",
             Self::Header => "invalid_session_header",
             Self::Sequence => "invalid_session_sequence",
@@ -83,18 +88,29 @@ pub enum Capture {
 ///
 /// Discovery and capture read the same document, so a hint recorded before
 /// registration can resolve the exact run it names without a second reader.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, serde::Serialize)]
 pub struct Projection {
+    /// The bridge document revision, independent of DSH's session format.
+    schema: u32,
     header: Header,
     records: Vec<Record>,
 }
 impl Projection {
     pub fn parse(bytes: &[u8]) -> Result<Self> {
-        Ok(serde_json::from_slice(bytes)?)
+        let projection: Self = serde_json::from_slice(bytes)?;
+        ensure!(
+            projection.schema == PROJECTION_SCHEMA,
+            "Unsupported bridge projection schema"
+        );
+        Ok(projection)
     }
     /// The working directory this session recorded.
     pub fn cwd(&self) -> Option<&str> {
         self.header.cwd.as_deref()
+    }
+    /// The session this projection describes.
+    pub fn session(&self) -> &str {
+        self.header.id.as_deref().unwrap_or_default()
     }
     /// Whether this session continues an earlier one as a resumed process.
     ///
@@ -160,7 +176,7 @@ struct Log {
     header: Header,
     records: Vec<Record>,
 }
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Header {
     #[serde(rename = "type")]
@@ -312,6 +328,10 @@ pub fn discover(path: &Path, cwd: &str, store: &str) -> Result<Vec<Discovered>> 
 /// `epoch` is the project's registration second. A turn that ended at or before
 /// it predates enablement and is excluded, matching Codex's baseline rule.
 pub fn decode(log: &Value, store: &str, cwd: &str, turn: u64, epoch: i64) -> Result<Capture> {
+    if log.get("schema").and_then(Value::as_u64) != Some(u64::from(PROJECTION_SCHEMA)) {
+        // The bridge's own document shape, not DSH's logical format.
+        return Ok(Capture::Unsupported(Reason::ProjectionSchema));
+    }
     let log = parse(log)?;
     if log.header.kind.as_deref() != Some("session") || log.header.version.is_none() {
         return Ok(Capture::Unsupported(Reason::Header));
@@ -451,9 +471,17 @@ pub fn decode(log: &Value, store: &str, cwd: &str, turn: u64, epoch: i64) -> Res
         if !unique {
             return Ok(Capture::Unsupported(Reason::DuplicateIdentity));
         }
+        // Normalized into the shared evidence item envelope: extraction builds
+        // its citation schema from a top-level string `id` and verifies support
+        // against the Codex vocabulary (`userMessage`, completed tool items).
+        // A raw DSH record has no top-level id, so an unnormalized bundle would
+        // admit only an empty candidate list.
         let item = serde_json::json!({
+            "id": item_id(identity, seq),
             "seq": seq,
-            "type": record.kind,
+            "type": item_type(record.kind.as_str()),
+            "ds_type": record.kind,
+            "status": item_status(record.kind.as_str(), data),
             "data": data,
         });
         bytes += serde_json::to_vec(&item).map_or(usize::MAX, |v| v.len());
@@ -504,6 +532,41 @@ pub fn decode(log: &Value, store: &str, cwd: &str, turn: u64, epoch: i64) -> Res
 /// result is identified by the call it answers, which also survives an outer
 /// `id` added by projection metadata. Preferring an outer `id` would let one
 /// turn's envelope collide with another record's native identity.
+/// The evidence item id: the native projection identity, kept unique per turn
+/// because a turn is the whole evidence scope.
+fn item_id(identity: &str, seq: u64) -> String {
+    format!("{identity}@{seq}")
+}
+/// The shared evidence vocabulary an extraction run understands.
+///
+/// DSH's own names never matched the predicates extraction checks, so a tool
+/// result could not stand as observed support even if it had been citable.
+fn item_type(kind: &str) -> &'static str {
+    match kind {
+        "user/message" => "userMessage",
+        "assistant/message" => "agentMessage",
+        "developer/message" => "hookPrompt",
+        "tool/call" => "toolCall",
+        "tool/result" => "commandExecution",
+        _ => "other",
+    }
+}
+/// A tool result's status, read from the recorded message, or `None`.
+fn item_status(kind: &str, data: &Value) -> Option<&'static str> {
+    if kind != "tool/result" {
+        return None;
+    }
+    Some(
+        match data
+            .get("message")
+            .and_then(|m| m.get("isError"))
+            .and_then(Value::as_bool)
+        {
+            Some(true) => "failed",
+            _ => "completed",
+        },
+    )
+}
 fn projected_identity(record: &Record) -> Option<&str> {
     let data = record.data.as_ref()?;
     text(match record.kind.as_str() {
@@ -580,8 +643,11 @@ fn turn_of(record: &Record) -> Option<u64> {
         .and_then(|d| d.get("turn"))
         .and_then(Value::as_u64)
 }
+/// A record's committed time in Unix **seconds**, the unit the engine's
+/// enablement epoch uses. DSH commits milliseconds; comparing them directly
+/// would make every enablement check false and admit pre-registration turns.
 fn record_time(record: &Record) -> Option<i64> {
-    record.time
+    record.time.map(|millis| millis / 1000)
 }
 fn start_seq_of(log: &Log, turn: u64) -> u64 {
     log.records
