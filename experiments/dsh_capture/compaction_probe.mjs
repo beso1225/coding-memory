@@ -15,7 +15,7 @@ export const name = 'coding-memory-compaction-probe'
 /** Services required to find the agent and condense its history. */
 export const inject = ['commands']
 /** Marker a bridge reads to wait for the compaction this probe is about to run. */
-export const COMPACTION_REQUEST = 'coding-memory/compaction-requested' 
+export const COMPACTION_REQUEST = 'coding-memory/compaction-requested'
 
 /**
  * Mount the driver.
