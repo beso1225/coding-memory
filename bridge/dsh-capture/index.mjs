@@ -21,7 +21,7 @@
 
 import { spawn } from 'node:child_process'
 import { mkdir, rename, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 
 /** Cordis plugin name. */
 export const name = 'coding-memory-capture'
@@ -37,10 +37,27 @@ export const Config = {
     version: 1,
     vendor: 'coding-memory',
     validate(value) {
-      if (typeof value !== 'object' || value === null) {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
         return { issues: [{ message: 'config must be an object' }] }
       }
-      return { value }
+      const issues = []
+      for (const field of ['executable', 'stateDir', 'dshHome']) {
+        const given = value[field]
+        if (typeof given !== 'string' || given.length === 0) {
+          issues.push({ message: `${field} must be a non-empty string` })
+        } else if (!isAbsolute(given)) {
+          // A relative path resolves against the harness process's cwd, which
+          // is the user's project, not the installation.
+          issues.push({ message: `${field} must be an absolute path` })
+        } else if (/[\u0000-\u001f]/.test(given)) {
+          issues.push({ message: `${field} must not contain control characters` })
+        }
+      }
+      if (value.timeoutMs !== undefined
+        && !(typeof value.timeoutMs === 'number' && Number.isFinite(value.timeoutMs) && value.timeoutMs > 0)) {
+        issues.push({ message: 'timeoutMs must be a positive number' })
+      }
+      return issues.length > 0 ? { issues } : { value }
     },
   },
 }
@@ -158,7 +175,18 @@ export function apply(ctx, config) {
   const settleCompaction = (sessionId) => {
     const entry = compacting.get(String(sessionId))
     if (entry === undefined) return Promise.resolve()
-    return Promise.race([entry.done, new Promise(resolve => setTimeout(resolve, timeoutMs))])
+    // Clear the losing timer: an armed Node timer keeps the event loop alive
+    // and would otherwise delay teardown for the whole timeout after the
+    // compaction has already finished.
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        entry.done.then(() => resolve())
+      }, timeoutMs)
+      entry.done.then(() => {
+        clearTimeout(timer)
+        resolve()
+      })
+    })
   }
   /**
    * Wait for a compaction of this session: one already running, or one a

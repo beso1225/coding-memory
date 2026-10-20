@@ -423,7 +423,8 @@ pub async fn dsh(
                     state.hold_hint(&hint, "history_missing")?;
                     continue;
                 };
-                if turn.ended_at <= epoch {
+                // `ended_at` is milliseconds; the epoch is a second.
+                if turn.ended_at <= epoch.saturating_mul(1000) {
                     state.exclude(&hint, "before_enablement")?;
                     state.resolve_hint(&hint)?;
                     continue;
@@ -448,15 +449,12 @@ pub async fn dsh(
             project,
             turn,
         } => {
-            let p = project::resolve(project)?;
-            let cwd = session_cwd(&p, session)?;
             let projection = dsh::Projection::parse(&evidence::read_bounded(
                 session,
                 evidence::MAX_SOURCE_BYTES,
             )?)?;
-            // Claim the exact session this projection describes. Claiming the
-            // oldest run of the whole store would attach this projection's
-            // evidence to another session's run whenever both are queued.
+            // Claim first, so a run that cannot be captured is held with a
+            // reason instead of staying queued and being selected forever.
             let Some(claim) =
                 state.claim_session(Some(store), projection.session(), now(), 3600)?
             else {
@@ -469,6 +467,25 @@ pub async fn dsh(
                     queued: None,
                     baseline: None,
                 });
+            };
+            let (p, cwd) = match project::resolve(project)
+                .and_then(|p| session_cwd(&p, session).map(|cwd| (p, cwd)))
+            {
+                Ok(resolved) => resolved,
+                Err(_) => {
+                    // The recorded directory was deleted, moved, or now resolves
+                    // to another repository: hold it, do not re-queue it.
+                    state.hold(&claim, "project_mismatch", now())?;
+                    return Ok(DshReport {
+                        action: "capture",
+                        state: Some("held"),
+                        run: Some(claim.key),
+                        reason: Some("project_mismatch".into()),
+                        evidence: None,
+                        queued: None,
+                        baseline: None,
+                    });
+                }
             };
             if claim.key.thread != projection.session() {
                 state.hold(&claim, "projection_session_mismatch", now())?;

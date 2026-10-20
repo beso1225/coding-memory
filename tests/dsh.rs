@@ -446,6 +446,40 @@ fn record_times_are_compared_in_seconds() {
 }
 
 #[test]
+fn a_turn_ending_later_in_the_registration_second_is_captured() {
+    // The enablement epoch has second resolution; a turn that ends 500 ms after
+    // it began must not be excluded by truncating its millisecond timestamp.
+    let epoch = 1_700_000_000;
+    let mut value = log(vec![
+        turn_start(3, 1),
+        real_human(4),
+        turn_end(5, 1, json!({"kind": "completed"})),
+    ]);
+    for record in value["records"].as_array_mut().unwrap() {
+        record["time"] = json!(epoch * 1000 + 400);
+    }
+    // The fixture's turn/end is the last record.
+    {
+        let records = value["records"].as_array_mut().unwrap();
+        let last = records.len() - 1;
+        records[last]["time"] = json!(epoch * 1000 + 900);
+    }
+    assert!(
+        matches!(decode_at(&value, 1, epoch), Capture::Ready(_)),
+        "a post-registration turn inside the epoch second is valid work"
+    );
+    {
+        let records = value["records"].as_array_mut().unwrap();
+        let last = records.len() - 1;
+        records[last]["time"] = json!(epoch * 1000);
+    }
+    assert!(
+        matches!(decode_at(&value, 1, epoch), Capture::Excluded),
+        "a turn ending exactly at the epoch still predates enablement"
+    );
+}
+
+#[test]
 fn a_projection_must_declare_a_supported_bridge_schema() {
     let mut value = two_turn_log();
     value.as_object_mut().unwrap().remove("schema");
@@ -1274,6 +1308,69 @@ mod ingestion {
                 .map(|s| s.state.as_str()),
             Some("queued"),
             "re-registering must not baseline the queued post-enablement run"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_unresolvable_project_holds_the_claimed_run() -> anyhow::Result<()> {
+        // A recorded cwd that no longer resolves must be held with a reason,
+        // not re-queued and re-selected by every later capture attempt.
+        let (data, dsh) = runtime();
+        let (repo, _) = project(data.path());
+        let root = data.path().join("state");
+        std::fs::create_dir_all(&root)?;
+        let mut state = State::open(&root.join("state.sqlite"))?;
+        let store = ingestion::store_id(dsh.path())?;
+        let cwd = repo.to_str().unwrap().to_string();
+        let path = data.path().join("session.json");
+        session(&path, &cwd, 1);
+        ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Register {
+                session: path,
+                project: repo.clone(),
+            },
+            None,
+        )
+        .await?;
+        let later = (ingestion::now() + 5) * 1000;
+        let projection = data.path().join("gone.json");
+        projection_for(&projection, &cwd, "session-z", later);
+        let signal = json!({"kind":"turn-end","session":"session-z","turn":1,"cwd":cwd});
+        ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Enqueue,
+            Some(signal.to_string()),
+        )
+        .await?;
+        // The project directory disappears after the run was queued.
+        std::fs::remove_dir_all(&repo)?;
+        let report = ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Capture {
+                session: projection,
+                project: repo,
+                turn: None,
+            },
+            None,
+        )
+        .await?;
+        assert_eq!(report.reason.as_deref(), Some("project_mismatch"));
+        assert_eq!(
+            state
+                .status()?
+                .iter()
+                .find(|s| s.key.thread == "session-z")
+                .map(|s| s.state.as_str()),
+            Some("held"),
+            "the run is held instead of staying queued"
         );
         Ok(())
     }

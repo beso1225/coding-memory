@@ -385,13 +385,13 @@ pub fn decode(log: &Value, store: &str, cwd: &str, turn: u64, epoch: i64) -> Res
     let Some(end_seq) = end.seq else {
         return Ok(Capture::Unsupported(Reason::Sequence));
     };
-    let Some(ended_at) = record_time(end) else {
+    let Some(ended_ms) = end.millis() else {
         return Ok(Capture::Unsupported(Reason::TurnIdentity));
     };
     let Some(started_at) = record_time(start) else {
         return Ok(Capture::Unsupported(Reason::StartedAt));
     };
-    if ended_at < started_at {
+    if ended_ms / 1000 < started_at {
         return Ok(Capture::Unsupported(Reason::StartedAt));
     }
     let reason = match text(
@@ -404,9 +404,11 @@ pub fn decode(log: &Value, store: &str, cwd: &str, turn: u64, epoch: i64) -> Res
         Some("aborted") | Some("interrupted") => "interrupted",
         _ => return Ok(Capture::Unsupported(Reason::TurnEndReason)),
     };
-    if ended_at <= epoch {
+    // A turn ending in the same second but after registration is post-enablement.
+    if ended_ms <= epoch.saturating_mul(1000) {
         return Ok(Capture::Excluded);
     }
+    let ended_at = ended_ms / 1000;
     let mut ids = HashSet::new();
     let mut items = Vec::new();
     // The bound covers every projected record of the turn, including attempts
@@ -593,6 +595,9 @@ fn assert_identity(identity: &str, ids: &mut HashSet<String>) -> bool {
 /// opened by the nearest preceding `turn/start`. Scanning by attribute instead
 /// of by ownership leaves every real turn looking non-human.
 fn scan_turns(records: &[Record]) -> (HashSet<u64>, Vec<(u64, i64)>) {
+    // Ends are in milliseconds: an enablement boundary is second-resolution,
+    // and truncating first would exclude a turn that ended later in the same
+    // second as registration.
     let mut humans = HashSet::new();
     let mut ends = Vec::new();
     for record in records {
@@ -603,7 +608,7 @@ fn scan_turns(records: &[Record]) -> (HashSet<u64>, Vec<(u64, i64)>) {
         }
         if record.kind == "turn/end"
             && let Some(turn) = turn_of(record)
-            && let Some(ended) = record_time(record)
+            && let Some(ended) = record.millis()
         {
             ends.push((turn, ended));
         }
@@ -648,6 +653,12 @@ fn turn_of(record: &Record) -> Option<u64> {
 /// would make every enablement check false and admit pre-registration turns.
 fn record_time(record: &Record) -> Option<i64> {
     record.time.map(|millis| millis / 1000)
+}
+impl Record {
+    /// The committed time in milliseconds, as DSH records it.
+    fn millis(&self) -> Option<i64> {
+        self.time
+    }
 }
 fn start_seq_of(log: &Log, turn: u64) -> u64 {
     log.records

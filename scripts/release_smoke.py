@@ -55,6 +55,13 @@ def smoke(archive, version):
             library = line.strip().split(" (", 1)[0]
             if not library.startswith(("/usr/lib/", "/System/Library/")):
                 raise ValueError(f"Unexpected non-system library: {library}")
+        # The DSH capture bridge ships as a runtime dependency; a release user
+        # mounts it by absolute path, so it must be inside the version directory.
+        bridge = payload / "bridge" / "dsh-capture" / "index.mjs"
+        if not bridge.is_file():
+            raise ValueError("Missing archive content: bridge/dsh-capture/index.mjs")
+        if "export function apply" not in bridge.read_text():
+            raise ValueError("Packaged bridge is not the capture plugin")
         print(linkage)
         build = subprocess.check_output(["/usr/bin/vtool", "-show-build", binary], text=True)
         minimum = [line.split()[1] for line in build.splitlines() if line.strip().startswith("minos ")]

@@ -40,7 +40,10 @@ gh release download v0.1.0 --repo beso1225/coding-memory \
   --pattern coding-memory-aarch64-apple-darwin.tar.gz --pattern SHA256SUMS
 ```
 
-Keep the whole version directory, including licenses and `release-notices/`.
+Keep the whole version directory, including licenses, `release-notices/`, and
+`bridge/dsh-capture/`. The bridge is a runtime dependency: DeepSeek Harness
+capture mounts it from the installed version directory, so a copy that omits it
+cannot capture DSH runs.
 Add `$HOME/.local/bin` to your shell PATH if needed. Checksums detect corruption;
 they are not an independent publisher signature. Initial builds have no Apple
 Developer ID signature or notarization. Honor macOS security prompts and inspect

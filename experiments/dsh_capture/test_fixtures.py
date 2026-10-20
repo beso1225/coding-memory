@@ -76,6 +76,25 @@ class DshFixture(unittest.TestCase):
         self.assertIn("export function projectRecord", source)
         self.assertIn("records: events.map(projectRecord)", source)
 
+    def test_bridge_config_requires_absolute_paths(self):
+        import json as jsonlib
+        import subprocess
+        script = (
+            "const { Config } = await import(process.argv[1]);"
+            "const v = (c) => JSON.stringify(Config['~standard'].validate(c).issues?.map(i => i.message) ?? []);"
+            "console.log(v({}) + '\\n' + v({ executable: 'relative', stateDir: '/s', dshHome: '/h' })"
+            " + '\\n' + v({ executable: '/e', stateDir: '/s', dshHome: '/h' })"
+            " + '\\n' + v({ executable: '/e', stateDir: '/s', dshHome: '/h', timeoutMs: -1 }));"
+        )
+        output = subprocess.run(
+            ["node", "--input-type=module", "-e", script, str(BRIDGE)],
+            capture_output=True, text=True, check=True,
+        ).stdout.splitlines()
+        self.assertEqual(len(jsonlib.loads(output[0])), 3, "empty config names all three paths")
+        self.assertEqual(jsonlib.loads(output[1]), ["executable must be an absolute path"])
+        self.assertEqual(jsonlib.loads(output[2]), [], "valid config is accepted")
+        self.assertEqual(jsonlib.loads(output[3]), ["timeoutMs must be a positive number"])
+
     def test_bridge_exports_compaction_wait(self):
         source = BRIDGE.read_text()
         self.assertIn("COMPACTION_SETTLE_MS", source)

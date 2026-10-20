@@ -12,4 +12,14 @@ unix-archive = ".tar.gz"
 checksum = "sha256"
 source-tarball = false
 auto-includes = false
-include = ["README.md", "LICENSE-MIT", "LICENSE-APACHE", "docs/install.md", "target/release-notices"]
+include = [
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+    "docs/install.md",
+    "docs/dsh-capture-experiment.md",
+    "target/release-notices",
+    # The DSH capture bridge is a runtime dependency: release-installed users
+    # mount it by absolute path, so it ships inside the version directory.
+    "bridge/dsh-capture",
+]
