@@ -429,20 +429,12 @@ export function apply(ctx, config) {
           reason: event.data.reason.kind,
         })
         if (Buffer.byteLength(signal) > MAX_SIGNAL_BYTES) return
-        // Start the read immediately, one microtask past the commit, then hint
-        // the engine. Starting earlier (inside the commit) or later (after the
-        // engine subprocess exits, near teardown) both fail: see the experiment
-        // report. A failed read leaves the run queued for a documented reconcile.
-        // Wait out a compaction of this session (bounded), then read: one
-        // microtask past the commit is the timing that keeps the service live.
-        // Read one microtask past the commit (the timing that keeps the service
-        // live), but let a compaction that is running or about to run finish
-        // first: reading mid-compaction would record an unfinished bracket, and
-        // reading first would miss the compaction this turn is part of.
-        // The read starts one microtask after the commit. Compaction intent is
-        // rechecked there: a producer whose listener runs after this bridge's
-        // announces it later in the same dispatch, so the check must not happen
-        // here, where listener order would decide the outcome.
+        // The read starts one microtask past the commit: starting inside the
+        // commit, or after the hint subprocess exits near teardown, both fail
+        // (see the experiment report). Compaction intent is rechecked in that
+        // microtask, because a producer whose `turn/end` listener runs after
+        // this bridge's announces it later in the same dispatch. A failed read
+        // leaves the hinted run queued for a documented reconcile.
         const started = Promise.resolve()
           .then(() => waitForCompaction(session.id))
           .then(() => ctx.sessionQuery.readSession(session.id))
@@ -459,6 +451,13 @@ export function apply(ctx, config) {
           .then((queued) => {
             if (queued.code !== 0) {
               warn(`enqueue failed for turn ${turn}: ${queued.output.slice(0, 500)}`)
+              return
+            }
+            const hint = parseReport(queued.output)
+            if (hint.state === 'deferred') {
+              // The project is not registered yet: the hint is kept, but no run
+              // is queued, so capture would only report `no_ready_run`.
+              warn(`turn ${turn} is queued for later (${hint.reason ?? 'project not registered'}); run reconcile after registering the project`)
               return
             }
             captureTurn(session.id, turn, read)

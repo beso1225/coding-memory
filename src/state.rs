@@ -57,6 +57,12 @@ impl State {
         )?;
         let version: i64 = db.query_row("SELECT version FROM schema_version", [], |r| r.get(0))?;
         ensure!(version == 1, "Unsupported state schema {version}");
+        let projects_exist: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='projects')",
+            [],
+            |row| row.get(0),
+        )?;
+        Self::migrate_v1(&db, projects_exist)?;
         db.execute_batch("CREATE TABLE IF NOT EXISTS runtime_checks(digest TEXT NOT NULL,fixture TEXT NOT NULL,binary TEXT NOT NULL,version TEXT NOT NULL,state TEXT NOT NULL,last_result TEXT,checked_at INTEGER,available_at INTEGER NOT NULL,lease_until INTEGER,token INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(digest,fixture));
             CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, repository TEXT NOT NULL UNIQUE, enabled_at INTEGER NOT NULL, enabled_ms INTEGER);
             CREATE TABLE IF NOT EXISTS owned_stores(id TEXT PRIMARY KEY);
@@ -104,6 +110,29 @@ impl State {
         );
         Ok(())
     }
+    /// Bring a schema-version-1 database up to the columns this build reads.
+    ///
+    /// `CREATE TABLE IF NOT EXISTS` never alters an existing table, so a column
+    /// added later must be added explicitly: otherwise an upgraded installation
+    /// fails when it selects it, and registering a project fails on the insert.
+    fn migrate_v1(db: &Connection, projects_exist: bool) -> Result<()> {
+        // A fresh database has no table yet: the schema below creates it with
+        // the column, so there is nothing to migrate.
+        if !projects_exist {
+            return Ok(());
+        }
+        let mut statement = db.prepare("PRAGMA table_info(projects)")?;
+        let columns: Vec<String> = statement
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<_, _>>()?;
+        if !columns.iter().any(|column| column == "enabled_ms") {
+            // Rows written before this column existed keep no exact instant;
+            // readers fall back to their whole-second epoch.
+            db.execute("ALTER TABLE projects ADD COLUMN enabled_ms INTEGER", [])?;
+        }
+        Ok(())
+    }
+
     /// The exact registration instant in milliseconds, when recorded.
     ///
     /// Enabling a project inside one second would otherwise admit every run that

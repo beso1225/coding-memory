@@ -89,6 +89,12 @@ def main():
     parser.add_argument("--keep", action="store_true", help="keep the synthetic root for inspection")
     args = parser.parse_args()
 
+    # Resolve the engine once: the bridge schema requires an absolute executable,
+    # and every invocation runs from the synthetic project rather than the
+    # repository root, where a relative path would not resolve.
+    engine_binary = Path(args.engine).expanduser().resolve()
+    if not engine_binary.is_file():
+        raise SystemExit(f"engine executable not found: {engine_binary}")
     root = Path(tempfile.mkdtemp(prefix="coding-memory-dsh-"))
     # Canonicalize: the engine resolves a Git repository through git (realpath),
     # so a project path with a symlinked ancestor would register a different id
@@ -178,7 +184,7 @@ def main():
         "    - id: coding-memory-capture\n"
         f"      name: '{BRIDGE}'\n"
         "      config:\n"
-        f"        executable: '{args.engine}'\n"
+        f"        executable: '{engine_binary}'\n"
         f"        stateDir: '{state}'\n"
         f"        dshHome: '{home}'\n"
         "        timeoutMs: 30000\n"
@@ -203,14 +209,14 @@ def main():
     # 1. Registration reads one session projection, which only exists after at
     # least one run. The bridge captures that run; it is the only turn that
     # predates the epoch, so registration's baseline excludes it.
-    engine = [args.engine, "--state-dir", str(state), "dsh", "--dsh-home", str(home)]
-    record["engine"] = [str(Path(args.engine).resolve()), str(state), str(home)]
+    engine = [str(engine_binary), "--state-dir", str(state), "dsh", "--dsh-home", str(home)]
+    record["engine"] = [str(engine_binary), str(state), str(home)]
 
     first = headless()
     record["runs"].append({"name": "baseline", "exit": first.returncode, "stream": first.stdout.splitlines()})
     record["first_stderr"] = first.stderr.splitlines()[-20:]
     time.sleep(2)
-    probe = run([args.engine, "--state-dir", str(state), "status"], project)
+    probe = run([str(engine_binary), "--state-dir", str(state), "status"], project)
     record["status_after_first"] = (probe.stdout or probe.stderr).strip()[:400]
     time.sleep(3)
     # Locate the projection of the session this run actually executed: a stale
@@ -239,13 +245,13 @@ def main():
     record["runs"].append({"name": "resume" if args.resume else "after", "exit": second.returncode, "stream": second.stdout.splitlines()})
     record["second_stderr"] = second.stderr.splitlines()[-20:]
     time.sleep(3)
-    probe = run([args.engine, "--state-dir", str(state), "status"], project)
+    probe = run([str(engine_binary), "--state-dir", str(state), "status"], project)
     record["status_after_second"] = (probe.stdout or probe.stderr).strip()[:400]
     # The bridge captures right after `turn/end`; allow the child process to
     # finish before reading status.
     time.sleep(3)
 
-    status = run([args.engine, "--state-dir", str(state), "status"], project)
+    status = run([str(engine_binary), "--state-dir", str(state), "status"], project)
     record["status"] = json.loads(status.stdout) if status.returncode == 0 else status.stderr
 
     projections = sorted((state / "dsh" / "projections").glob("*.json"))

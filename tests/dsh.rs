@@ -883,6 +883,60 @@ fn enqueue_signal_requires_known_turn_number_and_cwd() {
     assert!(dsh::signal(&bad_kind, "storedigest").is_err());
 }
 
+mod migration {
+    use coding_memory::state::State;
+    use rusqlite::Connection;
+    use tempfile::tempdir;
+
+    #[test]
+    fn a_schema_v1_database_gains_the_enabled_ms_column() -> anyhow::Result<()> {
+        // `CREATE TABLE IF NOT EXISTS` never alters an existing table, so an
+        // upgraded installation needs an explicit column migration; without it
+        // every DSH read and every project registration fails on the new column.
+        let dir = tempdir()?;
+        let path = dir.path().join("state.sqlite");
+        {
+            let db = Connection::open(&path)?;
+            db.execute_batch(
+                "CREATE TABLE schema_version(version INTEGER NOT NULL);
+                 INSERT INTO schema_version VALUES(1);
+                 CREATE TABLE projects(id TEXT PRIMARY KEY, repository TEXT NOT NULL UNIQUE, enabled_at INTEGER NOT NULL);
+                 INSERT INTO projects VALUES('p','/repo',10);",
+            )?;
+        }
+        let state = State::open(&path)?;
+        assert_eq!(state.project_epoch("p")?, 10);
+        assert_eq!(
+            state.project_epoch_ms("p")?,
+            None,
+            "a pre-migration row falls back to its whole-second epoch"
+        );
+        // A newly registered project records the exact instant.
+        state_register(&path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_fresh_database_opens_and_registers() -> anyhow::Result<()> {
+        // The migration runs before the schema is created, so it must tolerate
+        // a database with no `projects` table at all.
+        let dir = tempdir()?;
+        let path = dir.path().join("state.sqlite");
+        let mut state = State::open(&path)?;
+        state.register_project("fresh", "/repo", 1)?;
+        assert_eq!(state.project_epoch("fresh")?, 1);
+        assert!(state.project_epoch_ms("fresh")?.is_some());
+        Ok(())
+    }
+
+    fn state_register(path: &std::path::Path) -> anyhow::Result<()> {
+        let mut state = State::open(path)?;
+        state.register_project("q", "/repo2", 20)?;
+        assert!(state.project_epoch_ms("q")?.is_some());
+        Ok(())
+    }
+}
+
 mod ingestion {
     use coding_memory::{
         domain::RunKey,
