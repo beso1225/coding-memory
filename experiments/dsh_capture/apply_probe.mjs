@@ -68,7 +68,7 @@ const ctx = {
   },
 }
 
-bridge.apply(ctx, { executable: stub, stateDir, dshHome: stateDir, timeoutMs: 2000 })
+bridge.apply(ctx, { executable: stub, stateDir, dshHome: stateDir, timeoutMs: 10000 })
 for (const listener of topLevel.get('agent/created') ?? []) listener({ agent })
 if (sessionListeners.length !== 1) {
   console.error(`expected one session listener, got ${sessionListeners.length}`)
