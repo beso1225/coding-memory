@@ -99,6 +99,41 @@ export function projectRecord(record) {
 }
 
 /**
+ * Project one capture, bounded to the turn it names.
+ *
+ * A long-lived session's complete log eventually exceeds the projection bound,
+ * and compaction keeps every raw event, so the whole-session projection would
+ * permanently disable capture for that session. The engine only reads one
+ * turn's window, so the projection keeps the session header, the bookkeeping
+ * before the turn, the turn's own records, and the bracket that follows it, and
+ * drops earlier turns the engine never needs.
+ * @param header - replay-validated session header.
+ * @param events - the complete raw log.
+ * @param turn - the turn this capture names.
+ * @returns the projection text, within {@link MAX_PROJECTION_BYTES}.
+ */
+export function projectForCapture(header, events, turn) {
+  const whole = project(header, events)
+  if (Buffer.byteLength(JSON.stringify(whole)) <= MAX_PROJECTION_BYTES) return JSON.stringify(whole)
+  const owned = (event) => event.type === 'turn/start' && event.data?.turn === turn
+  const closes = (event) => event.type === 'turn/end' && event.data?.turn === turn
+  const start = events.findIndex(owned)
+  if (start < 0) return JSON.stringify(whole)
+  const end = events.findIndex((event, index) => index > start && closes(event))
+  const stop = end < 0 ? events.length : end + 1
+  const head = events.slice(0, start).filter(event => event.type !== 'user/message'
+    && event.type !== 'assistant/message' && event.type !== 'tool/call' && event.type !== 'tool/result')
+  const tail = events.slice(stop).filter(event => event.type.startsWith('command/')
+    || event.type.startsWith('compaction/'))
+  const bounded = project(header, [...head, ...events.slice(start, stop), ...tail])
+  const text = JSON.stringify(bounded)
+  if (Buffer.byteLength(text) > MAX_PROJECTION_BYTES) {
+    throw new Error('turn projection exceeds the bridge bound')
+  }
+  return text
+}
+
+/**
  * Refuse a projection DSH could not replay itself.
  *
  * The engine only ever sees the projection, so it cannot validate replay
@@ -263,9 +298,11 @@ export function apply(ctx, config) {
     started
       .then(async ({ session, events }) => {
         if (session.cwd === undefined) return
-        const text = JSON.stringify(project(session, events))
-        if (Buffer.byteLength(text) > MAX_PROJECTION_BYTES) throw new Error('projection exceeds the bridge bound')
-        const path = join(stateDir, 'dsh', 'projections', `${sessionId}.json`)
+        // A destination unique to this capture: an overlapping handler for an
+        // older turn must not replace the file this engine process is about to
+        // read, which would decode the newer turn as pending.
+        const path = join(stateDir, 'dsh', 'projections', `${sessionId}.${turn}.json`)
+        const text = projectForCapture(session, events, turn)
         await publish(path, text)
         const result = await run([
           '--state-dir', stateDir, 'dsh', '--dsh-home', dshHome,

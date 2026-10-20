@@ -129,14 +129,9 @@ impl State {
         cwd: &str,
         now: i64,
     ) -> Result<Enqueue> {
-        let result = self.enqueue(key, project, cwd, now)?;
-        if result != Enqueue::Excluded {
-            self.db.execute(
-                "INSERT OR IGNORE INTO capture_hints VALUES(?1,?2,?3,?4)",
-                params![key.store, key.thread, key.turn, now],
-            )?;
-        }
-        Ok(result)
+        // One transaction: a crash between the two writes would leave a queued
+        // run that capture permanently holds as `no_capture_hint`.
+        self.enqueue_in(key, project, cwd, now, true)
     }
     /// Record a hint for a project that is not registered yet.
     ///
@@ -198,7 +193,23 @@ impl State {
         )?)
     }
     pub fn enqueue(&mut self, key: &RunKey, project: &str, cwd: &str, now: i64) -> Result<Enqueue> {
-        let tx = self.db.transaction()?;
+        // Reconciliation queues work but never authorizes capture: only a live
+        // hint does, so this path records no hint.
+        self.enqueue_in(key, project, cwd, now, false)
+    }
+    /// Queue one run, and record its capture hint when the caller is a live
+    /// runtime, in a single transaction.
+    fn enqueue_in(
+        &mut self,
+        key: &RunKey,
+        project: &str,
+        cwd: &str,
+        now: i64,
+        hint: bool,
+    ) -> Result<Enqueue> {
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let excluded: bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM owned_stores WHERE id=?1) OR EXISTS(SELECT 1 FROM exclusions WHERE store=?1 AND thread=?2 AND turn=?3)",params![key.store,key.thread,key.turn],|r|r.get(0))?;
         if excluded {
             return Ok(Enqueue::Excluded);
@@ -210,6 +221,12 @@ impl State {
             |r| r.get(0),
         )?;
         ensure!(p == project, "Conflicting run project association");
+        if hint {
+            tx.execute(
+                "INSERT OR IGNORE INTO capture_hints VALUES(?1,?2,?3,?4)",
+                params![key.store, key.thread, key.turn, now],
+            )?;
+        }
         tx.commit()?;
         Ok(if inserted == 1 {
             Enqueue::Inserted
@@ -232,8 +249,24 @@ impl State {
         now: i64,
         lease: i64,
     ) -> Result<Option<Claim>> {
+        self.claim_session_turn(store, thread, None, now, lease)
+    }
+    /// Claim one session's run, optionally pinned to an exact turn.
+    ///
+    /// Pinning keeps a `capture --turn N` from leasing a different queued run of
+    /// the same session, which would hold it `capturing` for the lease duration
+    /// even though this command can never use it.
+    pub fn claim_session_turn(
+        &mut self,
+        store: Option<&str>,
+        thread: &str,
+        turn: Option<&str>,
+        now: i64,
+        lease: i64,
+    ) -> Result<Option<Claim>> {
         let session = format!("/{thread}");
-        self.claim_matching(store, Some(&session), now, lease)
+        let turn = turn.map(|turn| format!("/{turn}"));
+        self.claim_matching(store, Some(&session), turn.as_deref(), now, lease)
     }
     pub fn claim_store(
         &mut self,
@@ -241,13 +274,14 @@ impl State {
         now: i64,
         lease: i64,
     ) -> Result<Option<Claim>> {
-        self.claim_matching(store, None, now, lease)
+        self.claim_matching(store, None, None, now, lease)
     }
     /// Claim by store and an optional `"/<thread>"` filter (SQL parameter only).
     fn claim_matching(
         &mut self,
         store: Option<&str>,
         thread: Option<&str>,
+        turn: Option<&str>,
         now: i64,
         lease: i64,
     ) -> Result<Option<Claim>> {
@@ -259,7 +293,7 @@ impl State {
             .db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute("UPDATE runs SET state='held',reason='excluded' WHERE state IN ('queued','capturing') AND (EXISTS(SELECT 1 FROM owned_stores o WHERE o.id=runs.store) OR EXISTS(SELECT 1 FROM exclusions e WHERE e.store=runs.store AND e.thread=runs.thread AND e.turn=runs.turn))",[])?;
-        let claim=tx.query_row("SELECT store,thread,turn,project,cwd,token+1,attempts+1 FROM runs WHERE ((state='queued' AND available_at<=?1) OR (state='capturing' AND lease_until<=?1)) AND (?2 IS NULL OR store=?2) AND (?3 IS NULL OR ('/'||thread)=?3) ORDER BY available_at,store,thread,turn LIMIT 1",params![now,store,thread],|r|Ok(Claim {key:RunKey{store:r.get(0)?,thread:r.get(1)?,turn:r.get(2)?},project:r.get(3)?,cwd:r.get(4)?,token:r.get(5)?,attempts:r.get(6)?})).optional()?;
+        let claim=tx.query_row("SELECT store,thread,turn,project,cwd,token+1,attempts+1 FROM runs WHERE ((state='queued' AND available_at<=?1) OR (state='capturing' AND lease_until<=?1)) AND (?2 IS NULL OR store=?2) AND (?3 IS NULL OR ('/'||thread)=?3) AND (?4 IS NULL OR ('/'||turn)=?4) ORDER BY available_at,store,thread,turn LIMIT 1",params![now,store,thread,turn],|r|Ok(Claim {key:RunKey{store:r.get(0)?,thread:r.get(1)?,turn:r.get(2)?},project:r.get(3)?,cwd:r.get(4)?,token:r.get(5)?,attempts:r.get(6)?})).optional()?;
         if let Some(c) = &claim {
             tx.execute("UPDATE runs SET state='capturing',lease_until=?4,token=?5,attempts=attempts+1 WHERE store=?1 AND thread=?2 AND turn=?3",params![c.key.store,c.key.thread,c.key.turn,until,c.token])?;
         }

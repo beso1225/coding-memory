@@ -115,12 +115,42 @@ class DshFixture(unittest.TestCase):
             ["node", "--input-type=module", "-e", script, str(BRIDGE)],
             capture_output=True, text=True, check=True,
         ).stdout.strip()
-        self.assertEqual(jsonlib.loads(output), {"text": "C", "left": 0}, "a concurrent publish leaves no temporary file")
+        result = jsonlib.loads(output)
+        # Concurrent renames complete in any order, so the final file is one
+        # complete member of the input set: never a torn or mixed document.
+        self.assertIn(result["text"], {"A", "B", "C"}, "concurrent publishes never tear")
+        self.assertEqual(result["left"], 0, "a concurrent publish leaves no temporary file")
         source = BRIDGE.read_text()
         self.assertIn("randomUUID()}.tmp", source)
         # A bracket that never closes must not block capture forever.
         self.assertIn("did not finish within", source)
         self.assertIn("compacting.delete(id)", source)
+
+    def test_bridge_bounds_a_long_session_projection(self):
+        import json as jsonlib
+        import subprocess
+        script = (
+            "const { projectForCapture } = await import(process.argv[1]);"
+            "const header = { version: 4, id: 's', createdAt: 1, cwd: '/repo', isSeeded: false };"
+            "const big = 'x'.repeat(1 << 20); const events = []; let seq = 0;"
+            "const add = (type, data) => events.push({ seq: seq++, type, time: 1000 + seq, data });"
+            "for (let turn = 1; turn <= 20; turn++) {"
+            " add('turn/start', { turn });"
+            " add('user/message', { id: 'm' + turn, role: 'user', content: [{ type: 'text', text: turn === 20 ? 'hi' : big }], source: { kind: 'user' } });"
+            " add('assistant/message', { turn, step: 1, message: { id: 'a' + turn, role: 'assistant', content: [{ type: 'text', text: 'ok' }], source: { kind: 'model', provider: 'p', model: 'm' } } });"
+            " add('turn/end', { turn, reason: { kind: 'completed' } }); }"
+            "const text = projectForCapture(header, events, 20);"
+            "const doc = JSON.parse(text);"
+            "console.log(JSON.stringify({ bytes: Buffer.byteLength(text), last: doc.records.at(-1) }));"
+        )
+        output = subprocess.run(
+            ["node", "--input-type=module", "-e", script, str(BRIDGE)],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        result = jsonlib.loads(output)
+        self.assertLess(result["bytes"], 16 * 1024 * 1024, "a 19 MiB session projects within the bound")
+        self.assertEqual(result["last"]["type"], "turn/end")
+        self.assertEqual(result["last"]["data"]["turn"], 20)
 
     def test_bridge_exports_compaction_wait(self):
         source = BRIDGE.read_text()

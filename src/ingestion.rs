@@ -455,8 +455,14 @@ pub async fn dsh(
             )?)?;
             // Claim first, so a run that cannot be captured is held with a
             // reason instead of staying queued and being selected forever.
-            let Some(claim) =
-                state.claim_session(Some(store), projection.session(), now(), 3600)?
+            let requested = turn.map(|turn| turn.to_string());
+            let Some(claim) = state.claim_session_turn(
+                Some(store),
+                projection.session(),
+                requested.as_deref(),
+                now(),
+                3600,
+            )?
             else {
                 return Ok(DshReport {
                     action: "capture",
@@ -589,6 +595,14 @@ fn dsh_capture(
             state.finish(claim, &bundle.outcome, Some(&digest), now())?;
             report.state = Some(state_name);
             report.evidence = Some(digest);
+        }
+        Capture::Pending if claim.attempts >= 60 => {
+            // The same bounded exhaustion the Codex reader applies: a
+            // projection that never records the turn's end becomes inspectable
+            // instead of retrying forever.
+            state.hold(claim, "history_readiness_exhausted", now())?;
+            report.state = Some("held");
+            report.reason = Some("history_readiness_exhausted".into());
         }
         Capture::Pending => {
             state.defer(claim, "history_pending", now(), 10)?;

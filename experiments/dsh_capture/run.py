@@ -100,6 +100,8 @@ def main():
     project.mkdir()
     home.mkdir()
     state.mkdir()
+    # Credentials passed as NAME=value only reach the child environment.
+    env_keys = {}
     for entry in args.credentials:
         if "=" in entry:
             name, value = entry.split("=", 1)
@@ -121,7 +123,6 @@ def main():
     git(project, "commit", "-qm", "init")
 
     env = {k: v for k, v in os.environ.items() if k not in ("OLLAMA_CLOUD_API_KEY", "DEEPSEEK_API_KEY")}
-    env_keys = {}
     env["DSH_HOME"] = str(home)
 
     route = ""

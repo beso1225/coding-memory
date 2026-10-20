@@ -30,7 +30,7 @@ what DSH source appears to promise.
 
 | Run | Turn | End | Captured | Evidence items |
 | --- | --- | --- | --- | --- |
-| baseline, plain reply (the first session of the script) | 1 | `completed` | `ready` after registering that session; later registration excludes it as the baseline | — |
+| baseline, plain reply (the first session of the script) | 1 | `completed` | excluded: its hint is recorded before registration, and `register` then baselines that turn, so `reconcile` resolves the hint without queueing it | — |
 | after, plain reply | 1 | `completed` | `ready` | `user/message`, `assistant/message` |
 | after, tool use | 1 | `completed` | `ready` | `user/message`, `assistant/message`, `tool/call`, `tool/result`, `assistant/message` |
 
@@ -69,7 +69,7 @@ silently holding production runs.
 | Is `turn/end` recorded for a failed step? | Yes. The log ends `step/end` → `turn/end {turn: 1, reason: {kind: "error", error: {code: "MISSING_CREDENTIAL"}}}`. |
 | Does `turn/end` fire on `session/event`? | Yes, in the same process, after the event is committed to the live log. |
 | Is the persisted log complete when the process exits? | Yes. The headless runner awaits `sessions.flush(agent.session)` before exiting, so a reader started afterwards sees the whole turn. |
-| Is the persisted log complete *at* `turn/end`? | Not guaranteed. `session/event` is fire-and-forget and `turn/end` does not wait for persistence. The bridge therefore never reads at `turn/end`; it only writes a completion hint and lets the engine read the session. |
+| Is the persisted log complete *at* `turn/end`? | Not guaranteed: `session/event` is fire-and-forget and `turn/end` does not wait for persistence. The bridge nevertheless reads there, because the harness may deactivate its services as soon as the run ends. It starts `sessionQuery.readSession` one microtask after the commit (before the hint subprocess runs), publishes a per-turn projection, and calls `capture`; a failed read leaves the hinted run queued for `reconcile`. |
 | What does a user-role event look like? | `user/message` events carry `source.kind`. One headless turn produced four user-role events: one `user` and three harness-injected context messages. A long interactive session showed the same pattern (`time-context`, `agent-instructions`, `runtime-context`, `skill-catalog`). A human run is identified by `source.kind === "user"`, never by role or count. |
 | What event vocabulary appears? | `permission/preset`, `sandbox/mode`, `approval/policy`, `agent/inbox/spliced`, `turn/start`, `step/start`, `system/message`, `user/message`, `request/header`, `request/context`, `session/title`, `session/title-llm-request`, `assistant/attempt`, `step/end`, `turn/end`, plus `tool/call` and `tool/result` in tool-using sessions. |
 | Are records contiguous? | Yes in every observed session: `seq` starts at 0 and increases by one per record. The adapter still verifies this instead of assuming it. |
@@ -85,11 +85,16 @@ directory) is an out-of-tree Cordis plugin:
 - On each `turn/end` of a non-forked, non-subagent session it spawns
   `coding-memory dsh enqueue` with a bounded hint. This is a hint only: the
   engine re-reads the session and decides.
-- On agent disposal it reads the session through `ctx.sessionQuery.readSession`,
-  writes an atomically published projection, and runs `coding-memory dsh capture`.
+- On each `turn/end` it reads the session through `ctx.sessionQuery.readSession`,
+  writes an atomically published per-turn projection, and runs
+  `coding-memory dsh capture --turn N`. A failed read leaves the hinted run
+  queued for a documented reconcile instead of capturing a later snapshot.
 - It projects only replay-validated logical events, so the engine never parses
-  the zstd JSONL files, follows format migrations, or pins a storage layout. The
-  plugin is dependency-free.
+  the zstd JSONL files, follows format migrations, or pins a storage layout. A
+  session whose whole log exceeds the projection bound is projected down to the
+  named turn (the header, bookkeeping, the turn's records, and any compaction
+  bracket after it), so a long-lived session stays capturable. The plugin is
+  dependency-free.
 
 Two failure modes were found and fixed during this experiment:
 

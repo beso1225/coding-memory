@@ -856,6 +856,14 @@ mod ingestion {
         let p = coding_memory::project::resolve(&repo).unwrap();
         (repo.canonicalize().unwrap(), p.id)
     }
+    /// A projection for one session id.
+    fn session_as(path: &Path, cwd: &str, turns: u64, id: &str) {
+        session(path, cwd, turns);
+        let mut document: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        document["header"]["id"] = serde_json::json!(id);
+        std::fs::write(path, serde_json::to_vec(&document).unwrap()).unwrap();
+    }
+
     fn session(path: &Path, cwd: &str, turns: u64) {
         let mut records =
             vec![json!({"seq":0,"type":"permission/preset","time":1,"data":{"preset":"default"}})];
@@ -1180,6 +1188,24 @@ mod ingestion {
             "the hinted run is already queued"
         );
         Ok(())
+    }
+
+    /// A projection with two completed human turns, both after `time_ms`.
+    fn two_turn_projection(path: &Path, cwd: &str, session: &str, time_ms: i64) {
+        let mut records = Vec::new();
+        for turn in 1..=2 {
+            records.push(json!({"seq":records.len(),"type":"turn/start","time":time_ms,"data":{"turn":turn}}));
+            records.push(json!({"seq":records.len(),"type":"user/message","time":time_ms+turn,"surfaceOp":"append","data":{
+                "id":format!("m{turn}"),"role":"user","content":[{"type":"text","text":"work"}],"source":{"kind":"user"}}}));
+            records.push(json!({"seq":records.len(),"type":"assistant/message","time":time_ms+turn,"surfaceOp":"append","data":{
+                "turn":turn,"step":1,"message":{"id":format!("a{turn}"),"role":"assistant","content":[{"type":"text","text":"done"}],
+                "source":{"kind":"model","provider":"p","model":"m"}}}}));
+            records.push(json!({"seq":records.len(),"type":"turn/end","time":time_ms+turn,"data":{"turn":turn,"reason":{"kind":"completed"}}}));
+        }
+        let document = json!({"schema":1,"header":{
+            "type":"session","version":4,"id":session,"createdAt":time_ms,"cwd":cwd,"isSeeded":false},
+            "records":records});
+        std::fs::write(path, serde_json::to_vec(&document).unwrap()).unwrap();
     }
 
     /// A projection for `session` with one completed human turn after `time_ms`.
@@ -1560,6 +1586,178 @@ mod ingestion {
             state.status()?[0].reason.as_deref(),
             Some("before_enablement"),
             "status names the enablement boundary, not a fork"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn capture_turn_never_leases_another_turn_of_the_same_session() -> anyhow::Result<()> {
+        // A capture pinned to turn 2 must not lease turn 1's queued run, which
+        // would hold it `capturing` for the lease hour without being usable.
+        let (data, dsh) = runtime();
+        let (repo, _) = project(data.path());
+        let root = data.path().join("state");
+        std::fs::create_dir_all(&root)?;
+        let mut state = State::open(&root.join("state.sqlite"))?;
+        let store = ingestion::store_id(dsh.path())?;
+        let cwd = repo.to_str().unwrap().to_string();
+        // Register against a different session, so the baseline it records
+        // names that session only; the two-turn projection below is new work.
+        let baseline = data.path().join("baseline.json");
+        session_as(&baseline, &cwd, 1, "session-baseline");
+        ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Register {
+                session: baseline,
+                project: repo.clone(),
+            },
+            None,
+        )
+        .await?;
+
+        let later = (ingestion::now() + 5) * 1000;
+        let projection = data.path().join("later.json");
+        two_turn_projection(&projection, &cwd, "session-x", later);
+        for turn in 1..=2 {
+            let signal = json!({"kind":"turn-end","session":"session-x","turn":turn,"cwd":cwd});
+            ingestion::dsh(
+                &mut state,
+                &store,
+                &root,
+                &DshOperation::Enqueue,
+                Some(signal.to_string()),
+            )
+            .await?;
+        }
+        let report = ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Capture {
+                session: projection,
+                project: repo,
+                turn: Some(2),
+            },
+            None,
+        )
+        .await?;
+        assert_eq!(report.run.as_ref().map(|r| r.turn.as_str()), Some("2"));
+        let turns: Vec<_> = state
+            .status()?
+            .iter()
+            .map(|s| (s.key.turn.clone(), s.state.clone(), s.reason.clone()))
+            .collect();
+        assert_eq!(
+            turns,
+            vec![
+                ("1".into(), "queued".into(), None),
+                ("2".into(), "ready".into(), None)
+            ],
+            "a pinned capture leaves the other turn queued instead of leasing it"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_persistently_pending_projection_stops_retrying() -> anyhow::Result<()> {
+        // A projection that never records the turn's end must become inspectable
+        // after the same bounded attempts the Codex reader uses.
+        let (data, dsh) = runtime();
+        let (repo, _) = project(data.path());
+        let root = data.path().join("state");
+        std::fs::create_dir_all(&root)?;
+        let mut state = State::open(&root.join("state.sqlite"))?;
+        let store = ingestion::store_id(dsh.path())?;
+        let cwd = repo.to_str().unwrap().to_string();
+        let path = data.path().join("open.json");
+        // One turn with a start, a human message, and no turn/end.
+        let document = json!({"schema":1,"header":{
+        "type":"session","version":4,"id":"session-open","createdAt":1,"cwd":cwd,"isSeeded":false},
+        "records":[
+            {"seq":0,"type":"turn/start","time":1,"data":{"turn":1}},
+            {"seq":1,"type":"user/message","time":2,"surfaceOp":"append","data":{
+                "id":"m1","role":"user","content":[{"type":"text","text":"work"}],"source":{"kind":"user"}}},
+        ]});
+        std::fs::write(&path, serde_json::to_vec(&document)?)?;
+        session(&data.path().join("reg.json"), &cwd, 1);
+        ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Register {
+                session: data.path().join("reg.json"),
+                project: repo.clone(),
+            },
+            None,
+        )
+        .await?;
+        let later = (ingestion::now() + 5) * 1000;
+        let mut document: Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+        for record in document["records"].as_array_mut().unwrap() {
+            record["time"] = json!(later);
+        }
+        std::fs::write(&path, serde_json::to_vec(&document)?)?;
+        let signal = json!({"kind":"turn-end","session":"session-open","turn":1,"cwd":cwd});
+        ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Enqueue,
+            Some(signal.to_string()),
+        )
+        .await?;
+        // Deferrals make the run unavailable for the retry delay; capture again
+        // as a worker cycle would, until the attempt budget is exhausted.
+        let project_id = coding_memory::project::resolve(std::path::Path::new(&cwd))?.id;
+        let key = RunKey {
+            store: store.clone(),
+            thread: "session-open".into(),
+            turn: "1".into(),
+        };
+        let mut last = None;
+        for _ in 0..70 {
+            if state
+                .status()?
+                .iter()
+                .find(|s| s.key == key)
+                .is_some_and(|s| {
+                    s.state == "queued" && s.reason.as_deref() == Some("history_pending")
+                })
+            {
+                let db = rusqlite::Connection::open(root.join("state.sqlite"))?;
+                db.execute(
+                    "UPDATE runs SET available_at=0 WHERE thread='session-open'",
+                    [],
+                )?;
+                drop(db);
+            }
+            let _ = &project_id;
+            let report = ingestion::dsh(
+                &mut state,
+                &store,
+                &root,
+                &DshOperation::Capture {
+                    session: path.clone(),
+                    project: repo.clone(),
+                    turn: None,
+                },
+                None,
+            )
+            .await?;
+            let Some(reason) = report.reason.clone() else {
+                break;
+            };
+            last = Some(reason);
+            if last.as_deref() == Some("history_readiness_exhausted") {
+                break;
+            }
+        }
+        assert_eq!(
+            last.as_deref(),
+            Some("history_readiness_exhausted"),
+            "retries are bounded"
         );
         Ok(())
     }

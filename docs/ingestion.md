@@ -74,14 +74,15 @@ coding-memory --state-dir /absolute/engine-state dsh --dsh-home /absolute/dsh-ho
 `enqueue` is what the bridge calls on `turn/end`; it accepts a bounded
 `{"kind":"turn-end","session":...,"turn":N,"cwd":...}` hint from stdin or
 `--event`. The hint names the run: capture publishes only a run a live runtime
-hinted (`no_capture_hint` otherwise), and it claims only the session its
-projection describes. A hint recorded before its project is registered is
-kept and resolved by `reconcile` against that hint's own session;
-`reconcile` itself never queues a run. Re-running `register` for a registered
+hinted (`no_capture_hint` otherwise); it claims only the session its projection
+describes, pinned to the requested turn when `--turn` is given. A hint recorded
+before its project is registered is kept and resolved by `reconcile` against
+that hint's own session; `reconcile` itself never queues a run. A projection
+that never records the turn's end is retried with the same bounded budget as
+Codex (`history_readiness_exhausted`). Re-running `register` for a registered
 project reports `already_registered` and baselines nothing. `/compact` and its
-durable bracket are harness bookkeeping and do not reach evidence.
-`--dsh-home` selects the runtime store, so DSH runs never share identity with
-Codex runs.
+durable bracket are harness bookkeeping and do not reach evidence. `--dsh-home`
+selects the runtime store, so DSH runs never share identity with Codex runs.
 
 Evidence items use the same envelope as Codex — a top-level `id`, the
 extraction vocabulary (`userMessage`, `agentMessage`, `toolCall`,
