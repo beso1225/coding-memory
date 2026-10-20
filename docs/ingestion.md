@@ -139,7 +139,11 @@ permanent over-limit outcome: the bridge asks the engine to hold that run as
 run as `history_readiness_exhausted` on attempt 60,
 as it does for Codex. If the process is killed before either happens, capture
 the run explicitly from a fresh projection (`capture --turn N`); `reconcile`
-only processes pending hints.
+only processes pending hints. `retry STORE THREAD TURN` requeues a held DSH
+run, but the bridge is the only capture driver and it removes a projection after
+a terminal result. To drive the retry, supply a projection that still contains
+that turn and run `capture --session <file> --project <dir>` without `--turn`, so
+the engine claims the requeued run.
 Re-running `register` for a registered
 project reports `already_registered` and baselines nothing. `/compact` and its
 durable bracket are harness bookkeeping and do not reach evidence. `--dsh-home`

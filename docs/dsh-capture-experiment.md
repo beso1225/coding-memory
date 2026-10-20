@@ -343,7 +343,11 @@ These were found by the measurement and are fixed with regression tests:
 - `capture-diagnose` remains Codex-only. DSH failures are inspected through
   `status` held reasons and the projection file named by the bridge.
 - Fork and subagent capture are excluded, and a captured run is never retried
-  automatically after a terminal hold; `retry STORE THREAD TURN` is explicit.
+  automatically after a terminal hold. `retry STORE THREAD TURN` requeues the
+  run, but it does not create a driver or a projection: follow it with
+  `capture --session <projection containing the turn> --project <dir>` without
+  `--turn`. The bridge removes a projection after a terminal result, so an old
+  per-turn projection that is already gone cannot be used to drive that retry.
 
 ## Reproduction
 
