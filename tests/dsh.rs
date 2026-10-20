@@ -774,9 +774,15 @@ fn a_projection_must_declare_a_supported_bridge_schema() {
         "a missing bridge schema is rejected before decoding"
     );
     value["schema"] = json!(2);
+    // A future schema may have an unrelated shape; the revision check must run
+    // before deserialization so callers see the actionable reason.
+    value["records"] = json!(["not a record"]);
+    let error = dsh::Projection::from_value(value).expect_err("a future schema is refused");
     assert!(
-        dsh::Projection::from_value(value).is_err(),
-        "a future bridge schema is rejected before decoding"
+        error
+            .to_string()
+            .contains("Unsupported bridge projection schema"),
+        "{error}"
     );
 }
 

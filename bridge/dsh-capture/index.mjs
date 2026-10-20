@@ -425,18 +425,26 @@ export function apply(ctx, config) {
       timeoutMs,
     )
     timer.unref?.()
-    Promise.resolve()
-      .then(() => ctx.sessionQuery.readSession(sessionId))
-      .then(
-        (value) => {
-          clearTimeout(timer)
-          resolve(value)
-        },
-        (error) => {
-          clearTimeout(timer)
-          reject(error)
-        },
-      )
+    // Start the live read synchronously so the teardown window does not grow;
+    // a synchronous throw is converted into the same rejection path.
+    let read
+    try {
+      read = ctx.sessionQuery.readSession(sessionId)
+    } catch (error) {
+      clearTimeout(timer)
+      reject(error)
+      return
+    }
+    Promise.resolve(read).then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (error) => {
+        clearTimeout(timer)
+        reject(error)
+      },
+    )
   })
 
   /** One bounded, readable form of a failure for stderr. */

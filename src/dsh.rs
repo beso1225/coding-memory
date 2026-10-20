@@ -100,8 +100,8 @@ pub fn projection_schema(document: &Value) -> Option<u64> {
 /// registration can resolve the exact run it names without a second reader.
 #[derive(Debug, Deserialize)]
 pub struct Projection {
-    /// The bridge document revision, independent of DSH's session format.
-    schema: u64,
+    // The bridge revision is checked on the raw document before this shape is
+    // decoded, so it is deliberately not retained here.
     header: Header,
     records: Vec<Record>,
 }
@@ -111,13 +111,16 @@ impl Projection {
     }
     /// Parse an already decoded document, checking the bridge revision here so
     /// every caller of the typed projection has the same guarantee.
+    ///
+    /// The revision is read from the raw document before its shape is decoded:
+    /// a future schema may change fields, and reporting it as a deserialization
+    /// failure would hide the one fact the engine can act on.
     pub fn from_value(document: Value) -> Result<Self> {
-        let projection: Self = serde_json::from_value(document)?;
         ensure!(
-            projection.schema == PROJECTION_SCHEMA,
+            projection_schema(&document) == Some(PROJECTION_SCHEMA),
             "Unsupported bridge projection schema"
         );
-        Ok(projection)
+        Ok(serde_json::from_value(document)?)
     }
     /// The working directory this session recorded.
     pub fn cwd(&self) -> Option<&str> {
