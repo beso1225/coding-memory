@@ -130,14 +130,18 @@ pub async fn register(
     let epoch = enabled_ms / 1000;
     let baseline = discover(client, home, path).await?;
     // A crash during baseline insertion is safe: pre-epoch runs remain ineligible.
-    state.register_project_at(
+    // A concurrent registration that lost the insert race reports its own
+    // return value here; it must not baseline under its later local instant.
+    if !state.register_project_at(
         &p.id,
         p.repository
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("Non-UTF8 path"))?,
         epoch,
         enabled_ms,
-    )?;
+    )? {
+        return Ok(p.id);
+    }
     for (key, _) in baseline {
         state.exclude(&key, "enablement_baseline")?;
     }
@@ -409,14 +413,26 @@ pub async fn dsh(
             let enabled_ms = now_ms();
             let epoch = enabled_ms / 1000;
             let baseline = dsh::discover(session, &cwd, store)?;
-            state.register_project_at(
+            if !state.register_project_at(
                 &p.id,
                 p.repository
                     .to_str()
                     .ok_or_else(|| anyhow::anyhow!("Non-UTF8 path"))?,
                 epoch,
                 enabled_ms,
-            )?;
+            )? {
+                // Another registration won the insert race. Its stored instant
+                // is authoritative, so this process must not apply a baseline.
+                return Ok(DshReport {
+                    action: "register",
+                    state: None,
+                    run: None,
+                    reason: Some("already_registered".into()),
+                    evidence: None,
+                    queued: None,
+                    baseline: Some(0),
+                });
+            }
             // Only turns that ended at or before the chosen instant are the
             // baseline. A turn that ends while this scan runs is post-enablement
             // work with a live hint, and excluding it would discard a valid run.
@@ -467,13 +483,24 @@ pub async fn dsh(
             // process saw end. Each hint resolves to its exact turn; a run that
             // ended before enablement is excluded exactly like a baseline turn.
             let runs = projection.completed_runs();
+            let completed = projection.completed_turns();
             for hint in hinted {
                 let Some(turn) = runs.iter().find(|run| run.turn.to_string() == hint.turn) else {
-                    // The projection can be an older snapshot or the bridge's
-                    // bounded single-turn projection. A turn absent from this
-                    // file may still have its own `<session>.<turn>.json`
-                    // projection, so leave the hint pending for that reconcile
-                    // instead of permanently excluding it.
+                    if completed
+                        .iter()
+                        .any(|run| run.turn.to_string() == hint.turn)
+                    {
+                        // The turn is present but has no direct human message.
+                        // Resolve it as the same terminal exclusion capture uses
+                        // instead of leaving the hint pending forever.
+                        state.exclude(&hint, "excluded_inherited_or_nonhuman")?;
+                        state.resolve_hint(&hint)?;
+                    }
+                    // Otherwise the projection can be an older snapshot or the
+                    // bridge's bounded single-turn projection. A turn absent
+                    // from this file may still have its own
+                    // `<session>.<turn>.json` projection, so leave the hint
+                    // pending for that reconcile instead of excluding it.
                     continue;
                 };
                 // `ended_at` is milliseconds; compare against the exact instant.

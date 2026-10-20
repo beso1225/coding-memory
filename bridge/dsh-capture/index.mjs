@@ -82,6 +82,8 @@ export const CAPTURE_ATTEMPTS = 60
 export const CAPTURE_RETRY_MS = 10000
 /** Markers a producer emits when it is about to compact one session. */
 export const COMPACTION_REQUEST_EVENTS = ['coding-memory/compaction-requested']
+/** A read that does not yet contain the hinted turn; retry with a fresh one. */
+export class StaleProjection extends Error {}
 /** Largest projection the bridge will write, in bytes. */
 export const MAX_PROJECTION_BYTES = 16 * 1024 * 1024
 /** Largest completion hint the bridge will write, in bytes. */
@@ -124,7 +126,7 @@ export function retryable(reason) {
  * fallback activates it holds the whole growing session. Keeping those files
  * would grow quadratically and retain raw system and injected records after the
  * filtered evidence is published, so a terminal result deletes its file. A
- * pending capture keeps it for the retry or a later `reconcile`.
+ * pending capture keeps it for the retry or an explicit fresh capture.
  * @param path - projection file.
  */
 export async function removeProjection(path) {
@@ -181,7 +183,17 @@ export function projectForCapture(header, events, turn) {
   const owned = (event) => event.type === 'turn/start' && event.data?.turn === turn
   const closes = (event) => event.type === 'turn/end' && event.data?.turn === turn
   const start = events.findIndex(owned)
-  if (start < 0) return JSON.stringify(whole)
+  if (start < 0) {
+    // A stale read can omit the hinted turn's start while the session is
+    // already over the whole-projection bound. Publishing that oversized
+    // document would make the engine reject it before claiming the run, so
+    // report a retryable stale snapshot instead.
+    const text = JSON.stringify(whole)
+    if (Buffer.byteLength(text) > MAX_PROJECTION_BYTES) {
+      throw new StaleProjection('the read does not contain the turn start yet')
+    }
+    return text
+  }
   const end = events.findIndex((event, index) => index > start && closes(event))
   const stop = end < 0 ? events.length : end + 1
   // One contiguous range, so every projected record still follows its
@@ -406,28 +418,39 @@ export function apply(ctx, config) {
           // reason may still become captureable, and the projection must stay.
           if (attemptsLeft > 1) {
             // A retry needs a fresh snapshot: the harness flushes over time.
-            const timer = setTimeout(
+            setTimeout(
               () => captureTurn(sessionId, turn, () => ctx.sessionQuery.readSession(sessionId), attemptsLeft - 1),
               CAPTURE_RETRY_MS,
             )
-            // Do not hold the harness process open merely to retry: if teardown
-            // wins, the run stays queued for the documented `reconcile`.
-            timer.unref?.()
             return
           }
-          warn(`capture still ${report.reason} for turn ${turn}; left to reconcile`)
+          warn(`capture still ${report.reason} for turn ${turn}; run a fresh capture manually`)
           return
         }
         if (report.state === undefined) {
-          // An unparsable report: keep the projection available for reconcile
-          // rather than deleting the only snapshot of a queued run.
-          warn(`capture reported no run for turn ${turn}; left to reconcile`)
+          // An unparsable report: keep the projection for an explicit fresh
+          // capture rather than deleting the only snapshot of a queued run.
+          warn(`capture reported no run for turn ${turn}; run a fresh capture manually`)
           return
         }
         // Every other result is terminal: evidence, a hold, or an exclusion.
         await removeProjection(path)
       })
-      .catch((error) => warn(`capture deferred for turn ${turn}: ${describe(error)}`))
+      .catch((error) => {
+        // The run was already enqueued, and `reconcile` only processes pending
+        // hints, so a failed read must retry with a fresh snapshot rather than
+        // leave the run queued forever. The timer stays referenced: it is the
+        // only driver that can finish the run.
+        warn(`capture deferred for turn ${turn}: ${describe(error)}`)
+        if (attemptsLeft > 1) {
+          setTimeout(
+            () => captureTurn(sessionId, turn, () => ctx.sessionQuery.readSession(sessionId), attemptsLeft - 1),
+            CAPTURE_RETRY_MS,
+          )
+        } else {
+          warn(`capture retries exhausted for turn ${turn}`)
+        }
+      })
   }
 
   /** Arm the latch for one session so capture waits for that compaction. */
@@ -486,7 +509,7 @@ export function apply(ctx, config) {
         // (see the experiment report). Compaction intent is rechecked in that
         // microtask, because a producer whose `turn/end` listener runs after
         // this bridge's announces it later in the same dispatch. A failed read
-        // leaves the hinted run queued for a documented reconcile.
+        // is retried by captureTurn with a fresh snapshot.
         const started = Promise.resolve()
           .then(() => waitForCompaction(session.id))
           .then(() => ctx.sessionQuery.readSession(session.id))
@@ -506,6 +529,13 @@ export function apply(ctx, config) {
               return
             }
             const hint = parseReport(queued.output)
+            if (hint.state === 'held') {
+              // An engine-owned or explicitly excluded run has no claimable
+              // work. Reading and publishing its raw session would defeat the
+              // exclusion, so stop before capture.
+              warn(`turn ${turn} is excluded (${hint.reason ?? 'held'}); not capturing`)
+              return
+            }
             if (hint.state === 'deferred') {
               // The project is not registered yet: the hint is kept, but no run
               // is queued, so capture would only report `no_ready_run`. The

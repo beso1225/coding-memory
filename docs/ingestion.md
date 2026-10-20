@@ -120,12 +120,17 @@ before its project is registered is kept and resolved by `reconcile` against
 that hint's own session. `reconcile` queues only turns named by a live hint; it
 never invents a run. Because the bridge publishes one projection per turn, a
 hint absent from the supplied projection stays pending for the reconcile of the
-projection that contains it.
+projection that contains it; a turn that is present but has no direct human
+message is resolved as `excluded_inherited_or_nonhuman`.
 A projection that never records the turn's end is retried by the bridge with a
 fresh snapshot, not before the engine's deferral has elapsed, up to the engine's
-60-attempt limit; if the harness process ends first, the run stays queued for
-`reconcile`. The engine holds such a run as `history_readiness_exhausted` on
-attempt 60, as it does for Codex. Re-running `register` for a registered
+60-attempt limit. A failed session read or a stale oversized snapshot is retried
+the same way, and the retry timer is referenced so a short-lived harness does not
+drop an already-queued run. The engine holds such a run as
+`history_readiness_exhausted` on attempt 60, as it does for Codex. If the process
+is killed before either happens, capture the run explicitly from a fresh
+projection (`capture --turn N`); `reconcile` only processes pending hints.
+Re-running `register` for a registered
 project reports `already_registered` and baselines nothing. `/compact` and its
 durable bracket are harness bookkeeping and do not reach evidence. `--dsh-home`
 selects the runtime store. Its identity is runtime-qualified, so even a directory

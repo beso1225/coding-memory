@@ -270,6 +270,37 @@ class DshFixture(unittest.TestCase):
         self.assertIn("waitForCompaction", source)
         self.assertIn("coding-memory/compaction-requested", source)
 
+    def test_bridge_retries_a_stale_oversized_snapshot(self):
+        # A read that predates the hinted turn must not publish an over-limit
+        # whole-session document; it reports a retryable stale snapshot.
+        import json as jsonlib
+        import subprocess
+        script = (
+            "const m = await import(process.argv[1]);"
+            "const big = 'x'.repeat(1 << 20);"
+            "const header = { version: 4, id: 's', createdAt: 1, cwd: '/repo', isSeeded: false };"
+            "const events = []; let seq = 0;"
+            "const add = (type, data) => events.push({ seq: seq++, type, time: 1000 + seq, data });"
+            "add('turn/start', { turn: 1 });"
+            "add('user/message', { id: 'm1', role: 'user', content: [{ type: 'text', text: big }], source: { kind: 'user' } });"
+            "for (let i = 0; i < 18; i++) add('tool/result', { turn: 1, step: 1, message: {"
+            " id: 't' + i, role: 'tool', toolCallId: 'c' + i, content: [{ type: 'text', text: big }] } });"
+            "add('turn/end', { turn: 1, reason: { kind: 'completed' } });"
+            "let stale = false; let bytes = 0;"
+            "try { const text = m.projectForCapture(header, events, 2); bytes = Buffer.byteLength(text); }"
+            "catch (error) { stale = error instanceof m.StaleProjection; }"
+            "console.log(JSON.stringify({ stale, bytes }));"
+        )
+        output = subprocess.run(
+            ["node", "--input-type=module", "-e", script, str(BRIDGE)],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        result = jsonlib.loads(output)
+        self.assertTrue(result["stale"], "an oversized stale snapshot is retryable")
+        self.assertEqual(result["bytes"], 0, "nothing over the bound is published")
+        source = BRIDGE.read_text()
+        self.assertIn("hint.state === 'held'", source)
+
     def test_bridge_keeps_session_ids_inside_the_projection_directory(self):
         # A DSH session id is an arbitrary string. An unencoded id containing
         # path separators would publish outside the state directory.

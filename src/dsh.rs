@@ -134,21 +134,22 @@ impl Projection {
     }
     /// Every completed turn of a human run, as discovered by scanning the log.
     pub fn completed_runs(&self) -> Vec<CompletedRun> {
+        self.completed_turns()
+            .into_iter()
+            .filter(|run| !run.human_messages.is_empty())
+            .collect()
+    }
+    /// Every completed turn, including turns with no direct human message.
+    ///
+    /// Reconciliation needs the difference between "this turn is absent from
+    /// the projection" (keep the hint pending) and "this turn is present but
+    /// nonhuman" (resolve the hint as excluded).
+    pub fn completed_turns(&self) -> Vec<CompletedRun> {
         if exclude_header(&self.header) {
             return Vec::new();
         }
         let (human_seqs, ends) = scan_turns(&self.records);
-        let mut human_turns = HashSet::new();
-        for record in &self.records {
-            if let Some(seq) = record.seq
-                && human_seqs.contains(&seq)
-                && let Some(turn) = owning_turn(&self.records, seq)
-            {
-                human_turns.insert(turn);
-            }
-        }
         ends.into_iter()
-            .filter(|(turn, _)| human_turns.contains(turn))
             .map(|(turn, ended_at)| CompletedRun {
                 turn,
                 ended_at,

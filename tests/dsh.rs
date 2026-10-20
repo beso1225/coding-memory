@@ -1089,9 +1089,26 @@ mod migration {
         let path = dir.path().join("state.sqlite");
         let mut state = State::open(&path)?;
         let enabled_ms = 1_700_000_000_123;
-        state.register_project_at("p", "/repo", enabled_ms / 1000, enabled_ms)?;
+        assert!(
+            state.register_project_at("p", "/repo", enabled_ms / 1000, enabled_ms)?,
+            "the first registration inserts"
+        );
         assert_eq!(state.project_epoch("p")?, enabled_ms / 1000);
         assert_eq!(state.project_epoch_ms("p")?, Some(enabled_ms));
+        assert!(
+            !state.register_project_at(
+                "p",
+                "/repo",
+                enabled_ms / 1000 + 10,
+                enabled_ms + 10_000
+            )?,
+            "a loser reports that it did not insert and must not baseline"
+        );
+        assert_eq!(
+            state.project_epoch_ms("p")?,
+            Some(enabled_ms),
+            "the winning instant stays authoritative"
+        );
         Ok(())
     }
 
@@ -2590,6 +2607,70 @@ mod ingestion {
         assert!(
             status.iter().all(|run| run.key.turn != "4"),
             "turn 4 was not excluded as a historical run"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reconciling_a_nonhuman_turn_resolves_it_as_excluded() -> anyhow::Result<()> {
+        // A completed turn with no direct human message is represented in the
+        // projection. It must reach the terminal exclusion, not stay pending as
+        // though the turn were missing from an older snapshot.
+        let (data, dsh) = runtime();
+        let (repo, id) = project(data.path());
+        let root = data.path().join("state");
+        std::fs::create_dir_all(&root)?;
+        let mut state = State::open(&root.join("state.sqlite"))?;
+        let store = ingestion::dsh_store_id(dsh.path())?;
+        let cwd = repo.to_str().unwrap().to_string();
+        let baseline = data.path().join("baseline.json");
+        session(&baseline, &cwd, 0);
+        ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Register {
+                session: baseline,
+                project: repo.clone(),
+            },
+            None,
+        )
+        .await?;
+        let hint = RunKey {
+            store: store.clone(),
+            thread: "session-x".into(),
+            turn: "1".into(),
+        };
+        state.save_pending_hint(&hint, &cwd, 0)?;
+        let time = (ingestion::now() + 5) * 1000;
+        let projection = data.path().join("nonhuman.json");
+        let document = json!({"schema":1,"header":{
+        "type":"session","version":4,"id":"session-x","createdAt":time,"cwd":cwd,"isSeeded":false},
+        "records":[
+            {"seq":0,"type":"turn/start","time":time,"data":{"turn":1}},
+            {"seq":1,"type":"user/message","time":time+1,"data":{
+                "id":"ctx","role":"user","content":[{"type":"text","text":"injected"}],
+                "source":{"kind":"time-context"}}},
+            {"seq":2,"type":"turn/end","time":time+2,"data":{"turn":1,"reason":{"kind":"completed"}}},
+        ]});
+        std::fs::write(&projection, serde_json::to_vec(&document)?)?;
+        let report = ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Reconcile {
+                session: projection,
+                project: repo,
+            },
+            None,
+        )
+        .await?;
+        assert_eq!(report.queued, Some(0), "a nonhuman turn is not queued");
+        assert!(state.pending_hints(&store)?.is_empty());
+        assert_eq!(
+            state.enqueue(&hint, &id, &cwd, 0)?,
+            Enqueue::Excluded,
+            "the nonhuman turn is terminally excluded"
         );
         Ok(())
     }

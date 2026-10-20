@@ -126,26 +126,29 @@ impl State {
     /// chosen before that scan.
     pub fn register_project(&mut self, id: &str, repository: &str, enabled: i64) -> Result<()> {
         self.register_project_at(id, repository, enabled, now_millis())
+            .map(|_| ())
     }
     /// Register a project with the exact instant its caller chose.
     ///
     /// The second-resolution epoch stays the public boundary; the exact instant
-    /// is recorded beside it wherever a source can express more.
+    /// is recorded beside it wherever a source can express more. Returns whether
+    /// this call inserted the project: a concurrent registration that lost the
+    /// insert race must not apply a baseline under its own later instant.
     pub fn register_project_at(
         &mut self,
         id: &str,
         repository: &str,
         enabled: i64,
         enabled_ms: i64,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         ensure!(
             enabled_ms >= enabled.saturating_mul(1000),
             "Registration instant precedes the recorded epoch"
         );
-        self.db.execute(
+        let inserted = self.db.execute(
             "INSERT INTO projects(id,repository,enabled_at,enabled_ms) VALUES(?1,?2,?3,?4) ON CONFLICT(id) DO NOTHING",
             params![id, repository, enabled, enabled_ms],
-        )?;
+        )? == 1;
         let stored: String =
             self.db
                 .query_row("SELECT repository FROM projects WHERE id=?1", [id], |r| {
@@ -155,7 +158,7 @@ impl State {
             stored == repository,
             "Project identity cannot be reassigned"
         );
-        Ok(())
+        Ok(inserted)
     }
     /// Bring a schema-version-1 database up to the columns this build reads.
     ///

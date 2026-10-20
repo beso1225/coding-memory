@@ -69,7 +69,7 @@ silently holding production runs.
 | Is `turn/end` recorded for a failed step? | Yes. The log ends `step/end` → `turn/end {turn: 1, reason: {kind: "error", error: {code: "MISSING_CREDENTIAL"}}}`. |
 | Does `turn/end` fire on `session/event`? | Yes, in the same process, after the event is committed to the live log. |
 | Is the persisted log complete when the process exits? | Yes. The headless runner awaits `sessions.flush(agent.session)` before exiting, so a reader started afterwards sees the whole turn. |
-| Is the persisted log complete *at* `turn/end`? | Not guaranteed: `session/event` is fire-and-forget and `turn/end` does not wait for persistence. The bridge nevertheless reads there, because the harness may deactivate its services as soon as the run ends. It starts `sessionQuery.readSession` one microtask after the commit (before the hint subprocess runs), publishes a per-turn projection, and calls `capture`; a failed read leaves the hinted run queued for `reconcile`. |
+| Is the persisted log complete *at* `turn/end`? | Not guaranteed: `session/event` is fire-and-forget and `turn/end` does not wait for persistence. The bridge nevertheless reads there, because the harness may deactivate its services as soon as the run ends. It starts `sessionQuery.readSession` one microtask after the commit (before the hint subprocess runs), publishes a per-turn projection, and calls `capture`; a failed read is retried with a fresh snapshot, and the retry timer keeps a short-lived harness alive until the run is terminal. |
 | What does a user-role event look like? | `user/message` events carry `source.kind`. One headless turn produced four user-role events: one `user` and three harness-injected context messages. A long interactive session showed the same pattern (`time-context`, `agent-instructions`, `runtime-context`, `skill-catalog`). A human run is identified by `source.kind === "user"`, never by role or count. |
 | What event vocabulary appears? | `permission/preset`, `sandbox/mode`, `approval/policy`, `agent/inbox/spliced`, `turn/start`, `step/start`, `system/message`, `user/message`, `request/header`, `request/context`, `session/title`, `session/title-llm-request`, `assistant/attempt`, `step/end`, `turn/end`, plus `tool/call` and `tool/result` in tool-using sessions. |
 | Are records contiguous? | Yes in every observed session: `seq` starts at 0 and increases by one per record. The adapter still verifies this instead of assuming it. |
@@ -91,7 +91,7 @@ directory) is an out-of-tree Cordis plugin:
   `history_pending`—or as `no_ready_run` while the engine's own ten-second
   deferral is still open—is retried with a fresh snapshot, because nothing else
   drives a DSH run. The retry delay is not shorter than that deferral; a failed
-  read leaves the hinted run queued for `reconcile`. A projection is deleted once
+  read is retried with a fresh snapshot. A projection is deleted once
   its capture reaches a terminal result, so a long-running session does not
   accumulate one full copy per turn. A turn whose project is not registered yet
   also publishes its projection (the write is started before the handler
@@ -171,7 +171,8 @@ covered by `tests/dsh.rs`:
   reconciliation resolves only hints for that same session. A hint whose turn is
   absent from the supplied projection stays pending: the file may be an older
   snapshot or a bounded single-turn projection, and that turn's own projection
-  can still reconcile it.
+  can still reconcile it. A turn that is present but nonhuman resolves as
+  `excluded_inherited_or_nonhuman` instead of staying pending.
 - A DSH store identity is runtime-qualified, so `--dsh-home` pointing at a
   configured Codex home remains a distinct store and neither runtime can lease
   or exclude the other's runs.
@@ -332,6 +333,10 @@ These were found by the measurement and are fixed with regression tests:
 - A deferred projection written before registration is retained for
   `register`/`reconcile` and is not removed automatically. Delete consumed
   snapshots under `<state-dir>/dsh/projections/` when they are no longer needed.
+- The bridge retries its own queued run, but `reconcile` does not drive an
+  already-queued run: it only processes pending hints. If the harness is killed
+  before a retry reaches a terminal state, capture that run explicitly from a
+  fresh projection with `capture --turn N`.
 - `capture-diagnose` remains Codex-only. DSH failures are inspected through
   `status` held reasons and the projection file named by the bridge.
 - Fork and subagent capture are excluded, and a captured run is never retried
