@@ -41,9 +41,10 @@ gh release download v0.1.0 --repo beso1225/coding-memory \
 ```
 
 Keep the whole version directory, including licenses, `release-notices/`, and
-`bridge/dsh-capture/`. The bridge is a runtime dependency: DeepSeek Harness
-capture mounts it from the installed version directory, so a copy that omits it
-cannot capture DSH runs.
+`index.mjs`. That file is the DeepSeek Harness capture bridge: cargo-dist places
+each included file at the archive root, so a release install mounts
+`$HOME/.local/share/coding-memory/versions/$version/index.mjs`. A copy that omits
+it cannot capture DSH runs.
 Add `$HOME/.local/bin` to your shell PATH if needed. Checksums detect corruption;
 they are not an independent publisher signature. Initial builds have no Apple
 Developer ID signature or notarization. Honor macOS security prompts and inspect

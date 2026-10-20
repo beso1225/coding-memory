@@ -57,9 +57,10 @@ runtime version does not create a new run identity.
 ## DeepSeek Harness
 
 DSH capture runs through a bridge plugin rather than a history decoder. The
-bridge (`bridge/dsh-capture/index.mjs`) is an out-of-tree Cordis plugin mounted
-with a `--patch` overlay; it reads sessions through DSH's own `sessionQuery` and
-writes a bounded projection, and the engine decides everything else:
+bridge (`bridge/dsh-capture/index.mjs`, installed as `index.mjs` beside the
+binary) is an out-of-tree Cordis plugin mounted with a `--patch` overlay; it
+reads sessions through DSH's own `sessionQuery` and writes a bounded
+projection, and the engine decides everything else:
 
 ```sh
 coding-memory --state-dir /absolute/engine-state dsh --dsh-home /absolute/dsh-home \

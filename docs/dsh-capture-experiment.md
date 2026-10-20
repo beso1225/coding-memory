@@ -77,7 +77,8 @@ silently holding production runs.
 
 ## The bridge
 
-`bridge/dsh-capture/index.mjs` is an out-of-tree Cordis plugin:
+`bridge/dsh-capture/index.mjs` (installed as `index.mjs` in the release version
+directory) is an out-of-tree Cordis plugin:
 
 - `agent/created` is a serial listener, so the per-agent observer exists before
   the queued prompt can open a turn.

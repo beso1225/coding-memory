@@ -65,7 +65,8 @@ class ReleaseTests(unittest.TestCase):
         # directory entry into the archive, which the CI smoke check caught.
         self.assertIn("bridge/dsh-capture/index.mjs", includes)
         smoke = (Path(__file__).resolve().parents[1] / "release_smoke.py").read_text()
-        self.assertIn('"bridge" / "dsh-capture" / "index.mjs"', smoke)
+        # cargo-dist flattens includes to the archive root.
+        self.assertIn('bridge = payload / "index.mjs"', smoke)
 
     def test_publication_refuses_dry_run_or_mismatched_commit_without_api_calls(self):
         release = module("release")
