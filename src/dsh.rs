@@ -309,6 +309,19 @@ pub fn discover(path: &Path, cwd: &str, store: &str) -> Result<Vec<Discovered>> 
         "Unsupported bridge projection schema"
     );
     let log: Log = parse(&document)?;
+    // The logical version decides field meaning. Registration must not record a
+    // permanent boundary for a generation this engine would later reject on
+    // every capture.
+    ensure!(
+        log.header.kind.as_deref() == Some("session"),
+        "Invalid session header"
+    );
+    ensure!(
+        log.header
+            .version
+            .is_some_and(|version| version <= MAX_LOG_VERSION),
+        "Unsupported DSH logical history version"
+    );
     if exclude_header(&log.header) || log.header.cwd.as_deref() != Some(cwd) {
         return Ok(Vec::new());
     }

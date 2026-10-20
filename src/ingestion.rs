@@ -11,11 +11,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub fn now() -> i64 {
+pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("clock after Unix epoch")
-        .as_secs() as i64
+        .as_millis() as i64
+}
+pub fn now() -> i64 {
+    now_ms() / 1000
 }
 /// Identity of a Codex runtime store.
 ///
@@ -120,15 +123,20 @@ pub async fn register(
     if state.project_epoch(&p.id).is_ok() {
         return Ok(p.id);
     }
-    let epoch = now();
+    // Choose the boundary before the baseline scan: the scan can take longer
+    // than a second, and a run that ends during it must not be treated as
+    // pre-enablement by a later clock sample.
+    let enabled_ms = now_ms();
+    let epoch = enabled_ms / 1000;
     let baseline = discover(client, home, path).await?;
     // A crash during baseline insertion is safe: pre-epoch runs remain ineligible.
-    state.register_project(
+    state.register_project_at(
         &p.id,
         p.repository
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("Non-UTF8 path"))?,
         epoch,
+        enabled_ms,
     )?;
     for (key, _) in baseline {
         state.exclude(&key, "enablement_baseline")?;
@@ -382,14 +390,18 @@ pub async fn dsh(
                     baseline: Some(0),
                 });
             }
-            let epoch = now();
+            // The baseline scan below can take longer than a second; the
+            // boundary is the instant chosen before it, not a later sample.
+            let enabled_ms = now_ms();
+            let epoch = enabled_ms / 1000;
             let baseline = dsh::discover(session, &cwd, store)?;
-            state.register_project(
+            state.register_project_at(
                 &p.id,
                 p.repository
                     .to_str()
                     .ok_or_else(|| anyhow::anyhow!("Non-UTF8 path"))?,
                 epoch,
+                enabled_ms,
             )?;
             for run in &baseline {
                 state.exclude(&run.turn, "enablement_baseline")?;
@@ -415,7 +427,7 @@ pub async fn dsh(
             )?)?;
             // Only this projection's session: another session's hint must stay
             // pending until its own projection is reconciled, not be resolved
-            // (or dropped as `history_missing`) against this one.
+            // against this one.
             let hinted: Vec<RunKey> = state
                 .pending_hints(store)?
                 .into_iter()
@@ -435,7 +447,11 @@ pub async fn dsh(
             let runs = projection.completed_runs();
             for hint in hinted {
                 let Some(turn) = runs.iter().find(|run| run.turn.to_string() == hint.turn) else {
-                    state.hold_hint(&hint, "history_missing")?;
+                    // The projection can be an older snapshot or the bridge's
+                    // bounded single-turn projection. A turn absent from this
+                    // file may still have its own `<session>.<turn>.json`
+                    // projection, so leave the hint pending for that reconcile
+                    // instead of permanently excluding it.
                     continue;
                 };
                 // `ended_at` is milliseconds; compare against the exact instant.

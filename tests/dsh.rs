@@ -935,6 +935,58 @@ mod migration {
     }
 
     #[test]
+    fn concurrent_opens_migrate_the_same_database_once() -> anyhow::Result<()> {
+        // Bridge subprocesses for overlapping turns can open a just-upgraded
+        // database together. An unlocked check-then-alter would make all but one
+        // fail with a duplicate-column error before writing their turn hint.
+        let dir = tempdir()?;
+        let path = dir.path().join("state.sqlite");
+        {
+            let db = Connection::open(&path)?;
+            db.execute_batch(
+                "CREATE TABLE schema_version(version INTEGER NOT NULL);
+                 INSERT INTO schema_version VALUES(1);
+                 CREATE TABLE projects(id TEXT PRIMARY KEY, repository TEXT NOT NULL UNIQUE, enabled_at INTEGER NOT NULL);
+                 INSERT INTO projects VALUES('p','/repo',10);",
+            )?;
+        }
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(6));
+        let mut handles = Vec::new();
+        for _ in 0..6 {
+            let path = path.clone();
+            let barrier = barrier.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                State::open(&path).map(|_| ())
+            }));
+        }
+        for handle in handles {
+            handle.join().expect("opening thread panicked")?;
+        }
+        let state = State::open(&path)?;
+        assert_eq!(
+            state.project_epoch_ms("p")?,
+            None,
+            "the migrated row keeps its whole-second fallback"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn registration_records_the_instant_chosen_by_its_caller() -> anyhow::Result<()> {
+        // The caller samples the boundary before scanning a baseline; the
+        // persisted millisecond value must be that instant, not a later sample.
+        let dir = tempdir()?;
+        let path = dir.path().join("state.sqlite");
+        let mut state = State::open(&path)?;
+        let enabled_ms = 1_700_000_000_123;
+        state.register_project_at("p", "/repo", enabled_ms / 1000, enabled_ms)?;
+        assert_eq!(state.project_epoch("p")?, enabled_ms / 1000);
+        assert_eq!(state.project_epoch_ms("p")?, Some(enabled_ms));
+        Ok(())
+    }
+
+    #[test]
     fn a_fresh_database_opens_and_registers() -> anyhow::Result<()> {
         // The migration runs before the schema is created, so it must tolerate
         // a database with no `projects` table at all.
@@ -2079,6 +2131,122 @@ mod ingestion {
             report.baseline,
             Some(1),
             "a supported projection registers and baselines its turn"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn registration_rejects_an_unsupported_logical_version() -> anyhow::Result<()> {
+        // A permanent boundary must not be recorded for a generation whose
+        // turns capture would reject on every attempt.
+        let (data, dsh) = runtime();
+        let (repo, id) = project(data.path());
+        let root = data.path().join("state");
+        std::fs::create_dir_all(&root)?;
+        let mut state = State::open(&root.join("state.sqlite"))?;
+        let store = ingestion::dsh_store_id(dsh.path())?;
+        let cwd = repo.to_str().unwrap().to_string();
+        let projection = data.path().join("session.json");
+        session(&projection, &cwd, 1);
+        let mut document: Value = serde_json::from_slice(&std::fs::read(&projection)?)?;
+        document["header"]["version"] = json!(5);
+        std::fs::write(&projection, serde_json::to_vec(&document)?)?;
+        assert!(
+            ingestion::dsh(
+                &mut state,
+                &store,
+                &root,
+                &DshOperation::Register {
+                    session: projection,
+                    project: repo,
+                },
+                None,
+            )
+            .await
+            .is_err(),
+            "a newer logical format is refused before enablement"
+        );
+        assert!(
+            state.project_epoch(&id).is_err(),
+            "the project stays unregistered"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reconciling_one_projection_leaves_another_turns_hint_pending() -> anyhow::Result<()> {
+        // The bridge writes one projection per turn. Reconciling turn 3 must not
+        // permanently exclude turn 4 just because this file does not contain it.
+        let (data, dsh) = runtime();
+        let (repo, _) = project(data.path());
+        let root = data.path().join("state");
+        std::fs::create_dir_all(&root)?;
+        let mut state = State::open(&root.join("state.sqlite"))?;
+        let store = ingestion::dsh_store_id(dsh.path())?;
+        let cwd = repo.to_str().unwrap().to_string();
+        let baseline = data.path().join("baseline.json");
+        session(&baseline, &cwd, 0);
+        ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Register {
+                session: baseline,
+                project: repo.clone(),
+            },
+            None,
+        )
+        .await?;
+        let hint3 = RunKey {
+            store: store.clone(),
+            thread: "session-x".into(),
+            turn: "3".into(),
+        };
+        let hint4 = RunKey {
+            store: store.clone(),
+            thread: "session-x".into(),
+            turn: "4".into(),
+        };
+        state.save_pending_hint(&hint3, &cwd, 0)?;
+        state.save_pending_hint(&hint4, &cwd, 0)?;
+
+        let time = (ingestion::now() + 5) * 1000;
+        let projection = data.path().join("turn3.json");
+        let document = json!({"schema":1,"header":{
+        "type":"session","version":4,"id":"session-x","createdAt":1,"cwd":cwd,"isSeeded":false},
+        "records":[
+            {"seq":0,"type":"turn/start","time":time,"data":{"turn":3}},
+            {"seq":1,"type":"user/message","time":time+1,"data":{
+                "turn":3,"step":1,"id":"m3","role":"user",
+                "content":[{"type":"text","text":"work"}],"source":{"kind":"user"}}},
+            {"seq":2,"type":"turn/end","time":time+2,"data":{"turn":3,"reason":{"kind":"completed"}}},
+        ]});
+        std::fs::write(&projection, serde_json::to_vec(&document)?)?;
+        let report = ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Reconcile {
+                session: projection,
+                project: repo,
+            },
+            None,
+        )
+        .await?;
+        assert_eq!(report.queued, Some(1), "the turn in this file is queued");
+        let pending = state.pending_hints(&store)?;
+        assert_eq!(pending.len(), 1, "the absent turn's hint is retained");
+        assert_eq!(pending[0].0.turn, "4");
+        let status = state.status()?;
+        assert!(
+            status
+                .iter()
+                .any(|run| run.key.turn == "3" && run.state == "queued"),
+            "turn 3 is queued"
+        );
+        assert!(
+            status.iter().all(|run| run.key.turn != "4"),
+            "turn 4 was not excluded as a historical run"
         );
         Ok(())
     }

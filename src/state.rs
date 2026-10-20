@@ -4,6 +4,14 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use std::{path::Path, time::Duration};
 
+/// The wall clock in milliseconds, the precision DSH records.
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as i64)
+        .unwrap_or_default()
+}
+
 pub struct State {
     pub(crate) db: Connection,
     pub(crate) worker_owner: Option<std::sync::Arc<crate::worker::LockFile>>,
@@ -48,10 +56,11 @@ impl State {
         })
     }
     pub fn open(path: &Path) -> Result<Self> {
-        let db = Connection::open(path)?;
+        let mut db = Connection::open(path)?;
         db.busy_timeout(Duration::from_secs(5))?;
+        Self::enable_wal(&db)?;
         db.execute_batch(
-            "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;
+            "PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;
             CREATE TABLE IF NOT EXISTS schema_version(version INTEGER NOT NULL);
             INSERT INTO schema_version SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM schema_version);",
         )?;
@@ -62,7 +71,7 @@ impl State {
             [],
             |row| row.get(0),
         )?;
-        Self::migrate_v1(&db, projects_exist)?;
+        Self::migrate_v1(&mut db, projects_exist)?;
         db.execute_batch("CREATE TABLE IF NOT EXISTS runtime_checks(digest TEXT NOT NULL,fixture TEXT NOT NULL,binary TEXT NOT NULL,version TEXT NOT NULL,state TEXT NOT NULL,last_result TEXT,checked_at INTEGER,available_at INTEGER NOT NULL,lease_until INTEGER,token INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(digest,fixture));
             CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, repository TEXT NOT NULL UNIQUE, enabled_at INTEGER NOT NULL, enabled_ms INTEGER);
             CREATE TABLE IF NOT EXISTS owned_stores(id TEXT PRIMARY KEY);
@@ -88,13 +97,51 @@ impl State {
             worker_owner: None,
         })
     }
+    /// Switch the database to WAL, tolerating a concurrent first open.
+    ///
+    /// Changing the journal mode needs exclusive access and does not wait on
+    /// the busy handler. Overlapping bridge subprocesses opening a
+    /// just-created database therefore have to retry the transition; once one
+    /// succeeds, the others observe WAL and return immediately.
+    fn enable_wal(db: &Connection) -> Result<()> {
+        for attempt in 0..250 {
+            match db.pragma_update(None, "journal_mode", "WAL") {
+                Ok(()) => return Ok(()),
+                Err(rusqlite::Error::SqliteFailure(error, _))
+                    if error.code == rusqlite::ErrorCode::DatabaseBusy && attempt < 249 =>
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        unreachable!("the retry loop returns on its last attempt")
+    }
+
+    /// Register a project, sampling the exact instant now.
+    ///
+    /// A caller that scans a registration baseline must use
+    /// [`Self::register_project_at`] instead: the baseline read can take
+    /// longer than a second, and the persisted boundary must be the instant
+    /// chosen before that scan.
     pub fn register_project(&mut self, id: &str, repository: &str, enabled: i64) -> Result<()> {
-        // The second-resolution epoch stays the public boundary; the exact
-        // instant is recorded beside it wherever a source can express more.
-        let enabled_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_millis() as i64)
-            .unwrap_or(enabled.saturating_mul(1000));
+        self.register_project_at(id, repository, enabled, now_millis())
+    }
+    /// Register a project with the exact instant its caller chose.
+    ///
+    /// The second-resolution epoch stays the public boundary; the exact instant
+    /// is recorded beside it wherever a source can express more.
+    pub fn register_project_at(
+        &mut self,
+        id: &str,
+        repository: &str,
+        enabled: i64,
+        enabled_ms: i64,
+    ) -> Result<()> {
+        ensure!(
+            enabled_ms >= enabled.saturating_mul(1000),
+            "Registration instant precedes the recorded epoch"
+        );
         self.db.execute(
             "INSERT INTO projects(id,repository,enabled_at,enabled_ms) VALUES(?1,?2,?3,?4) ON CONFLICT(id) DO NOTHING",
             params![id, repository, enabled, enabled_ms],
@@ -115,21 +162,30 @@ impl State {
     /// `CREATE TABLE IF NOT EXISTS` never alters an existing table, so a column
     /// added later must be added explicitly: otherwise an upgraded installation
     /// fails when it selects it, and registering a project fails on the insert.
-    fn migrate_v1(db: &Connection, projects_exist: bool) -> Result<()> {
+    fn migrate_v1(db: &mut Connection, projects_exist: bool) -> Result<()> {
         // A fresh database has no table yet: the schema below creates it with
         // the column, so there is nothing to migrate.
         if !projects_exist {
             return Ok(());
         }
-        let mut statement = db.prepare("PRAGMA table_info(projects)")?;
-        let columns: Vec<String> = statement
-            .query_map([], |row| row.get::<_, String>(1))?
-            .collect::<Result<_, _>>()?;
+        // Concurrent bridge subprocesses can open the same database for
+        // overlapping turns. An unlocked check-then-alter would let both see
+        // the column missing, and the loser would fail with a duplicate-column
+        // error before recording its turn hint. An immediate transaction
+        // serializes the check and the alteration.
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let columns: Vec<String> = {
+            let mut statement = tx.prepare("PRAGMA table_info(projects)")?;
+            statement
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<_, _>>()?
+        };
         if !columns.iter().any(|column| column == "enabled_ms") {
             // Rows written before this column existed keep no exact instant;
             // readers fall back to their whole-second epoch.
-            db.execute("ALTER TABLE projects ADD COLUMN enabled_ms INTEGER", [])?;
+            tx.execute("ALTER TABLE projects ADD COLUMN enabled_ms INTEGER", [])?;
         }
+        tx.commit()?;
         Ok(())
     }
 
@@ -224,12 +280,6 @@ impl State {
             "DELETE FROM pending_hints WHERE store=?1 AND thread=?2 AND turn=?3",
             params![key.store, key.thread, key.turn],
         )?;
-        Ok(())
-    }
-    /// Retire a hint whose run can never be queued, keeping it inspectable.
-    pub fn hold_hint(&mut self, key: &RunKey, reason: &str) -> Result<()> {
-        self.exclude(key, reason)?;
-        self.resolve_hint(key)?;
         Ok(())
     }
     /// Whether a live runtime observed this exact turn end.

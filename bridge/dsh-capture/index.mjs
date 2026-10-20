@@ -63,8 +63,15 @@ export const Config = {
   },
 }
 
-/** How many times one capture may retry while the engine reports pending. */
-export const CAPTURE_ATTEMPTS = 12
+/**
+ * How many times one capture may retry while the engine reports pending.
+ *
+ * This must match the engine's own pending-attempt limit (60): the engine only
+ * holds the run as `history_readiness_exhausted` on that attempt, and nothing
+ * else drives an already-queued DSH run. A shorter bridge budget would leave it
+ * queued forever.
+ */
+export const CAPTURE_ATTEMPTS = 60
 /**
  * Delay between capture retries, in milliseconds.
  *

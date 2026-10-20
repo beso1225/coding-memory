@@ -77,12 +77,14 @@ coding-memory --state-dir /absolute/engine-state dsh --dsh-home /absolute/dsh-ho
 hinted (`no_capture_hint` otherwise); it claims only the session its projection
 describes, pinned to the requested turn when `--turn` is given. A hint recorded
 before its project is registered is kept and resolved by `reconcile` against
-that hint's own session; `reconcile` itself never queues a run. A projection
-that never records the turn's end is retried by the bridge a bounded number of
-times with a fresh snapshot, not before the engine's deferral has elapsed; when
-the bridge stops, the run stays queued for `reconcile`. The engine itself holds
-a run as `history_readiness_exhausted` after 60 capture attempts, as it does for
-Codex. Re-running `register` for a registered
+that hint's own session; `reconcile` itself never queues a run. Because the
+bridge publishes one projection per turn, a hint absent from the supplied
+projection stays pending for the reconcile of the projection that contains it.
+A projection that never records the turn's end is retried by the bridge with a
+fresh snapshot, not before the engine's deferral has elapsed, up to the engine's
+60-attempt limit; if the harness process ends first, the run stays queued for
+`reconcile`. The engine holds such a run as `history_readiness_exhausted` on
+attempt 60, as it does for Codex. Re-running `register` for a registered
 project reports `already_registered` and baselines nothing. `/compact` and its
 durable bracket are harness bookkeeping and do not reach evidence. `--dsh-home`
 selects the runtime store. Its identity is runtime-qualified, so even a directory

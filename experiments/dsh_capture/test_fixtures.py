@@ -222,6 +222,7 @@ class DshFixture(unittest.TestCase):
             " retryNoRun: m.retryable('no_ready_run'),"
             " retryTerminal: m.retryable('history_missing'),"
             " retryDelay: m.CAPTURE_RETRY_MS,"
+            " attempts: m.CAPTURE_ATTEMPTS,"
             " left: (await fs.readdir(dir)).length }));"
             "await fs.rm(dir, { recursive: true });"
         )
@@ -242,6 +243,10 @@ class DshFixture(unittest.TestCase):
         self.assertGreaterEqual(
             result["retryDelay"], 10000,
             "the retry must not be shorter than the engine's deferral",
+        )
+        self.assertGreaterEqual(
+            result["attempts"], 60,
+            "the bridge must drive the engine's pending-attempt limit",
         )
         self.assertEqual(result["left"], 0, "a retired projection is deleted")
         source = BRIDGE.read_text()

@@ -121,7 +121,9 @@ The adapter (`src/dsh.rs`) applies these rules deterministically; they are
 covered by `tests/dsh.rs`:
 
 - Supported logical format is `version <= 4`. A newer format is held as
-  `unsupported_history_version` because field meaning can change.
+  `unsupported_history_version` because field meaning can change, and
+  registration refuses it before recording a permanent enablement boundary (a
+  later valid registration can still establish the baseline).
 - Excluded: seeded (forked) sessions, `origin: "subagent"`, `delegationDepth > 0`,
   turns with no human `user/message`, and turns that ended at or before project
   registration.
@@ -156,7 +158,10 @@ covered by `tests/dsh.rs`:
   before any state change. A document with a supported schema that still cannot
   be parsed is held as `reader_failure`.
 - Capture claims only the run of the session the projection names, and
-  reconciliation resolves only hints for that same session.
+  reconciliation resolves only hints for that same session. A hint whose turn is
+  absent from the supplied projection stays pending: the file may be an older
+  snapshot or a bounded single-turn projection, and that turn's own projection
+  can still reconcile it.
 - A DSH store identity is runtime-qualified, so `--dsh-home` pointing at a
   configured Codex home remains a distinct store and neither runtime can lease
   or exclude the other's runs.
@@ -165,9 +170,10 @@ covered by `tests/dsh.rs`:
   `project_mismatch`.
 - A turn that ended at or before the project's registration instant is held as
   `before_enablement`, a reason distinct from the fork/nonhuman
-  `excluded_inherited_or_nonhuman`. The instant is recorded in milliseconds, so
-  enabling a project mid-second does not admit a run that ended earlier in that
-  same second; records without it fall back to the whole-second epoch.
+  `excluded_inherited_or_nonhuman`. The instant is sampled before the baseline
+  scan and recorded in milliseconds, so enabling a project mid-second—or after a
+  slow baseline read—does not admit a run that ended earlier; records without it
+  fall back to the whole-second epoch.
 - Evidence reuses the existing envelope and `items`/`coverage` shape, so
   extraction, consolidation, review, and MCP retrieval need no DSH branch.
 
