@@ -97,8 +97,19 @@ export class OverLimitProjection extends Error {}
 export const MAX_PROJECTION_BYTES = 16 * 1024 * 1024
 /** Largest completion hint the bridge will write, in bytes. */
 export const MAX_SIGNAL_BYTES = 65536
+/** Largest engine report the bridge will retain, in bytes. */
+export const MAX_REPORT_BYTES = 65536
 /** Session ids containing this marker are Coding Memory's own generation runs. */
 export const ENGINE_SESSION = 'coding-memory-'
+
+/**
+ * A defined optional property, for envelopes whose keys must be omitted rather
+ * than serialized as `undefined`.
+ * @param key - property name.
+ * @param value - property value, possibly undefined.
+ * @returns an object with the property, or an empty object.
+ */
+const optional = (key, value) => value === undefined ? {} : { [key]: value }
 
 /**
  * The engine's capture report, or an empty object when it cannot be parsed.
@@ -108,7 +119,9 @@ export const ENGINE_SESSION = 'coding-memory-'
 export function parseReport(output) {
   try {
     const report = JSON.parse(output.trim())
-    return report !== null && typeof report === 'object' ? report : {}
+    return report !== null && typeof report === 'object' && !Array.isArray(report)
+      ? report
+      : {}
   } catch {
     return {}
   }
@@ -163,10 +176,10 @@ export function projectRecord(record) {
     seq: record.seq,
     type: record.type,
     time: record.time,
-    ...record.surfaceOp === undefined ? {} : { surfaceOp: record.surfaceOp },
-    ...record.sourceEventSeqs === undefined ? {} : { sourceEventSeqs: record.sourceEventSeqs },
-    ...record.ignorable === undefined ? {} : { ignorable: record.ignorable },
-    ...record.data === undefined ? {} : { data: record.data },
+    ...optional('surfaceOp', record.surfaceOp),
+    ...optional('sourceEventSeqs', record.sourceEventSeqs),
+    ...optional('ignorable', record.ignorable),
+    ...optional('data', record.data),
   }
 }
 
@@ -225,11 +238,11 @@ export function project(header, events) {
       version: header.version,
       id: header.id,
       createdAt: header.createdAt,
-      ...header.cwd === undefined ? {} : { cwd: header.cwd },
+      ...optional('cwd', header.cwd),
       isSeeded: header.isSeeded,
-      ...header.parentSession === undefined ? {} : { parentSession: header.parentSession },
-      ...header.origin === undefined ? {} : { origin: header.origin },
-      ...header.delegationDepth === undefined ? {} : { delegationDepth: header.delegationDepth },
+      ...optional('parentSession', header.parentSession),
+      ...optional('origin', header.origin),
+      ...optional('delegationDepth', header.delegationDepth),
     },
     records: events.map(projectRecord),
   }
@@ -314,6 +327,9 @@ export async function publishTurn(stateDir, sessionId, turn, read) {
  */
 export function apply(ctx, config) {
   const { executable, stateDir, dshHome, timeoutMs = 15000 } = config
+  // Diagnostics must reach the harness's own stderr even under `--json`, so
+  // they never go through a logger object whose shape varies by composition.
+  const warn = (message) => process.stderr.write(`coding-memory-capture: ${message}\n`)
   /**
    * A compaction in flight for one session, from its durable bracket. Capture
    * waits for it so the projection reflects the finished surface: reading a
@@ -360,9 +376,6 @@ export function apply(ctx, config) {
     if (!compacting.has(String(sessionId))) return
     await settleCompaction(sessionId)
   }
-  // Diagnostics must reach the harness's own stderr even under `--json`, so
-  // they never go through a logger object whose shape varies by composition.
-  const warn = (message) => process.stderr.write(`coding-memory-capture: ${message}\n`)
 
   /** Run one engine subcommand with a bounded wait; diagnostics never escape. */
   async function run(args, input) {
@@ -381,7 +394,7 @@ export function apply(ctx, config) {
         finish({ code: -1, output: 'engine timed out' })
       }, timeoutMs)
       child.stdout.on('data', (chunk) => {
-        if (output.length < 65536) output += String(chunk)
+        if (output.length < MAX_REPORT_BYTES) output += String(chunk)
       })
       child.stderr.on('data', (chunk) => warn(`engine: ${String(chunk).trim().slice(0, 500)}`))
       child.on('error', (error) => finish({ code: -1, output: String(error) }))
@@ -391,21 +404,13 @@ export function apply(ctx, config) {
     })
   }
 
+  /** Run one DSH engine subcommand for the configured state and DSH home. */
+  const engine = (args) =>
+    run(['--state-dir', stateDir, 'dsh', '--dsh-home', dshHome, ...args])
+
   /** One bounded, readable form of a failure for stderr. */
   const describe = (error) => String(error && error.stack ? error.stack.split('\n').slice(0, 4).join(' | ') : error).slice(0, 600)
 
-  /**
-   * Capture one ended run.
-   *
-   * The read starts synchronously from the caller: an experiment plugin issuing
-   * the same `readSession` from a `turn/end` listener succeeds, while this
-   * bridge's first successful call is still unexplained under the headless
-   * runner's teardown, so the read must begin at the earliest possible point.
-   * @param sessionId - session whose run to capture.
-   * @param turn - the exact turn.
-   * @param read - a function returning the session read; the first call's
-   *   promise is already in flight (see the caller), a retry starts a fresh one.
-   */
   /** Schedule one capture retry with a fresh read; timers stay referenced. */
   const retryLater = (delay, sessionId, turn, attemptsLeft, errorsLeft) => {
     setTimeout(
@@ -432,6 +437,18 @@ export function apply(ctx, config) {
     })
   }
 
+  /**
+   * Capture one ended run.
+   *
+   * The read starts synchronously from the caller: an experiment plugin issuing
+   * the same `readSession` from a `turn/end` listener succeeds, while this
+   * bridge's first successful call is still unexplained under the headless
+   * runner's teardown, so the read must begin at the earliest possible point.
+   * @param sessionId - session whose run to capture.
+   * @param turn - the exact turn.
+   * @param read - a function returning the session read; the first call's
+   *   promise is already in flight (see the caller), a retry starts a fresh one.
+   */
   function captureTurn(
     sessionId,
     turn,
@@ -446,10 +463,9 @@ export function apply(ctx, config) {
       .then(async (published) => {
         if (published === null) return
         const { path, cwd } = published
-        const result = await run([
-          '--state-dir', stateDir, 'dsh', '--dsh-home', dshHome,
-          'capture', '--session', path, '--project', cwd, '--turn', String(turn),
-        ])
+        const result = await engine(
+          ['capture', '--session', path, '--project', cwd, '--turn', String(turn)],
+        )
         if (result.code !== 0) {
           // The run is already queued and nothing else drives it. A timeout,
           // locked state database, or spawn failure is worth retrying, but it
@@ -501,10 +517,9 @@ export function apply(ctx, config) {
           // The turn itself is over the transport bound. Re-reading and
           // reserializing it cannot change that outcome, and the run would
           // otherwise stay queued with no driver: ask the engine to hold it.
-          const held = await run([
-            '--state-dir', stateDir, 'dsh', '--dsh-home', dshHome,
-            'hold-over-limit', '--thread', String(sessionId), '--turn', String(turn),
-          ])
+          const held = await engine(
+            ['hold-over-limit', '--thread', String(sessionId), '--turn', String(turn)],
+          )
           if (held.code !== 0) {
             warn(`cannot hold oversized turn ${turn}: ${held.output.slice(0, 500)}`)
           } else if (parseReport(held.output).state !== 'held') {
@@ -596,16 +611,19 @@ export function apply(ctx, config) {
         // The runtime does not replay `turn/end`; a transient enqueue failure
         // would lose the only live observation, while duplicate enqueue is
         // idempotent.
+        const retryEnqueue = (errorsLeft) => {
+          if (errorsLeft > 1) {
+            setTimeout(() => enqueueTurn(errorsLeft - 1), CAPTURE_ERROR_RETRY_MS)
+          } else {
+            warn(`enqueue retries exhausted for turn ${turn}; the turn-end observation is lost`)
+          }
+        }
         const enqueueTurn = (errorsLeft = CAPTURE_ERRORS) => {
-          run(['--state-dir', stateDir, 'dsh', '--dsh-home', dshHome, '--event', signal, 'enqueue'])
+          engine(['enqueue', '--event', signal])
             .then((queued) => {
               if (queued.code !== 0) {
                 warn(`enqueue failed for turn ${turn}: ${queued.output.slice(0, 500)}`)
-                if (errorsLeft > 1) {
-                  setTimeout(() => enqueueTurn(errorsLeft - 1), CAPTURE_ERROR_RETRY_MS)
-                } else {
-                  warn(`enqueue retries exhausted for turn ${turn}; the turn-end observation is lost`)
-                }
+                retryEnqueue(errorsLeft)
                 return
               }
               const hint = parseReport(queued.output)
@@ -629,11 +647,7 @@ export function apply(ctx, config) {
             })
             .catch((error) => {
               warn(`enqueue failed for turn ${turn}: ${describe(error)}`)
-              if (errorsLeft > 1) {
-                setTimeout(() => enqueueTurn(errorsLeft - 1), CAPTURE_ERROR_RETRY_MS)
-              } else {
-                warn(`enqueue retries exhausted for turn ${turn}; the turn-end observation is lost`)
-              }
+              retryEnqueue(errorsLeft)
             })
         }
         enqueueTurn()

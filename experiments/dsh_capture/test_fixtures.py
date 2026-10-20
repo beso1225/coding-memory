@@ -342,6 +342,11 @@ class DshFixture(unittest.TestCase):
         self.assertIn("hold-over-limit", source)
         self.assertIn("report.reason === 'history_pending'", source)
         self.assertIn("enqueueTurn", source)
+        self.assertIn(
+            "['enqueue', '--event', signal]",
+            source,
+            "the enqueue subcommand must receive --event after the subcommand",
+        )
         self.assertIn("publishDeferred", source)
 
     def test_publish_removes_a_failed_temporary(self):

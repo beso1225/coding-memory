@@ -260,9 +260,6 @@ enum Commands {
         /// DSH home whose `sessions` root identifies this runtime store.
         #[arg(long)]
         dsh_home: PathBuf,
-        /// Bridge `turn-end` signal JSON; defaults to bounded stdin.
-        #[arg(long)]
-        event: Option<String>,
         #[command(subcommand)]
         action: DshAction,
     },
@@ -288,9 +285,13 @@ enum Commands {
     },
 }
 #[derive(Subcommand)]
-pub enum DshAction {
+enum DshAction {
     /// Record a bounded turn-end signal as a queued capture hint.
-    Enqueue,
+    Enqueue {
+        /// Bridge `turn-end` signal JSON; defaults to bounded stdin.
+        #[arg(long)]
+        event: Option<String>,
+    },
     /// Read a bounded session projection and capture one run.
     Capture {
         /// Projection file for one session, as written by the bridge.
@@ -331,7 +332,7 @@ pub enum DshAction {
 impl DshAction {
     fn into_operation(self) -> DshOperation {
         match self {
-            Self::Enqueue => DshOperation::Enqueue,
+            Self::Enqueue { event } => DshOperation::Enqueue { signal: event },
             Self::Capture {
                 session,
                 project,
@@ -666,18 +667,16 @@ async fn main() -> Result<()> {
             serde_json::to_string_pretty(&evidence::load(&root, &digest)?)?
         ),
         Commands::OwnStore { codex_home } => state.own_store(&ingestion::store_id(&codex_home)?)?,
-        Commands::Dsh {
-            dsh_home,
-            event,
-            action,
-        } => {
+        Commands::Dsh { dsh_home, action } => {
             let store = ingestion::dsh_store_id(&dsh_home)?;
             println!(
                 "{}",
-                serde_json::to_string_pretty(
-                    &ingestion::dsh(&mut state, &store, &root, &(action.into_operation()), event)
-                        .await?
-                )?
+                serde_json::to_string_pretty(&ingestion::dsh(
+                    &mut state,
+                    &store,
+                    &root,
+                    action.into_operation(),
+                )?)?
             );
         }
         Commands::Retry {

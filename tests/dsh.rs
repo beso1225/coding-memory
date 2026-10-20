@@ -60,12 +60,16 @@ fn log(turns: Vec<Value>) -> Value {
     json!({"schema": 1, "header": header("session-a", "/repo"), "records": records})
 }
 
-fn decode(log: &serde_json::Value, turn: u64) -> Capture {
-    dsh::decode(log, "storedigest", "/repo", turn, 3).expect("decode")
+fn projection(log: &Value) -> dsh::Projection {
+    dsh::Projection::from_value(log.clone()).expect("projection")
 }
 
-fn decode_at(log: &serde_json::Value, turn: u64, epoch: i64) -> Capture {
-    dsh::decode(log, "storedigest", "/repo", turn, epoch).expect("decode")
+fn decode(log: &Value, turn: u64) -> Capture {
+    dsh::decode(&projection(log), "storedigest", "/repo", turn, 3).expect("decode")
+}
+
+fn decode_at(log: &Value, turn: u64, epoch: i64) -> Capture {
+    dsh::decode(&projection(log), "storedigest", "/repo", turn, epoch).expect("decode")
 }
 
 fn two_turn_log() -> serde_json::Value {
@@ -241,7 +245,8 @@ fn the_committed_fixture_decodes_with_the_engine() {
         "../experiments/dsh_capture/fixtures/session-v4.json"
     ))
     .expect("fixture JSON");
-    let Ok(Capture::Ready(bundle)) = dsh::decode(&value, "store", "/synthetic/project", 1, 0)
+    let Ok(Capture::Ready(bundle)) =
+        dsh::decode(&projection(&value), "store", "/synthetic/project", 1, 0)
     else {
         panic!("the committed fixture decodes to evidence");
     };
@@ -532,10 +537,7 @@ fn messages_without_a_turn_field_belong_to_the_enclosing_turn() {
     };
     assert_eq!(first.items.len(), 2, "only the human message and answer");
     assert_eq!(second.items.len(), 1);
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("session.json");
-    std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
-    let runs = dsh::discover(&path, "/repo", "storedigest").expect("discover");
+    let runs = dsh::discover(&projection(&value), "/repo", "storedigest").expect("discover");
     assert_eq!(
         runs.iter()
             .map(|r| r.turn.turn.as_str())
@@ -733,11 +735,11 @@ fn the_exact_registration_instant_is_honoured() {
         records[last]["time"] = json!(enabled_ms - 300);
     }
     let outcome = dsh::decode_after(
-        &value,
+        &projection(&value),
         "storedigest",
         "/repo",
         1,
-        &dsh::Boundary::Millis(enabled_ms),
+        dsh::Boundary::Millis(enabled_ms),
     )
     .expect("decode");
     assert!(
@@ -752,11 +754,11 @@ fn the_exact_registration_instant_is_honoured() {
     }
     assert!(matches!(
         dsh::decode_after(
-            &value,
+            &projection(&value),
             "storedigest",
             "/repo",
             1,
-            &dsh::Boundary::Millis(enabled_ms)
+            dsh::Boundary::Millis(enabled_ms)
         )
         .expect("decode"),
         Capture::Ready(_)
@@ -767,15 +769,15 @@ fn the_exact_registration_instant_is_honoured() {
 fn a_projection_must_declare_a_supported_bridge_schema() {
     let mut value = two_turn_log();
     value.as_object_mut().unwrap().remove("schema");
-    assert!(matches!(
-        decode(&value, 1),
-        Capture::Unsupported(Reason::ProjectionSchema)
-    ));
+    assert!(
+        dsh::Projection::from_value(value.clone()).is_err(),
+        "a missing bridge schema is rejected before decoding"
+    );
     value["schema"] = json!(2);
-    assert!(matches!(
-        decode(&value, 1),
-        Capture::Unsupported(Reason::ProjectionSchema)
-    ));
+    assert!(
+        dsh::Projection::from_value(value).is_err(),
+        "a future bridge schema is rejected before decoding"
+    );
 }
 
 #[test]
@@ -976,6 +978,23 @@ fn broken_sequences_identities_and_ownership_are_rejected() {
 }
 
 #[test]
+fn bookkeeping_records_inside_a_turn_need_no_payload() {
+    // Bookkeeping may be omitted from a projection entirely, so its presence
+    // without `data` must not hold a turn that is otherwise complete. Requiring
+    // an attribution field here would turn a harmless envelope into a defect.
+    let value = json!({"schema":1,"header":header("session-a","/repo"),"records":[
+        turn_start(3, 1),
+        human(4, 1, 1),
+        json!({"seq":5,"type":"job/registered","time":1006}),
+        turn_end(6, 1, json!({"kind":"completed"})),
+    ]});
+    let Capture::Ready(bundle) = decode(&value, 1) else {
+        panic!("bookkeeping without a payload is skipped, not held");
+    };
+    assert_eq!(bundle.items.len(), 1);
+}
+
+#[test]
 fn oversized_turns_are_over_limit() {
     let big = "x".repeat(coding_memory::dsh::MAX_BYTES);
     let value = log(vec![
@@ -993,21 +1012,19 @@ fn oversized_turns_are_over_limit() {
         ),
         turn_end(7, 1, json!({"kind": "completed"})),
     ]);
-    let oversized = dsh::decode(&value, "storedigest", "/repo", 1, 3).expect("decode");
+    let oversized = dsh::decode(&projection(&value), "storedigest", "/repo", 1, 3).expect("decode");
     assert!(matches!(oversized, Capture::OverLimit));
 }
 
 #[test]
 fn discovery_lists_only_completed_human_turns_of_the_project() {
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("session.json");
-    std::fs::write(&path, serde_json::to_vec(&two_turn_log()).unwrap()).unwrap();
-    let runs = dsh::discover(&path, "/repo", "storedigest").expect("discover");
+    let value = two_turn_log();
+    let runs = dsh::discover(&projection(&value), "/repo", "storedigest").expect("discover");
     let turns: Vec<_> = runs.iter().map(|r| r.turn.turn.as_str()).collect();
     assert_eq!(turns, vec!["1", "2"]);
     assert!(runs.iter().all(|r| r.turn.thread == "session-a"));
 
-    let other = dsh::discover(&path, "/elsewhere", "storedigest").expect("discover");
+    let other = dsh::discover(&projection(&value), "/elsewhere", "storedigest").expect("discover");
     assert!(other.is_empty());
 }
 
@@ -1160,34 +1177,154 @@ mod migration {
 mod ingestion {
     use coding_memory::{
         domain::RunKey,
-        ingestion::{self, DshOperation},
+        ingestion::{self, DshOperation, DshReport},
         state::{Enqueue, State},
     };
     use serde_json::{Value, json};
-    use std::{path::Path, process::Command};
-    use tempfile::tempdir;
+    use std::{
+        path::{Path, PathBuf},
+        process::Command,
+    };
+    use tempfile::{TempDir, tempdir};
 
-    /// A registered Git project and its canonical id.
-    fn project(dir: &Path) -> (std::path::PathBuf, String) {
-        let repo = dir.join("repo");
-        std::fs::create_dir_all(&repo).unwrap();
-        Command::new("git")
-            .args(["init", "-q"])
-            .arg(&repo)
-            .status()
-            .unwrap();
-        let p = coding_memory::project::resolve(&repo).unwrap();
-        (repo.canonicalize().unwrap(), p.id)
+    /// A registered Git project, an isolated DSH home, and engine state.
+    struct Runtime {
+        data: TempDir,
+        _dsh: TempDir,
+        root: PathBuf,
+        repo: PathBuf,
+        id: String,
+        cwd: String,
+        store: String,
+        state: State,
     }
+
+    impl Runtime {
+        fn new() -> anyhow::Result<Self> {
+            let data = tempdir()?;
+            let dsh = tempdir()?;
+            let repo = data.path().join("repo");
+            std::fs::create_dir_all(&repo)?;
+            let status = Command::new("git")
+                .args(["init", "-q"])
+                .arg(&repo)
+                .status()?;
+            assert!(status.success(), "git init failed");
+            let repo = repo.canonicalize()?;
+            let id = coding_memory::project::resolve(&repo)?.id;
+            let root = data.path().join("state");
+            std::fs::create_dir_all(&root)?;
+            let state = State::open(&root.join("state.sqlite"))?;
+            let store = ingestion::dsh_store_id(dsh.path())?;
+            let cwd = repo.to_str().unwrap().to_string();
+            Ok(Self {
+                data,
+                _dsh: dsh,
+                root,
+                repo,
+                id,
+                cwd,
+                store,
+                state,
+            })
+        }
+
+        fn path(&self, name: &str) -> PathBuf {
+            self.data.path().join(name)
+        }
+
+        fn key(&self, thread: &str, turn: u64) -> RunKey {
+            RunKey {
+                store: self.store.clone(),
+                thread: thread.into(),
+                turn: turn.to_string(),
+            }
+        }
+
+        fn signal(&self, thread: &str, turn: u64) -> Value {
+            json!({
+                "kind": "turn-end",
+                "session": thread,
+                "turn": turn,
+                "cwd": self.cwd,
+            })
+        }
+
+        fn run(&mut self, operation: DshOperation) -> anyhow::Result<DshReport> {
+            ingestion::dsh(&mut self.state, &self.store, &self.root, operation)
+        }
+
+        fn register(&mut self, session: &Path) -> anyhow::Result<DshReport> {
+            self.run(DshOperation::Register {
+                session: session.to_path_buf(),
+                project: self.repo.clone(),
+            })
+        }
+
+        fn reconcile(&mut self, session: &Path) -> anyhow::Result<DshReport> {
+            self.run(DshOperation::Reconcile {
+                session: session.to_path_buf(),
+                project: self.repo.clone(),
+            })
+        }
+
+        fn capture(&mut self, session: &Path, turn: Option<u64>) -> anyhow::Result<DshReport> {
+            self.run(DshOperation::Capture {
+                session: session.to_path_buf(),
+                project: self.repo.clone(),
+                turn,
+            })
+        }
+
+        fn enqueue(&mut self, thread: &str, turn: u64) -> anyhow::Result<DshReport> {
+            let signal = self.signal(thread, turn);
+            self.enqueue_value(&signal)
+        }
+
+        fn enqueue_value(&mut self, signal: &Value) -> anyhow::Result<DshReport> {
+            self.run(DshOperation::Enqueue {
+                signal: Some(signal.to_string()),
+            })
+        }
+
+        fn hold_over_limit(&mut self, thread: &str, turn: u64) -> anyhow::Result<DshReport> {
+            self.run(DshOperation::HoldOverLimit {
+                thread: thread.into(),
+                turn,
+            })
+        }
+
+        fn own_store(&mut self) -> anyhow::Result<DshReport> {
+            self.run(DshOperation::OwnStore)
+        }
+
+        fn status_of(
+            &self,
+            thread: &str,
+            turn: u64,
+        ) -> anyhow::Result<Option<(String, Option<String>)>> {
+            let turn = turn.to_string();
+            Ok(self
+                .state
+                .status()?
+                .into_iter()
+                .find(|status| status.key.thread == thread && status.key.turn == turn)
+                .map(|status| (status.state, status.reason)))
+        }
+    }
+
+    fn document(cwd: &str, id: &str, created_at: i64, records: Vec<Value>) -> Value {
+        json!({"schema":1,"header":{
+            "type":"session","version":4,"id":id,"createdAt":created_at,"cwd":cwd,"isSeeded":false},
+            "records":records})
+    }
+
+    fn write_document(path: &Path, document: &Value) {
+        std::fs::write(path, serde_json::to_vec(document).unwrap()).unwrap();
+    }
+
     /// A projection for one session id.
     fn session_as(path: &Path, cwd: &str, turns: u64, id: &str) {
-        session(path, cwd, turns);
-        let mut document: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-        document["header"]["id"] = serde_json::json!(id);
-        std::fs::write(path, serde_json::to_vec(&document).unwrap()).unwrap();
-    }
-
-    fn session(path: &Path, cwd: &str, turns: u64) {
         let mut records =
             vec![json!({"seq":0,"type":"permission/preset","time":1,"data":{"preset":"default"}})];
         let mut seq = 1;
@@ -1205,120 +1342,144 @@ mod ingestion {
             records.push(json!({"seq":seq,"type":"turn/end","time":1002+turn*10,"data":{"turn":turn,"reason":{"kind":"completed"}}}));
             seq += 1;
         }
-        let document = json!({"schema":1,"header":{
-            "type":"session","version":4,"id":"session-x","createdAt":1000,"cwd":cwd,"isSeeded":false},
-            "records":records});
-        std::fs::write(path, serde_json::to_vec(&document).unwrap()).unwrap();
-    }
-    fn runtime() -> (tempfile::TempDir, tempfile::TempDir) {
-        (tempdir().unwrap(), tempdir().unwrap())
+        write_document(path, &document(cwd, id, 1000, records));
     }
 
-    #[tokio::test]
-    async fn register_reconcile_and_capture_publish_evidence() -> anyhow::Result<()> {
-        let (data, dsh) = runtime();
-        let (repo, id) = project(data.path());
-        let root = data.path().join("state");
-        std::fs::create_dir_all(&root)?;
-        let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::dsh_store_id(dsh.path())?;
-        let projection = data.path().join("session.json");
-        let cwd = repo.to_str().unwrap().to_string();
-        session(&projection, &cwd, 2);
+    fn session(path: &Path, cwd: &str, turns: u64) {
+        session_as(path, cwd, turns, "session-x");
+    }
+
+    /// Rewrite every record's millisecond time as a function of its seq.
+    fn set_record_times(path: &Path, time: impl Fn(u64) -> i64) -> anyhow::Result<()> {
+        let mut document: Value = serde_json::from_slice(&std::fs::read(path)?)?;
+        for record in document["records"].as_array_mut().unwrap() {
+            let seq = record["seq"].as_u64().unwrap();
+            record["time"] = json!(time(seq));
+        }
+        std::fs::write(path, serde_json::to_vec(&document)?)?;
+        Ok(())
+    }
+
+    /// Rewrite one turn's record times.
+    fn set_turn_times(path: &Path, turn: u64, time: impl Fn(u64) -> i64) -> anyhow::Result<()> {
+        let mut document: Value = serde_json::from_slice(&std::fs::read(path)?)?;
+        for record in document["records"].as_array_mut().unwrap() {
+            if record["data"]["turn"] == json!(turn) {
+                let seq = record["seq"].as_u64().unwrap();
+                record["time"] = json!(time(seq));
+            }
+        }
+        std::fs::write(path, serde_json::to_vec(&document)?)?;
+        Ok(())
+    }
+
+    /// A projection with two completed human turns, both after `time_ms`.
+    fn two_turn_projection(path: &Path, cwd: &str, session: &str, time_ms: i64) {
+        let mut records = Vec::new();
+        let mut seq = 0;
+        for turn in 1..=2 {
+            records
+                .push(json!({"seq":seq,"type":"turn/start","time":time_ms,"data":{"turn":turn}}));
+            seq += 1;
+            records.push(json!({"seq":seq,"type":"user/message","time":time_ms+turn,"surfaceOp":"append","data":{
+                "id":format!("m{turn}"),"role":"user","content":[{"type":"text","text":"work"}],"source":{"kind":"user"}}}));
+            seq += 1;
+            records.push(json!({"seq":seq,"type":"assistant/message","time":time_ms+turn,"surfaceOp":"append","data":{
+                "turn":turn,"step":1,"message":{"id":format!("a{turn}"),"role":"assistant","content":[{"type":"text","text":"done"}],
+                "source":{"kind":"model","provider":"p","model":"m"}}}}));
+            seq += 1;
+            records.push(json!({"seq":seq,"type":"turn/end","time":time_ms+turn,"data":{"turn":turn,"reason":{"kind":"completed"}}}));
+            seq += 1;
+        }
+        write_document(path, &document(cwd, session, time_ms, records));
+    }
+
+    /// A projection for `session` with one completed human turn after `time_ms`.
+    fn projection_for(path: &Path, cwd: &str, session: &str, time_ms: i64) {
+        write_document(
+            path,
+            &document(
+                cwd,
+                session,
+                time_ms,
+                vec![
+                    json!({"seq":0,"type":"turn/start","time":time_ms,"data":{"turn":1}}),
+                    json!({"seq":1,"type":"user/message","time":time_ms+1,"surfaceOp":"append","data":{
+                        "id":"m1","role":"user","content":[{"type":"text","text":"work"}],"source":{"kind":"user"}}}),
+                    json!({"seq":2,"type":"assistant/message","time":time_ms+2,"surfaceOp":"append","data":{
+                        "turn":1,"step":1,"message":{"id":"a1","role":"assistant","content":[{"type":"text","text":"done"}],
+                        "source":{"kind":"model","provider":"p","model":"m"}}}}),
+                    json!({"seq":3,"type":"turn/end","time":time_ms+3,"data":{"turn":1,"reason":{"kind":"completed"}}}),
+                ],
+            ),
+        );
+    }
+
+    /// A one-turn projection whose start/end are exact millisecond instants.
+    fn timed_projection(path: &Path, cwd: &str, turn: u64, start_ms: i64, end_ms: i64) {
+        write_document(
+            path,
+            &document(
+                cwd,
+                "session-x",
+                start_ms,
+                vec![
+                    json!({"seq":0,"type":"turn/start","time":start_ms,"data":{"turn":turn}}),
+                    json!({"seq":1,"type":"user/message","time":start_ms+1,"data":{
+                        "id":format!("m{turn}"),"role":"user",
+                        "content":[{"type":"text","text":"work"}],"source":{"kind":"user"}}}),
+                    json!({"seq":2,"type":"turn/end","time":end_ms,"data":{"turn":turn,"reason":{"kind":"completed"}}}),
+                ],
+            ),
+        );
+    }
+
+    /// Make a deferred run claimable again, as a later worker cycle would.
+    fn make_available(root: &Path, thread: &str) -> anyhow::Result<()> {
+        let db = rusqlite::Connection::open(root.join("state.sqlite"))?;
+        db.execute("UPDATE runs SET available_at=0 WHERE thread=?1", [thread])?;
+        Ok(())
+    }
+
+    #[test]
+    fn register_reconcile_and_capture_publish_evidence() -> anyhow::Result<()> {
+        let mut rt = Runtime::new()?;
+        let projection = rt.path("session.json");
+        session(&projection, &rt.cwd, 2);
         let epoch = ingestion::now();
 
         // Baseline: both existing turns pre-date enablement.
-        let report = ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Register {
-                session: projection.clone(),
-                project: repo.clone(),
-            },
-            None,
-        )
-        .await?;
+        let report = rt.register(&projection)?;
         assert_eq!(report.baseline, Some(2));
-        assert!(state.project_epoch(&id)? >= epoch);
-        let report = ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Reconcile {
-                session: projection.clone(),
-                project: repo.clone(),
-            },
-            None,
-        )
-        .await?;
+        assert!(rt.state.project_epoch(&rt.id)? >= epoch);
+        let report = rt.reconcile(&projection)?;
         assert_eq!(report.queued, Some(0), "baseline turns are never queued");
         assert!(
-            state.status()?.is_empty(),
+            rt.state.status()?.is_empty(),
             "reconcile does not enqueue excluded turns"
         );
 
         // A turn a live process saw end after registration is queued via its
         // hint, then captured. Reconciliation alone never queues a run.
-        session(&projection, &cwd, 3);
-        let mut document: Value = serde_json::from_slice(&std::fs::read(&projection)?)?;
-        for record in document["records"].as_array_mut().unwrap() {
-            let seq = record["seq"].as_u64().unwrap();
-            // DSH commits milliseconds; keep the turn after the epoch second.
-            record["time"] = json!(epoch * 1000 + 1000 + seq as i64);
-        }
-        std::fs::write(&projection, serde_json::to_vec(&document)?)?;
-        let report = ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Reconcile {
-                session: projection.clone(),
-                project: repo.clone(),
-            },
-            None,
-        )
-        .await?;
+        session(&projection, &rt.cwd, 3);
+        // DSH commits milliseconds; keep every record after the epoch second.
+        set_record_times(&projection, |seq| epoch * 1000 + 1000 + seq as i64)?;
+        let report = rt.reconcile(&projection)?;
         assert_eq!(report.queued, Some(0), "reconcile is not a capture source");
+
         // The harness only flushes later, so make turn 3 end after enablement
         // (milliseconds, as DSH commits them) and re-read the projection.
-        let epoch = state.project_epoch(&id)?;
-        let mut document: Value = serde_json::from_slice(&std::fs::read(&projection)?)?;
-        for record in document["records"].as_array_mut().unwrap() {
-            if record["data"]["turn"] == json!(3) {
-                let seq = record["seq"].as_u64().unwrap();
-                record["time"] = json!((epoch + 1) * 1000 + seq as i64);
-            }
-        }
-        std::fs::write(&projection, serde_json::to_vec(&document)?)?;
-        let signal = json!({"kind":"turn-end","session":"session-x","turn":3,"cwd":cwd});
-        let report = ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Enqueue,
-            Some(signal.to_string()),
-        )
-        .await?;
+        let epoch = rt.state.project_epoch(&rt.id)?;
+        set_turn_times(&projection, 3, |seq| (epoch + 1) * 1000 + seq as i64)?;
+        let report = rt.enqueue("session-x", 3)?;
         assert_eq!(report.state, Some("queued"), "the live hint queues its run");
 
-        let report = ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Capture {
-                session: projection.clone(),
-                project: repo.clone(),
-                turn: None,
-            },
-            None,
-        )
-        .await?;
+        let report = rt.capture(&projection, None)?;
         assert_eq!(report.state, Some("ready"), "{report:?}");
         let digest = report.evidence.expect("evidence digest");
-        let evidence = coding_memory::evidence::load(&root, &digest)?;
+        let evidence = coding_memory::evidence::load(&rt.root, &digest)?;
         assert_eq!(evidence.outcome, "completed");
-        assert_eq!(evidence.project, id);
+        assert_eq!(evidence.project, rt.id);
         assert_eq!(evidence.run.turn, "3");
         assert_eq!(
             evidence.items.len(),
@@ -1327,291 +1488,121 @@ mod ingestion {
         );
 
         // Replaying the same session never recaptures a finished turn.
-        let report = ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Capture {
-                session: projection,
-                project: repo,
-                turn: None,
-            },
-            None,
-        )
-        .await?;
+        let report = rt.capture(&projection, None)?;
         assert_eq!(report.reason.as_deref(), Some("no_ready_run"));
         Ok(())
     }
 
-    #[tokio::test]
-    async fn a_run_no_live_process_saw_end_is_never_captured() -> anyhow::Result<()> {
+    #[test]
+    fn a_run_no_live_process_saw_end_is_never_captured() -> anyhow::Result<()> {
         // Reconciliation can queue a run whose end this process never observed.
         // Publishing it from a session read would capture the wrong run, so
         // capture refuses without a hint.
-        let (data, dsh) = runtime();
-        let (repo, id) = project(data.path());
-        let root = data.path().join("state");
-        std::fs::create_dir_all(&root)?;
-        let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::dsh_store_id(dsh.path())?;
-        let projection = data.path().join("session.json");
-        let cwd = repo.to_str().unwrap().to_string();
+        let mut rt = Runtime::new()?;
+        let projection = rt.path("session.json");
         // Register while the session has one completed turn: that turn is the
         // enablement baseline. The turn to capture arrives afterwards.
-        session(&projection, &cwd, 1);
-        ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Register {
-                session: projection.clone(),
-                project: repo.clone(),
-            },
-            None,
-        )
-        .await?;
+        session(&projection, &rt.cwd, 1);
+        rt.register(&projection)?;
         // Second-resolution boundary: the new turn starts in a later second.
         std::thread::sleep(std::time::Duration::from_millis(1100));
         let epoch = ingestion::now();
-        session(&projection, &cwd, 2);
-        let mut document: Value = serde_json::from_slice(&std::fs::read(&projection)?)?;
-        for record in document["records"].as_array_mut().unwrap() {
-            let seq = record["seq"].as_u64().unwrap();
-            // DSH commits milliseconds; keep the turn after the epoch second.
-            record["time"] = json!(epoch * 1000 + 1000 + seq as i64);
-        }
-        std::fs::write(&projection, serde_json::to_vec(&document)?)?;
+        session(&projection, &rt.cwd, 2);
+        // DSH commits milliseconds; keep the turn after the epoch second.
+        set_record_times(&projection, |seq| epoch * 1000 + 1000 + seq as i64)?;
+
         // Exactly what reconciliation produces: a queued run with no hint.
-        let key = RunKey {
-            store: store.clone(),
-            thread: "session-x".into(),
-            turn: "2".into(),
-        };
-        state.enqueue(&key, &id, &cwd, 0)?;
-        let report = ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Capture {
-                session: projection,
-                project: repo,
-                turn: None,
-            },
-            None,
-        )
-        .await?;
+        let key = rt.key("session-x", 2);
+        rt.state.enqueue(&key, &rt.id, &rt.cwd, 0)?;
+        let report = rt.capture(&projection, None)?;
         assert_eq!(report.reason.as_deref(), Some("no_capture_hint"));
         assert!(report.evidence.is_none(), "no evidence is published");
         assert_eq!(report.run.as_ref().map(|r| r.turn.as_str()), Some("2"));
         assert_eq!(
-            state.status()?[0].state,
+            rt.state.status()?[0].state,
             "held",
             "the run stays inspectable rather than silently skipped"
         );
         Ok(())
     }
 
-    #[tokio::test]
-    async fn a_hint_recorded_before_registration_resolves_after_it() -> anyhow::Result<()> {
+    #[test]
+    fn a_hint_recorded_before_registration_resolves_after_it() -> anyhow::Result<()> {
         // A live run can end before its project is registered. The hint names
         // the exact run that ended, so reconcile queues it once registration
         // enables the project instead of dropping it.
-        let (data, dsh) = runtime();
-        let (repo, id) = project(data.path());
-        let root = data.path().join("state");
-        std::fs::create_dir_all(&root)?;
-        let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::dsh_store_id(dsh.path())?;
-        let projection = data.path().join("session.json");
-        let cwd = repo.to_str().unwrap().to_string();
-        session(&projection, &cwd, 1);
-        let signal = json!({"kind":"turn-end","session":"session-x","turn":1,"cwd":cwd});
-        let report = ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Enqueue,
-            Some(signal.to_string()),
-        )
-        .await?;
+        let mut rt = Runtime::new()?;
+        let projection = rt.path("session.json");
+        session(&projection, &rt.cwd, 1);
+        let report = rt.enqueue("session-x", 1)?;
         assert_eq!(
             report.state,
             Some("deferred"),
             "the hint is kept, not dropped"
         );
-        assert_eq!(state.pending_hints(&store)?.len(), 1);
+        assert_eq!(rt.state.pending_hints(&rt.store)?.len(), 1);
 
         // The harness only flushes on teardown, so the run ends in an earlier
         // second than the registration that enables the project.
         std::thread::sleep(std::time::Duration::from_millis(1100));
-        ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Register {
-                session: projection.clone(),
-                project: repo.clone(),
-            },
-            None,
-        )
-        .await?;
-        let report = ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Reconcile {
-                session: projection.clone(),
-                project: repo.clone(),
-            },
-            None,
-        )
-        .await?;
+        rt.register(&projection)?;
+        let report = rt.reconcile(&projection)?;
         assert_eq!(
             report.queued,
             Some(0),
             "a turn ending before enablement is excluded"
         );
         assert!(
-            state.pending_hints(&store)?.is_empty(),
+            rt.state.pending_hints(&rt.store)?.is_empty(),
             "the hint is resolved"
         );
 
         // A run that ends after registration resolves into its exact run.
         let epoch = ingestion::now();
         std::thread::sleep(std::time::Duration::from_millis(1100));
-        session(&projection, &cwd, 2);
-        let mut document: Value = serde_json::from_slice(&std::fs::read(&projection)?)?;
-        for record in document["records"].as_array_mut().unwrap() {
-            let seq = record["seq"].as_u64().unwrap();
-            // DSH commits milliseconds; keep the turn after the epoch second.
-            record["time"] = json!(epoch * 1000 + 1000 + seq as i64);
-        }
-        std::fs::write(&projection, serde_json::to_vec(&document)?)?;
-        let signal = json!({"kind":"turn-end","session":"session-x","turn":2,"cwd":cwd});
-        ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Enqueue,
-            Some(signal.to_string()),
-        )
-        .await?;
+        session(&projection, &rt.cwd, 2);
+        // DSH commits milliseconds; keep the turn after the epoch second.
+        set_record_times(&projection, |seq| epoch * 1000 + 1000 + seq as i64)?;
+        rt.enqueue("session-x", 2)?;
         assert_eq!(
-            state.enqueue_hinted(
-                &RunKey {
-                    store: store.clone(),
-                    thread: "session-x".into(),
-                    turn: "2".into()
-                },
-                &id,
-                &cwd,
-                0
-            )?,
+            rt.state
+                .enqueue_hinted(&rt.key("session-x", 2), &rt.id, &rt.cwd, 0)?,
             Enqueue::Duplicate,
             "the hinted run is already queued"
         );
         Ok(())
     }
 
-    /// A projection with two completed human turns, both after `time_ms`.
-    fn two_turn_projection(path: &Path, cwd: &str, session: &str, time_ms: i64) {
-        let mut records = Vec::new();
-        for turn in 1..=2 {
-            records.push(json!({"seq":records.len(),"type":"turn/start","time":time_ms,"data":{"turn":turn}}));
-            records.push(json!({"seq":records.len(),"type":"user/message","time":time_ms+turn,"surfaceOp":"append","data":{
-                "id":format!("m{turn}"),"role":"user","content":[{"type":"text","text":"work"}],"source":{"kind":"user"}}}));
-            records.push(json!({"seq":records.len(),"type":"assistant/message","time":time_ms+turn,"surfaceOp":"append","data":{
-                "turn":turn,"step":1,"message":{"id":format!("a{turn}"),"role":"assistant","content":[{"type":"text","text":"done"}],
-                "source":{"kind":"model","provider":"p","model":"m"}}}}));
-            records.push(json!({"seq":records.len(),"type":"turn/end","time":time_ms+turn,"data":{"turn":turn,"reason":{"kind":"completed"}}}));
-        }
-        let document = json!({"schema":1,"header":{
-            "type":"session","version":4,"id":session,"createdAt":time_ms,"cwd":cwd,"isSeeded":false},
-            "records":records});
-        std::fs::write(path, serde_json::to_vec(&document).unwrap()).unwrap();
-    }
-
-    /// A projection for `session` with one completed human turn after `time_ms`.
-    fn projection_for(path: &Path, cwd: &str, session: &str, time_ms: i64) {
-        let document = json!({"schema":1,"header":{
-        "type":"session","version":4,"id":session,"createdAt":time_ms,"cwd":cwd,"isSeeded":false},
-        "records":[
-            {"seq":0,"type":"turn/start","time":time_ms,"data":{"turn":1}},
-            {"seq":1,"type":"user/message","time":time_ms+1,"surfaceOp":"append","data":{
-                "id":"m1","role":"user","content":[{"type":"text","text":"work"}],"source":{"kind":"user"}}},
-            {"seq":2,"type":"assistant/message","time":time_ms+2,"surfaceOp":"append","data":{
-                "turn":1,"step":1,"message":{"id":"a1","role":"assistant","content":[{"type":"text","text":"done"}],
-                "source":{"kind":"model","provider":"p","model":"m"}}}},
-            {"seq":3,"type":"turn/end","time":time_ms+3,"data":{"turn":1,"reason":{"kind":"completed"}}},
-        ]});
-        std::fs::write(path, serde_json::to_vec(&document).unwrap()).unwrap();
-    }
-
-    #[tokio::test]
-    async fn capture_claims_the_session_its_projection_describes() -> anyhow::Result<()> {
+    #[test]
+    fn capture_claims_the_session_its_projection_describes() -> anyhow::Result<()> {
         // Two sessions of one store queued at once: a capture must publish the
         // projection's own session, never the store's oldest run.
-        let (data, dsh) = runtime();
-        let (repo, id) = project(data.path());
-        let root = data.path().join("state");
-        std::fs::create_dir_all(&root)?;
-        let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::dsh_store_id(dsh.path())?;
-        let cwd = repo.to_str().unwrap().to_string();
-        let old = data.path().join("old.json");
-        projection_for(&old, &cwd, "session-old", 1);
-        ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Register {
-                session: old.clone(),
-                project: repo.clone(),
-            },
-            None,
-        )
-        .await?;
+        let mut rt = Runtime::new()?;
+        let old = rt.path("old.json");
+        projection_for(&old, &rt.cwd, "session-old", 1);
+        rt.register(&old)?;
         let later = (ingestion::now() + 5) * 1000;
-        for (session, path) in [
-            ("session-a", data.path().join("a.json")),
-            ("session-b", data.path().join("b.json")),
-        ] {
-            projection_for(&path, &cwd, session, later);
-            let signal = json!({"kind":"turn-end","session":session,"turn":1,"cwd":cwd});
-            ingestion::dsh(
-                &mut state,
-                &store,
-                &root,
-                &DshOperation::Enqueue,
-                Some(signal.to_string()),
-            )
-            .await?;
-        }
+        let a = rt.path("a.json");
+        let b = rt.path("b.json");
+        projection_for(&a, &rt.cwd, "session-a", later);
+        projection_for(&b, &rt.cwd, "session-b", later);
+        rt.enqueue("session-a", 1)?;
+        rt.enqueue("session-b", 1)?;
+
         // Capture session-b first; session-a's older run must stay queued.
-        let report = ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Capture {
-                session: data.path().join("b.json"),
-                project: repo.clone(),
-                turn: None,
-            },
-            None,
-        )
-        .await?;
+        let report = rt.capture(&b, None)?;
         assert_eq!(report.state, Some("ready"), "{report:?}");
         assert_eq!(
             report.run.as_ref().map(|r| r.thread.as_str()),
             Some("session-b")
         );
         let digest = report.evidence.expect("digest");
-        let evidence = coding_memory::evidence::load(&root, &digest)?;
+        let evidence = coding_memory::evidence::load(&rt.root, &digest)?;
         assert_eq!(
             evidence.run.thread, "session-b",
             "evidence belongs to the projection"
         );
-        let status = state.status()?;
+        let status = rt.state.status()?;
         assert_eq!(status.len(), 2);
         assert_eq!(
             status
@@ -1621,125 +1612,46 @@ mod ingestion {
             Some("queued"),
             "the other session's run is untouched"
         );
-        assert_eq!(evidence.project, id);
+        assert_eq!(evidence.project, rt.id);
         Ok(())
     }
 
-    #[tokio::test]
-    async fn reconciling_one_session_leaves_another_sessions_hint_pending() -> anyhow::Result<()> {
-        let (data, dsh) = runtime();
-        let (repo, _) = project(data.path());
-        let root = data.path().join("state");
-        std::fs::create_dir_all(&root)?;
-        let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::dsh_store_id(dsh.path())?;
-        let cwd = repo.to_str().unwrap().to_string();
-        let a = data.path().join("a.json");
-        let b = data.path().join("b.json");
-        projection_for(&a, &cwd, "session-a", 1);
-        projection_for(&b, &cwd, "session-b", 1);
+    #[test]
+    fn reconciling_one_session_leaves_another_sessions_hint_pending() -> anyhow::Result<()> {
+        let mut rt = Runtime::new()?;
+        let a = rt.path("a.json");
+        let b = rt.path("b.json");
+        projection_for(&a, &rt.cwd, "session-a", 1);
+        projection_for(&b, &rt.cwd, "session-b", 1);
         // Both hints arrive before registration.
-        for session in ["session-a", "session-b"] {
-            let signal = json!({"kind":"turn-end","session":session,"turn":1,"cwd":cwd});
-            ingestion::dsh(
-                &mut state,
-                &store,
-                &root,
-                &DshOperation::Enqueue,
-                Some(signal.to_string()),
-            )
-            .await?;
-        }
-        ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Register {
-                session: a.clone(),
-                project: repo.clone(),
-            },
-            None,
-        )
-        .await?;
-        ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Reconcile {
-                session: a,
-                project: repo.clone(),
-            },
-            None,
-        )
-        .await?;
-        let pending = state.pending_hints(&store)?;
+        rt.enqueue("session-a", 1)?;
+        rt.enqueue("session-b", 1)?;
+        rt.register(&a)?;
+        rt.reconcile(&a)?;
+        let pending = rt.state.pending_hints(&rt.store)?;
         assert_eq!(pending.len(), 1, "session-b's hint is not consumed");
         assert_eq!(pending[0].0.thread, "session-b");
         Ok(())
     }
 
-    #[tokio::test]
-    async fn registering_twice_never_baselines_later_turns() -> anyhow::Result<()> {
-        let (data, dsh) = runtime();
-        let (repo, id) = project(data.path());
-        let root = data.path().join("state");
-        std::fs::create_dir_all(&root)?;
-        let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::dsh_store_id(dsh.path())?;
-        let cwd = repo.to_str().unwrap().to_string();
-        let path = data.path().join("session.json");
-        session(&path, &cwd, 1);
-        ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Register {
-                session: path.clone(),
-                project: repo.clone(),
-            },
-            None,
-        )
-        .await?;
-        let epoch = state.project_epoch(&id)?;
+    #[test]
+    fn registering_twice_never_baselines_later_turns() -> anyhow::Result<()> {
+        let mut rt = Runtime::new()?;
+        let path = rt.path("session.json");
+        session(&path, &rt.cwd, 1);
+        rt.register(&path)?;
+        let epoch = rt.state.project_epoch(&rt.id)?;
         let later = (epoch + 5) * 1000;
-        projection_for(&path, &cwd, "session-x", later);
-        // Register baselines the turns this projection already shows, so the
-        // post-enablement run arrives afterwards, as it does in production.
-        ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Register {
-                session: path.clone(),
-                project: repo.clone(),
-            },
-            None,
-        )
-        .await?;
-        let signal = json!({"kind":"turn-end","session":"session-x","turn":2,"cwd":cwd});
-        ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Enqueue,
-            Some(signal.to_string()),
-        )
-        .await?;
+        projection_for(&path, &rt.cwd, "session-x", later);
+        // Registering again is still idempotent even though the projection now
+        // shows a later turn.
+        rt.register(&path)?;
+        rt.enqueue("session-x", 2)?;
         // Re-registering must not baseline the queued post-enablement run.
-        let report = ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Register {
-                session: path,
-                project: repo.clone(),
-            },
-            None,
-        )
-        .await?;
+        let report = rt.register(&path)?;
         assert_eq!(report.reason.as_deref(), Some("already_registered"));
         assert_eq!(
-            state
+            rt.state
                 .status()?
                 .iter()
                 .find(|s| s.key.thread == "session-x" && s.key.turn == "2")
@@ -1750,224 +1662,112 @@ mod ingestion {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn an_unresolvable_project_holds_the_claimed_run() -> anyhow::Result<()> {
+    #[test]
+    fn re_registering_does_not_read_the_projection() -> anyhow::Result<()> {
+        // Registration is a one-time boundary. A registered project must report
+        // `already_registered` even when the bootstrap snapshot is already gone,
+        // because no baseline is applied and no state changes.
+        let mut rt = Runtime::new()?;
+        let path = rt.path("session.json");
+        session(&path, &rt.cwd, 1);
+        rt.register(&path)?;
+        std::fs::remove_file(&path)?;
+        let report = rt.register(&path)?;
+        assert_eq!(report.reason.as_deref(), Some("already_registered"));
+        assert_eq!(report.baseline, Some(0));
+        Ok(())
+    }
+
+    #[test]
+    fn an_unresolvable_project_holds_the_claimed_run() -> anyhow::Result<()> {
         // A recorded cwd that no longer resolves must be held with a reason,
         // not re-queued and re-selected by every later capture attempt.
-        let (data, dsh) = runtime();
-        let (repo, _) = project(data.path());
-        let root = data.path().join("state");
-        std::fs::create_dir_all(&root)?;
-        let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::dsh_store_id(dsh.path())?;
-        let cwd = repo.to_str().unwrap().to_string();
-        let path = data.path().join("session.json");
-        session(&path, &cwd, 1);
-        ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Register {
-                session: path,
-                project: repo.clone(),
-            },
-            None,
-        )
-        .await?;
+        let mut rt = Runtime::new()?;
+        let path = rt.path("session.json");
+        session(&path, &rt.cwd, 1);
+        rt.register(&path)?;
         let later = (ingestion::now() + 5) * 1000;
-        let projection = data.path().join("gone.json");
-        projection_for(&projection, &cwd, "session-z", later);
-        let signal = json!({"kind":"turn-end","session":"session-z","turn":1,"cwd":cwd});
-        ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Enqueue,
-            Some(signal.to_string()),
-        )
-        .await?;
+        let projection = rt.path("gone.json");
+        projection_for(&projection, &rt.cwd, "session-z", later);
+        rt.enqueue("session-z", 1)?;
         // The project directory disappears after the run was queued.
-        std::fs::remove_dir_all(&repo)?;
-        let report = ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Capture {
-                session: projection,
-                project: repo,
-                turn: None,
-            },
-            None,
-        )
-        .await?;
+        std::fs::remove_dir_all(&rt.repo)?;
+        let report = rt.capture(&projection, None)?;
         assert_eq!(report.reason.as_deref(), Some("project_mismatch"));
         assert_eq!(
-            state
-                .status()?
-                .iter()
-                .find(|s| s.key.thread == "session-z")
-                .map(|s| s.state.as_str()),
-            Some("held"),
+            rt.status_of("session-z", 1)?.map(|(state, _)| state),
+            Some("held".into()),
             "the run is held instead of staying queued"
         );
         Ok(())
     }
 
-    #[tokio::test]
-    async fn a_hint_is_persisted_with_its_run_atomically() -> anyhow::Result<()> {
-        let (data, dsh) = runtime();
-        let (repo, _) = project(data.path());
-        let root = data.path().join("state");
-        std::fs::create_dir_all(&root)?;
-        let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::dsh_store_id(dsh.path())?;
-        let cwd = repo.to_str().unwrap().to_string();
-        let path = data.path().join("session.json");
-        session(&path, &cwd, 1);
-        ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Register {
-                session: path,
-                project: repo,
-            },
-            None,
-        )
-        .await?;
-        let project_id = coding_memory::project::resolve(std::path::Path::new(&cwd))?.id;
-        let key = RunKey {
-            store: store.clone(),
-            thread: "session-y".into(),
-            turn: "1".into(),
-        };
-        state.enqueue_hinted(&key, &project_id, &cwd, 0)?;
-        assert!(state.hinted(&key)?, "a queued run always carries its hint");
+    #[test]
+    fn a_hint_is_persisted_with_its_run_atomically() -> anyhow::Result<()> {
+        let mut rt = Runtime::new()?;
+        let path = rt.path("session.json");
+        session(&path, &rt.cwd, 1);
+        rt.register(&path)?;
+        let key = rt.key("session-y", 1);
+        rt.state.enqueue_hinted(&key, &rt.id, &rt.cwd, 0)?;
+        assert!(
+            rt.state.hinted(&key)?,
+            "a queued run always carries its hint"
+        );
         Ok(())
     }
 
-    #[tokio::test]
-    async fn a_historical_hint_reports_before_enablement_not_a_fork() -> anyhow::Result<()> {
+    #[test]
+    fn a_historical_hint_reports_before_enablement_not_a_fork() -> anyhow::Result<()> {
         // A hinted turn that predates registration must be held with a reason
         // naming the boundary, so operators are not told it was excluded as a
         // fork or a nonhuman run.
-        let (data, dsh) = runtime();
-        let (repo, _) = project(data.path());
-        let root = data.path().join("state");
-        std::fs::create_dir_all(&root)?;
-        let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::dsh_store_id(dsh.path())?;
-        let cwd = repo.to_str().unwrap().to_string();
-        let path = data.path().join("session.json");
-        session(&path, &cwd, 1);
-        ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Register {
-                session: path.clone(),
-                project: repo.clone(),
-            },
-            None,
-        )
-        .await?;
-        let epoch = state
-            .project_epoch(&coding_memory::project::resolve(std::path::Path::new(&cwd))?.id)?;
+        let mut rt = Runtime::new()?;
+        let path = rt.path("session.json");
+        session(&path, &rt.cwd, 1);
+        rt.register(&path)?;
+        let epoch = rt.state.project_epoch(&rt.id)?;
         // A second projected turn ending in an earlier second than registration.
-        projection_for(&path, &cwd, "session-h", epoch.saturating_sub(60) * 1000);
-        let signal = json!({"kind":"turn-end","session":"session-h","turn":1,"cwd":cwd});
-        let report = ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Enqueue,
-            Some(signal.to_string()),
-        )
-        .await?;
+        projection_for(&path, &rt.cwd, "session-h", epoch.saturating_sub(60) * 1000);
+        let report = rt.enqueue("session-h", 1)?;
         assert!(
             matches!(report.state, Some("queued") | Some("held")),
             "{report:?}"
         );
-        let report = ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Capture {
-                session: path,
-                project: repo,
-                turn: None,
-            },
-            None,
-        )
-        .await?;
+        let report = rt.capture(&path, None)?;
         assert_eq!(
             report.reason.as_deref(),
             Some("before_enablement"),
             "{report:?}"
         );
         assert_eq!(
-            state.status()?[0].reason.as_deref(),
+            rt.state.status()?[0].reason.as_deref(),
             Some("before_enablement"),
             "status names the enablement boundary, not a fork"
         );
         Ok(())
     }
 
-    #[tokio::test]
-    async fn capture_turn_never_leases_another_turn_of_the_same_session() -> anyhow::Result<()> {
+    #[test]
+    fn capture_turn_never_leases_another_turn_of_the_same_session() -> anyhow::Result<()> {
         // A capture pinned to turn 2 must not lease turn 1's queued run, which
         // would hold it `capturing` for the lease hour without being usable.
-        let (data, dsh) = runtime();
-        let (repo, _) = project(data.path());
-        let root = data.path().join("state");
-        std::fs::create_dir_all(&root)?;
-        let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::dsh_store_id(dsh.path())?;
-        let cwd = repo.to_str().unwrap().to_string();
+        let mut rt = Runtime::new()?;
         // Register against a different session, so the baseline it records
         // names that session only; the two-turn projection below is new work.
-        let baseline = data.path().join("baseline.json");
-        session_as(&baseline, &cwd, 1, "session-baseline");
-        ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Register {
-                session: baseline,
-                project: repo.clone(),
-            },
-            None,
-        )
-        .await?;
+        let baseline = rt.path("baseline.json");
+        session_as(&baseline, &rt.cwd, 1, "session-baseline");
+        rt.register(&baseline)?;
 
         let later = (ingestion::now() + 5) * 1000;
-        let projection = data.path().join("later.json");
-        two_turn_projection(&projection, &cwd, "session-x", later);
-        for turn in 1..=2 {
-            let signal = json!({"kind":"turn-end","session":"session-x","turn":turn,"cwd":cwd});
-            ingestion::dsh(
-                &mut state,
-                &store,
-                &root,
-                &DshOperation::Enqueue,
-                Some(signal.to_string()),
-            )
-            .await?;
-        }
-        let report = ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Capture {
-                session: projection,
-                project: repo,
-                turn: Some(2),
-            },
-            None,
-        )
-        .await?;
+        let projection = rt.path("later.json");
+        two_turn_projection(&projection, &rt.cwd, "session-x", later);
+        rt.enqueue("session-x", 1)?;
+        rt.enqueue("session-x", 2)?;
+        let report = rt.capture(&projection, Some(2))?;
         assert_eq!(report.run.as_ref().map(|r| r.turn.as_str()), Some("2"));
-        let turns: Vec<_> = state
+        let turns: Vec<_> = rt
+            .state
             .status()?
             .iter()
             .map(|s| (s.key.turn.clone(), s.state.clone(), s.reason.clone()))
@@ -1983,93 +1783,47 @@ mod ingestion {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn a_persistently_pending_projection_stops_retrying() -> anyhow::Result<()> {
+    #[test]
+    fn a_persistently_pending_projection_stops_retrying() -> anyhow::Result<()> {
         // A projection that never records the turn's end must become inspectable
         // after the same bounded attempts the Codex reader uses.
-        let (data, dsh) = runtime();
-        let (repo, _) = project(data.path());
-        let root = data.path().join("state");
-        std::fs::create_dir_all(&root)?;
-        let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::dsh_store_id(dsh.path())?;
-        let cwd = repo.to_str().unwrap().to_string();
-        let path = data.path().join("open.json");
+        let mut rt = Runtime::new()?;
+        let path = rt.path("open.json");
         // One turn with a start, a human message, and no turn/end.
-        let document = json!({"schema":1,"header":{
-        "type":"session","version":4,"id":"session-open","createdAt":1,"cwd":cwd,"isSeeded":false},
-        "records":[
-            {"seq":0,"type":"turn/start","time":1,"data":{"turn":1}},
-            {"seq":1,"type":"user/message","time":2,"surfaceOp":"append","data":{
-                "id":"m1","role":"user","content":[{"type":"text","text":"work"}],"source":{"kind":"user"}}},
-        ]});
-        std::fs::write(&path, serde_json::to_vec(&document)?)?;
-        session(&data.path().join("reg.json"), &cwd, 1);
-        ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Register {
-                session: data.path().join("reg.json"),
-                project: repo.clone(),
-            },
-            None,
-        )
-        .await?;
+        write_document(
+            &path,
+            &document(
+                &rt.cwd,
+                "session-open",
+                1,
+                vec![
+                    json!({"seq":0,"type":"turn/start","time":1,"data":{"turn":1}}),
+                    json!({"seq":1,"type":"user/message","time":2,"surfaceOp":"append","data":{
+                        "id":"m1","role":"user","content":[{"type":"text","text":"work"}],"source":{"kind":"user"}}}),
+                ],
+            ),
+        );
+        let registration = rt.path("reg.json");
+        session(&registration, &rt.cwd, 1);
+        rt.register(&registration)?;
         let later = (ingestion::now() + 5) * 1000;
-        let mut document: Value = serde_json::from_slice(&std::fs::read(&path)?)?;
-        for record in document["records"].as_array_mut().unwrap() {
-            record["time"] = json!(later);
-        }
-        std::fs::write(&path, serde_json::to_vec(&document)?)?;
-        let signal = json!({"kind":"turn-end","session":"session-open","turn":1,"cwd":cwd});
-        ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Enqueue,
-            Some(signal.to_string()),
-        )
-        .await?;
+        set_record_times(&path, |_| later)?;
+        rt.enqueue("session-open", 1)?;
+
         // Deferrals make the run unavailable for the retry delay; capture again
         // as a worker cycle would, until the attempt budget is exhausted.
-        let project_id = coding_memory::project::resolve(std::path::Path::new(&cwd))?.id;
-        let key = RunKey {
-            store: store.clone(),
-            thread: "session-open".into(),
-            turn: "1".into(),
-        };
         let mut last = None;
         for _ in 0..70 {
-            if state
-                .status()?
-                .iter()
-                .find(|s| s.key == key)
-                .is_some_and(|s| {
-                    s.state == "queued" && s.reason.as_deref() == Some("history_pending")
+            if rt
+                .status_of("session-open", 1)?
+                .is_some_and(|(state, reason)| {
+                    state == "queued" && reason.as_deref() == Some("history_pending")
                 })
             {
-                let db = rusqlite::Connection::open(root.join("state.sqlite"))?;
-                db.execute(
-                    "UPDATE runs SET available_at=0 WHERE thread='session-open'",
-                    [],
-                )?;
-                drop(db);
+                make_available(&rt.root, "session-open")?;
             }
-            let _ = &project_id;
-            let report = ingestion::dsh(
-                &mut state,
-                &store,
-                &root,
-                &DshOperation::Capture {
-                    session: path.clone(),
-                    project: repo.clone(),
-                    turn: None,
-                },
-                None,
-            )
-            .await?;
-            let Some(reason) = report.reason.clone() else {
+            let report = rt.capture(&path, None)?;
+            let Some(reason) = report.reason else {
                 break;
             };
             last = Some(reason);
@@ -2085,235 +1839,100 @@ mod ingestion {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn a_missing_signal_project_is_rejected() -> anyhow::Result<()> {
-        let (data, dsh) = runtime();
-        let root = data.path().join("state");
-        std::fs::create_dir_all(&root)?;
-        let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::dsh_store_id(dsh.path())?;
+    #[test]
+    fn a_missing_signal_project_is_rejected() -> anyhow::Result<()> {
+        let mut rt = Runtime::new()?;
         let signal = json!({"kind":"turn-end","session":"s","turn":1,"cwd":"/nonexistent/project"});
-        assert!(
-            ingestion::dsh(
-                &mut state,
-                &store,
-                &root,
-                &DshOperation::Enqueue,
-                Some(signal.to_string())
-            )
-            .await
-            .is_err()
-        );
+        assert!(rt.enqueue_value(&signal).is_err());
         Ok(())
     }
 
-    #[tokio::test]
-    async fn exclusion_and_ownership_hold_runs_at_enqueue_time() -> anyhow::Result<()> {
-        let (data, dsh) = runtime();
-        let (repo, _) = project(data.path());
-        let root = data.path().join("state");
-        std::fs::create_dir_all(&root)?;
-        let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::dsh_store_id(dsh.path())?;
-        let projection = data.path().join("session.json");
-        let cwd = repo.to_str().unwrap().to_string();
-        session(&projection, &cwd, 1);
-        ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Register {
-                session: projection,
-                project: repo,
-            },
-            None,
-        )
-        .await?;
-        let owned =
-            ingestion::dsh(&mut state, &store, &root, &DshOperation::OwnStore, None).await?;
+    #[test]
+    fn exclusion_and_ownership_hold_runs_at_enqueue_time() -> anyhow::Result<()> {
+        let mut rt = Runtime::new()?;
+        let projection = rt.path("session.json");
+        session(&projection, &rt.cwd, 1);
+        rt.register(&projection)?;
+        let owned = rt.own_store()?;
         assert_eq!(owned.action, "own-store");
-        let signal = json!({"kind":"turn-end","session":"session-x","turn":1,"cwd":cwd});
-        let report = ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Enqueue,
-            Some(signal.to_string()),
-        )
-        .await?;
+        let report = rt.enqueue("session-x", 1)?;
         assert_eq!(
             report.state,
             Some("held"),
             "engine-owned stores never queue"
         );
         assert_eq!(
-            state.enqueue(
-                &RunKey {
-                    store: store.clone(),
-                    thread: "session-x".into(),
-                    turn: "1".into()
-                },
-                &coding_memory::project::resolve(std::path::Path::new(&cwd))?.id,
-                &cwd,
-                0
-            )?,
+            rt.state
+                .enqueue(&rt.key("session-x", 1), &rt.id, &rt.cwd, 0)?,
             Enqueue::Excluded
         );
         Ok(())
     }
 
-    #[tokio::test]
-    async fn registration_keeps_a_turn_that_ends_after_the_boundary() -> anyhow::Result<()> {
+    #[test]
+    fn registration_keeps_a_turn_that_ends_after_the_boundary() -> anyhow::Result<()> {
         // The baseline is "ended at or before enablement", not "present during
         // the scan". Excluding the latter would discard a valid hinted run.
-        let (data, dsh) = runtime();
-        let (repo, _) = project(data.path());
-        let root = data.path().join("state");
-        std::fs::create_dir_all(&root)?;
-        let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::dsh_store_id(dsh.path())?;
-        let cwd = repo.to_str().unwrap().to_string();
+        let mut rt = Runtime::new()?;
         let time = (ingestion::now() + 3600) * 1000;
-        let projection = data.path().join("session.json");
-        let document = json!({"schema":1,"header":{
-        "type":"session","version":4,"id":"session-x","createdAt":time,"cwd":cwd,"isSeeded":false},
-        "records":[
-            {"seq":0,"type":"turn/start","time":time,"data":{"turn":1}},
-            {"seq":1,"type":"user/message","time":time+1,"data":{
-                "id":"m1","role":"user","content":[{"type":"text","text":"work"}],
-                "source":{"kind":"user"}}},
-            {"seq":2,"type":"turn/end","time":time+2,"data":{"turn":1,"reason":{"kind":"completed"}}},
-        ]});
-        std::fs::write(&projection, serde_json::to_vec(&document)?)?;
-        let signal = json!({"kind":"turn-end","session":"session-x","turn":1,"cwd":cwd.clone()});
-        let hinted = ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Enqueue,
-            Some(signal.to_string()),
-        )
-        .await?;
+        let projection = rt.path("session.json");
+        write_document(
+            &projection,
+            &document(
+                &rt.cwd,
+                "session-x",
+                time,
+                vec![
+                    json!({"seq":0,"type":"turn/start","time":time,"data":{"turn":1}}),
+                    json!({"seq":1,"type":"user/message","time":time+1,"data":{
+                        "id":"m1","role":"user","content":[{"type":"text","text":"work"}],
+                        "source":{"kind":"user"}}}),
+                    json!({"seq":2,"type":"turn/end","time":time+2,"data":{"turn":1,"reason":{"kind":"completed"}}}),
+                ],
+            ),
+        );
+        let hinted = rt.enqueue("session-x", 1)?;
         assert_eq!(hinted.state, Some("deferred"));
-        let registered = ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Register {
-                session: projection.clone(),
-                project: repo.clone(),
-            },
-            None,
-        )
-        .await?;
+        let registered = rt.register(&projection)?;
         assert_eq!(
             registered.baseline,
             Some(0),
             "a turn ending after the boundary is not the baseline"
         );
-        let reconciled = ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Reconcile {
-                session: projection,
-                project: repo,
-            },
-            None,
-        )
-        .await?;
+        let reconciled = rt.reconcile(&projection)?;
         assert_eq!(
             reconciled.queued,
             Some(1),
             "the post-enablement hinted turn is queued"
         );
-        assert!(state.pending_hints(&store)?.is_empty());
+        assert!(rt.state.pending_hints(&rt.store)?.is_empty());
         Ok(())
     }
 
-    /// A one-turn projection whose start/end are exact millisecond instants.
-    fn timed_projection(path: &Path, cwd: &str, turn: u64, start_ms: i64, end_ms: i64) {
-        let document = json!({"schema":1,"header":{
-        "type":"session","version":4,"id":"session-x","createdAt":start_ms,"cwd":cwd,"isSeeded":false},
-        "records":[
-            {"seq":0,"type":"turn/start","time":start_ms,"data":{"turn":turn}},
-            {"seq":1,"type":"user/message","time":start_ms+1,"data":{
-                "id":format!("m{turn}"),"role":"user",
-                "content":[{"type":"text","text":"work"}],"source":{"kind":"user"}}},
-            {"seq":2,"type":"turn/end","time":end_ms,"data":{"turn":turn,"reason":{"kind":"completed"}}},
-        ]});
-        std::fs::write(path, serde_json::to_vec(&document).unwrap()).unwrap();
-    }
-
-    #[tokio::test]
-    async fn capture_compares_the_exact_registration_instant() -> anyhow::Result<()> {
+    #[test]
+    fn capture_compares_the_exact_registration_instant() -> anyhow::Result<()> {
         // The whole-second epoch would admit a turn that ended earlier in the
         // same second the project was enabled.
-        let (data, dsh) = runtime();
-        let (repo, id) = project(data.path());
-        let root = data.path().join("state");
-        std::fs::create_dir_all(&root)?;
-        let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::dsh_store_id(dsh.path())?;
-        let cwd = repo.to_str().unwrap().to_string();
-        let baseline = data.path().join("baseline.json");
-        session(&baseline, &cwd, 0);
-        ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Register {
-                session: baseline,
-                project: repo.clone(),
-            },
-            None,
-        )
-        .await?;
-        let enabled_ms = state
-            .project_epoch_ms(&id)?
+        let mut rt = Runtime::new()?;
+        let baseline = rt.path("baseline.json");
+        session(&baseline, &rt.cwd, 0);
+        rt.register(&baseline)?;
+        let enabled_ms = rt
+            .state
+            .project_epoch_ms(&rt.id)?
             .expect("registration records the exact instant");
 
-        let before = data.path().join("before.json");
-        timed_projection(&before, &cwd, 1, enabled_ms - 1000, enabled_ms - 1);
-        let after = data.path().join("after.json");
-        timed_projection(&after, &cwd, 2, enabled_ms - 1000, enabled_ms + 1);
-        for turn in [1, 2] {
-            let signal = json!({"kind":"turn-end","session":"session-x","turn":turn,"cwd":cwd});
-            ingestion::dsh(
-                &mut state,
-                &store,
-                &root,
-                &DshOperation::Enqueue,
-                Some(signal.to_string()),
-            )
-            .await?;
-        }
-        let held = ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Capture {
-                session: before,
-                project: repo.clone(),
-                turn: Some(1),
-            },
-            None,
-        )
-        .await?;
+        let before = rt.path("before.json");
+        timed_projection(&before, &rt.cwd, 1, enabled_ms - 1000, enabled_ms - 1);
+        let after = rt.path("after.json");
+        timed_projection(&after, &rt.cwd, 2, enabled_ms - 1000, enabled_ms + 1);
+        rt.enqueue("session-x", 1)?;
+        rt.enqueue("session-x", 2)?;
+
+        let held = rt.capture(&before, Some(1))?;
         assert_eq!(held.state, Some("held"));
         assert_eq!(held.reason.as_deref(), Some("before_enablement"));
-        let ready = ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Capture {
-                session: after,
-                project: repo,
-                turn: Some(2),
-            },
-            None,
-        )
-        .await?;
+        let ready = rt.capture(&after, Some(2))?;
         assert_eq!(
             ready.state,
             Some("ready"),
@@ -2322,69 +1941,39 @@ mod ingestion {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn an_oversized_turn_is_held_without_publishing_partial_evidence() -> anyhow::Result<()> {
-        let (data, dsh) = runtime();
-        let (repo, _) = project(data.path());
-        let root = data.path().join("state");
-        std::fs::create_dir_all(&root)?;
-        let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::dsh_store_id(dsh.path())?;
-        let cwd = repo.to_str().unwrap().to_string();
-        let baseline = data.path().join("baseline.json");
-        session(&baseline, &cwd, 0);
-        ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Register {
-                session: baseline,
-                project: repo.clone(),
-            },
-            None,
-        )
-        .await?;
-        let signal = json!({"kind":"turn-end","session":"session-x","turn":1,"cwd":cwd.clone()});
-        ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Enqueue,
-            Some(signal.to_string()),
-        )
-        .await?;
+    #[test]
+    fn an_oversized_turn_is_held_without_publishing_partial_evidence() -> anyhow::Result<()> {
+        let mut rt = Runtime::new()?;
+        let baseline = rt.path("baseline.json");
+        session(&baseline, &rt.cwd, 0);
+        rt.register(&baseline)?;
+        rt.enqueue("session-x", 1)?;
         // The evidence item alone exceeds the engine's 8 MiB bundle bound while
         // the projection stays inside the 16 MiB artifact bound.
         let huge = "x".repeat(8 * 1024 * 1024 + 1024);
         let time = (ingestion::now() + 5) * 1000;
-        let projection = data.path().join("huge.json");
-        let document = json!({"schema":1,"header":{
-        "type":"session","version":4,"id":"session-x","createdAt":time,"cwd":cwd,"isSeeded":false},
-        "records":[
-            {"seq":0,"type":"turn/start","time":time,"data":{"turn":1}},
-            {"seq":1,"type":"user/message","time":time+1,"data":{
-                "id":"m1","role":"user","content":[{"type":"text","text":"work"}],
-                "source":{"kind":"user"}}},
-            {"seq":2,"type":"tool/call","time":time+2,"data":{
-                "turn":1,"step":1,"callId":"c1","name":"read","arguments":"{}"}},
-            {"seq":3,"type":"tool/result","time":time+3,"data":{
-                "turn":1,"step":1,"message":{"id":"t1","role":"tool","toolCallId":"c1",
-                "content":[{"type":"text","text":huge}]}}},
-            {"seq":4,"type":"turn/end","time":time+4,"data":{"turn":1,"reason":{"kind":"completed"}}},
-        ]});
-        std::fs::write(&projection, serde_json::to_vec(&document)?)?;
-        let report = ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Capture {
-                session: projection,
-                project: repo,
-                turn: Some(1),
-            },
-            None,
-        )
-        .await?;
+        let projection = rt.path("huge.json");
+        write_document(
+            &projection,
+            &document(
+                &rt.cwd,
+                "session-x",
+                time,
+                vec![
+                    json!({"seq":0,"type":"turn/start","time":time,"data":{"turn":1}}),
+                    json!({"seq":1,"type":"user/message","time":time+1,"data":{
+                        "id":"m1","role":"user","content":[{"type":"text","text":"work"}],
+                        "source":{"kind":"user"}}}),
+                    json!({"seq":2,"type":"tool/call","time":time+2,"data":{
+                        "turn":1,"step":1,"callId":"c1","name":"read","arguments":"{}"}}),
+                    json!({"seq":3,"type":"tool/result","time":time+3,"data":{
+                        "turn":1,"step":1,"message":{"id":"t1","role":"tool","toolCallId":"c1",
+                        "content":[{"type":"text","text":huge}]}}}),
+                    json!({"seq":4,"type":"turn/end","time":time+4,"data":{"turn":1,"reason":{"kind":"completed"}}}),
+                ],
+            ),
+        );
+        let report = rt.capture(&projection, Some(1))?;
         assert_eq!(report.state, Some("held"));
         assert_eq!(report.reason.as_deref(), Some("history_over_limit"));
         assert!(
@@ -2394,53 +1983,19 @@ mod ingestion {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn an_oversized_turn_can_be_held_without_a_projection() -> anyhow::Result<()> {
+    #[test]
+    fn an_oversized_turn_can_be_held_without_a_projection() -> anyhow::Result<()> {
         // The bridge cannot publish a turn over its transport bound, so it asks
         // the engine to hold the already-queued run instead of leaving it queued.
-        let (data, dsh) = runtime();
-        let (repo, _) = project(data.path());
-        let root = data.path().join("state");
-        std::fs::create_dir_all(&root)?;
-        let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::dsh_store_id(dsh.path())?;
-        let cwd = repo.to_str().unwrap().to_string();
-        let baseline = data.path().join("baseline.json");
-        session(&baseline, &cwd, 0);
-        ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Register {
-                session: baseline,
-                project: repo,
-            },
-            None,
-        )
-        .await?;
-        let signal = json!({"kind":"turn-end","session":"session-x","turn":1,"cwd":cwd});
-        ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Enqueue,
-            Some(signal.to_string()),
-        )
-        .await?;
-        let report = ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::HoldOverLimit {
-                thread: "session-x".into(),
-                turn: 1,
-            },
-            None,
-        )
-        .await?;
+        let mut rt = Runtime::new()?;
+        let baseline = rt.path("baseline.json");
+        session(&baseline, &rt.cwd, 0);
+        rt.register(&baseline)?;
+        rt.enqueue("session-x", 1)?;
+        let report = rt.hold_over_limit("session-x", 1)?;
         assert_eq!(report.state, Some("held"));
         assert_eq!(report.reason.as_deref(), Some("history_over_limit"));
-        let status = state.status()?;
+        let status = rt.state.status()?;
         assert_eq!(status.len(), 1);
         assert_eq!(status[0].state, "held");
         assert_eq!(
@@ -2451,64 +2006,31 @@ mod ingestion {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn a_schema_invalid_projection_holds_its_claimed_run() -> anyhow::Result<()> {
+    #[test]
+    fn a_schema_invalid_projection_holds_its_claimed_run() -> anyhow::Result<()> {
         // The run must not stay queued (or be leased for an hour) merely because
         // the bridge document declares a schema this engine cannot read.
-        let (data, dsh) = runtime();
-        let (repo, _) = project(data.path());
-        let root = data.path().join("state");
-        std::fs::create_dir_all(&root)?;
-        let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::dsh_store_id(dsh.path())?;
-        let cwd = repo.to_str().unwrap().to_string();
-        let baseline = data.path().join("baseline.json");
-        session(&baseline, &cwd, 0);
-        ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Register {
-                session: baseline,
-                project: repo.clone(),
-            },
-            None,
-        )
-        .await?;
-        let signal = json!({"kind":"turn-end","session":"session-x","turn":2,"cwd":cwd.clone()});
-        let queued = ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Enqueue,
-            Some(signal.to_string()),
-        )
-        .await?;
+        let mut rt = Runtime::new()?;
+        let baseline = rt.path("baseline.json");
+        session(&baseline, &rt.cwd, 0);
+        rt.register(&baseline)?;
+        let queued = rt.enqueue("session-x", 2)?;
         assert_eq!(queued.state, Some("queued"));
 
-        let projection = data.path().join("future.json");
-        let document = json!({"schema":2,"header":{
-            "type":"session","version":4,"id":"session-x","createdAt":1,"cwd":cwd,"isSeeded":false},
-            "records":[]});
-        std::fs::write(&projection, serde_json::to_vec(&document)?)?;
-        let report = ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Capture {
-                session: projection,
-                project: repo,
-                turn: Some(2),
-            },
-            None,
-        )
-        .await?;
+        let projection = rt.path("future.json");
+        write_document(
+            &projection,
+            &json!({"schema":2,"header":{
+                "type":"session","version":4,"id":"session-x","createdAt":1,"cwd":rt.cwd,"isSeeded":false},
+                "records":[]}),
+        );
+        let report = rt.capture(&projection, Some(2))?;
         assert_eq!(report.state, Some("held"));
         assert_eq!(
             report.reason.as_deref(),
             Some("unsupported_projection_schema")
         );
-        let status = state.status()?;
+        let status = rt.state.status()?;
         assert_eq!(status.len(), 1);
         assert_eq!(status[0].state, "held");
         assert_eq!(
@@ -2519,55 +2041,28 @@ mod ingestion {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn registration_rejects_an_unsupported_projection_schema() -> anyhow::Result<()> {
+    #[test]
+    fn registration_rejects_an_unsupported_projection_schema() -> anyhow::Result<()> {
         // Registration fixes the enablement boundary permanently, so it must not
         // baseline a document whose bridge schema is unsupported.
-        let (data, dsh) = runtime();
-        let (repo, id) = project(data.path());
-        let root = data.path().join("state");
-        std::fs::create_dir_all(&root)?;
-        let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::dsh_store_id(dsh.path())?;
-        let cwd = repo.to_str().unwrap().to_string();
-        let projection = data.path().join("session.json");
-        session(&projection, &cwd, 1);
+        let mut rt = Runtime::new()?;
+        let projection = rt.path("session.json");
+        session(&projection, &rt.cwd, 1);
         let mut document: Value = serde_json::from_slice(&std::fs::read(&projection)?)?;
         document["schema"] = json!(2);
         std::fs::write(&projection, serde_json::to_vec(&document)?)?;
         assert!(
-            ingestion::dsh(
-                &mut state,
-                &store,
-                &root,
-                &DshOperation::Register {
-                    session: projection.clone(),
-                    project: repo.clone(),
-                },
-                None,
-            )
-            .await
-            .is_err(),
+            rt.register(&projection).is_err(),
             "an unsupported projection schema is refused"
         );
         assert!(
-            state.project_epoch(&id).is_err(),
+            rt.state.project_epoch(&rt.id).is_err(),
             "the project must remain unregistered"
         );
 
         document["schema"] = json!(1);
         std::fs::write(&projection, serde_json::to_vec(&document)?)?;
-        let report = ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Register {
-                session: projection,
-                project: repo,
-            },
-            None,
-        )
-        .await?;
+        let report = rt.register(&projection)?;
         assert_eq!(
             report.baseline,
             Some(1),
@@ -2576,109 +2071,63 @@ mod ingestion {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn registration_rejects_an_unsupported_logical_version() -> anyhow::Result<()> {
+    #[test]
+    fn registration_rejects_an_unsupported_logical_version() -> anyhow::Result<()> {
         // A permanent boundary must not be recorded for a generation whose
         // turns capture would reject on every attempt.
-        let (data, dsh) = runtime();
-        let (repo, id) = project(data.path());
-        let root = data.path().join("state");
-        std::fs::create_dir_all(&root)?;
-        let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::dsh_store_id(dsh.path())?;
-        let cwd = repo.to_str().unwrap().to_string();
-        let projection = data.path().join("session.json");
-        session(&projection, &cwd, 1);
+        let mut rt = Runtime::new()?;
+        let projection = rt.path("session.json");
+        session(&projection, &rt.cwd, 1);
         let mut document: Value = serde_json::from_slice(&std::fs::read(&projection)?)?;
         document["header"]["version"] = json!(5);
         std::fs::write(&projection, serde_json::to_vec(&document)?)?;
         assert!(
-            ingestion::dsh(
-                &mut state,
-                &store,
-                &root,
-                &DshOperation::Register {
-                    session: projection,
-                    project: repo,
-                },
-                None,
-            )
-            .await
-            .is_err(),
+            rt.register(&projection).is_err(),
             "a newer logical format is refused before enablement"
         );
         assert!(
-            state.project_epoch(&id).is_err(),
+            rt.state.project_epoch(&rt.id).is_err(),
             "the project stays unregistered"
         );
         Ok(())
     }
 
-    #[tokio::test]
-    async fn reconciling_one_projection_leaves_another_turns_hint_pending() -> anyhow::Result<()> {
+    #[test]
+    fn reconciling_one_projection_leaves_another_turns_hint_pending() -> anyhow::Result<()> {
         // The bridge writes one projection per turn. Reconciling turn 3 must not
         // permanently exclude turn 4 just because this file does not contain it.
-        let (data, dsh) = runtime();
-        let (repo, _) = project(data.path());
-        let root = data.path().join("state");
-        std::fs::create_dir_all(&root)?;
-        let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::dsh_store_id(dsh.path())?;
-        let cwd = repo.to_str().unwrap().to_string();
-        let baseline = data.path().join("baseline.json");
-        session(&baseline, &cwd, 0);
-        ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Register {
-                session: baseline,
-                project: repo.clone(),
-            },
-            None,
-        )
-        .await?;
-        let hint3 = RunKey {
-            store: store.clone(),
-            thread: "session-x".into(),
-            turn: "3".into(),
-        };
-        let hint4 = RunKey {
-            store: store.clone(),
-            thread: "session-x".into(),
-            turn: "4".into(),
-        };
-        state.save_pending_hint(&hint3, &cwd, 0)?;
-        state.save_pending_hint(&hint4, &cwd, 0)?;
+        let mut rt = Runtime::new()?;
+        let baseline = rt.path("baseline.json");
+        session(&baseline, &rt.cwd, 0);
+        rt.register(&baseline)?;
+        let hint3 = rt.key("session-x", 3);
+        let hint4 = rt.key("session-x", 4);
+        rt.state.save_pending_hint(&hint3, &rt.cwd, 0)?;
+        rt.state.save_pending_hint(&hint4, &rt.cwd, 0)?;
 
         let time = (ingestion::now() + 5) * 1000;
-        let projection = data.path().join("turn3.json");
-        let document = json!({"schema":1,"header":{
-        "type":"session","version":4,"id":"session-x","createdAt":1,"cwd":cwd,"isSeeded":false},
-        "records":[
-            {"seq":0,"type":"turn/start","time":time,"data":{"turn":3}},
-            {"seq":1,"type":"user/message","time":time+1,"data":{
-                "turn":3,"step":1,"id":"m3","role":"user",
-                "content":[{"type":"text","text":"work"}],"source":{"kind":"user"}}},
-            {"seq":2,"type":"turn/end","time":time+2,"data":{"turn":3,"reason":{"kind":"completed"}}},
-        ]});
-        std::fs::write(&projection, serde_json::to_vec(&document)?)?;
-        let report = ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Reconcile {
-                session: projection,
-                project: repo,
-            },
-            None,
-        )
-        .await?;
+        let projection = rt.path("turn3.json");
+        write_document(
+            &projection,
+            &document(
+                &rt.cwd,
+                "session-x",
+                1,
+                vec![
+                    json!({"seq":0,"type":"turn/start","time":time,"data":{"turn":3}}),
+                    json!({"seq":1,"type":"user/message","time":time+1,"data":{
+                        "turn":3,"step":1,"id":"m3","role":"user",
+                        "content":[{"type":"text","text":"work"}],"source":{"kind":"user"}}}),
+                    json!({"seq":2,"type":"turn/end","time":time+2,"data":{"turn":3,"reason":{"kind":"completed"}}}),
+                ],
+            ),
+        );
+        let report = rt.reconcile(&projection)?;
         assert_eq!(report.queued, Some(1), "the turn in this file is queued");
-        let pending = state.pending_hints(&store)?;
+        let pending = rt.state.pending_hints(&rt.store)?;
         assert_eq!(pending.len(), 1, "the absent turn's hint is retained");
         assert_eq!(pending[0].0.turn, "4");
-        let status = state.status()?;
+        let status = rt.state.status()?;
         assert!(
             status
                 .iter()
@@ -2692,64 +2141,39 @@ mod ingestion {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn reconciling_a_nonhuman_turn_resolves_it_as_excluded() -> anyhow::Result<()> {
+    #[test]
+    fn reconciling_a_nonhuman_turn_resolves_it_as_excluded() -> anyhow::Result<()> {
         // A completed turn with no direct human message is represented in the
         // projection. It must reach the terminal exclusion, not stay pending as
         // though the turn were missing from an older snapshot.
-        let (data, dsh) = runtime();
-        let (repo, id) = project(data.path());
-        let root = data.path().join("state");
-        std::fs::create_dir_all(&root)?;
-        let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::dsh_store_id(dsh.path())?;
-        let cwd = repo.to_str().unwrap().to_string();
-        let baseline = data.path().join("baseline.json");
-        session(&baseline, &cwd, 0);
-        ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Register {
-                session: baseline,
-                project: repo.clone(),
-            },
-            None,
-        )
-        .await?;
-        let hint = RunKey {
-            store: store.clone(),
-            thread: "session-x".into(),
-            turn: "1".into(),
-        };
-        state.save_pending_hint(&hint, &cwd, 0)?;
+        let mut rt = Runtime::new()?;
+        let baseline = rt.path("baseline.json");
+        session(&baseline, &rt.cwd, 0);
+        rt.register(&baseline)?;
+        let hint = rt.key("session-x", 1);
+        rt.state.save_pending_hint(&hint, &rt.cwd, 0)?;
         let time = (ingestion::now() + 5) * 1000;
-        let projection = data.path().join("nonhuman.json");
-        let document = json!({"schema":1,"header":{
-        "type":"session","version":4,"id":"session-x","createdAt":time,"cwd":cwd,"isSeeded":false},
-        "records":[
-            {"seq":0,"type":"turn/start","time":time,"data":{"turn":1}},
-            {"seq":1,"type":"user/message","time":time+1,"data":{
-                "id":"ctx","role":"user","content":[{"type":"text","text":"injected"}],
-                "source":{"kind":"time-context"}}},
-            {"seq":2,"type":"turn/end","time":time+2,"data":{"turn":1,"reason":{"kind":"completed"}}},
-        ]});
-        std::fs::write(&projection, serde_json::to_vec(&document)?)?;
-        let report = ingestion::dsh(
-            &mut state,
-            &store,
-            &root,
-            &DshOperation::Reconcile {
-                session: projection,
-                project: repo,
-            },
-            None,
-        )
-        .await?;
+        let projection = rt.path("nonhuman.json");
+        write_document(
+            &projection,
+            &document(
+                &rt.cwd,
+                "session-x",
+                time,
+                vec![
+                    json!({"seq":0,"type":"turn/start","time":time,"data":{"turn":1}}),
+                    json!({"seq":1,"type":"user/message","time":time+1,"data":{
+                        "id":"ctx","role":"user","content":[{"type":"text","text":"injected"}],
+                        "source":{"kind":"time-context"}}}),
+                    json!({"seq":2,"type":"turn/end","time":time+2,"data":{"turn":1,"reason":{"kind":"completed"}}}),
+                ],
+            ),
+        );
+        let report = rt.reconcile(&projection)?;
         assert_eq!(report.queued, Some(0), "a nonhuman turn is not queued");
-        assert!(state.pending_hints(&store)?.is_empty());
+        assert!(rt.state.pending_hints(&rt.store)?.is_empty());
         assert_eq!(
-            state.enqueue(&hint, &id, &cwd, 0)?,
+            rt.state.enqueue(&hint, &rt.id, &rt.cwd, 0)?,
             Enqueue::Excluded,
             "the nonhuman turn is terminally excluded"
         );

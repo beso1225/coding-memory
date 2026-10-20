@@ -1,16 +1,9 @@
+use crate::clock;
 use crate::domain::RunKey;
 use anyhow::{Result, ensure};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use std::{path::Path, time::Duration};
-
-/// The wall clock in milliseconds, the precision DSH records.
-fn now_millis() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis() as i64)
-        .unwrap_or_default()
-}
 
 pub struct State {
     pub(crate) db: Connection,
@@ -89,6 +82,7 @@ impl State {
             CREATE TABLE IF NOT EXISTS vault_changes(batch INTEGER REFERENCES consolidation_jobs(id),note_id TEXT NOT NULL,path TEXT NOT NULL,before_hash TEXT,after_hash TEXT NOT NULL,content TEXT NOT NULL,applied INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(batch,note_id));
             CREATE TABLE IF NOT EXISTS exclusions(store TEXT, thread TEXT, turn TEXT, reason TEXT NOT NULL, PRIMARY KEY(store,thread,turn));
             CREATE TABLE IF NOT EXISTS capture_hints(store TEXT, thread TEXT, turn TEXT, at INTEGER NOT NULL, PRIMARY KEY(store,thread,turn));
+            CREATE TABLE IF NOT EXISTS pending_hints(store TEXT, thread TEXT, turn TEXT, cwd TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(store,thread,turn));
             CREATE TABLE IF NOT EXISTS runs(store TEXT, thread TEXT, turn TEXT, project TEXT NOT NULL REFERENCES projects(id), cwd TEXT NOT NULL,
                 state TEXT NOT NULL DEFAULT 'queued', outcome TEXT, reason TEXT, evidence TEXT, available_at INTEGER NOT NULL,
                 lease_until INTEGER, token INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(store,thread,turn));")?;
@@ -104,18 +98,18 @@ impl State {
     /// just-created database therefore have to retry the transition; once one
     /// succeeds, the others observe WAL and return immediately.
     fn enable_wal(db: &Connection) -> Result<()> {
-        for attempt in 0..250 {
+        for _ in 0..250 {
             match db.pragma_update(None, "journal_mode", "WAL") {
                 Ok(()) => return Ok(()),
                 Err(rusqlite::Error::SqliteFailure(error, _))
-                    if error.code == rusqlite::ErrorCode::DatabaseBusy && attempt < 249 =>
+                    if error.code == rusqlite::ErrorCode::DatabaseBusy =>
                 {
                     std::thread::sleep(Duration::from_millis(10));
                 }
                 Err(error) => return Err(error.into()),
             }
         }
-        unreachable!("the retry loop returns on its last attempt")
+        anyhow::bail!("Timed out enabling write-ahead logging")
     }
 
     /// Register a project, sampling the exact instant now.
@@ -125,7 +119,7 @@ impl State {
     /// longer than a second, and the persisted boundary must be the instant
     /// chosen before that scan.
     pub fn register_project(&mut self, id: &str, repository: &str, enabled: i64) -> Result<()> {
-        self.register_project_at(id, repository, enabled, now_millis())
+        self.register_project_at(id, repository, enabled, clock::now_ms())
             .map(|_| ())
     }
     /// Register a project with the exact instant its caller chose.
@@ -212,6 +206,19 @@ impl State {
                 r.get(0)
             })?)
     }
+    /// The registration epoch when the project is enabled, or `None`.
+    ///
+    /// Callers must not distinguish "not registered" from a database failure by
+    /// inspecting an error from [`Self::project_epoch`], which would also defer
+    /// a hint on an unrelated storage fault.
+    pub fn project_enabled(&self, id: &str) -> Result<Option<i64>> {
+        Ok(self
+            .db
+            .query_row("SELECT enabled_at FROM projects WHERE id=?1", [id], |r| {
+                r.get(0)
+            })
+            .optional()?)
+    }
     pub fn own_store(&mut self, id: &str) -> Result<()> {
         self.db
             .execute("INSERT OR IGNORE INTO owned_stores VALUES(?1)", [id])?;
@@ -238,7 +245,7 @@ impl State {
     ) -> Result<Enqueue> {
         // One transaction: a crash between the two writes would leave a queued
         // run that capture permanently holds as `no_capture_hint`.
-        self.enqueue_in(key, project, cwd, now, true)
+        self.enqueue_in(key, project, cwd, now, Some(now))
     }
     /// Record a hint for a project that is not registered yet.
     ///
@@ -247,10 +254,6 @@ impl State {
     /// later `reconcile` instead of being dropped.
     pub fn save_pending_hint(&mut self, key: &RunKey, cwd: &str, now: i64) -> Result<()> {
         self.db.execute(
-            "CREATE TABLE IF NOT EXISTS pending_hints(store TEXT, thread TEXT, turn TEXT, cwd TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(store,thread,turn))",
-            [],
-        )?;
-        self.db.execute(
             "INSERT OR IGNORE INTO pending_hints VALUES(?1,?2,?3,?4,?5)",
             params![key.store, key.thread, key.turn, cwd, now],
         )?;
@@ -258,10 +261,6 @@ impl State {
     }
     /// Pending hints for one runtime store, oldest first.
     pub fn pending_hints(&mut self, store: &str) -> Result<Vec<(RunKey, String)>> {
-        self.db.execute(
-            "CREATE TABLE IF NOT EXISTS pending_hints(store TEXT, thread TEXT, turn TEXT, cwd TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(store,thread,turn))",
-            [],
-        )?;
         let mut stmt = self.db.prepare(
             "SELECT store,thread,turn,cwd FROM pending_hints WHERE store=?1 ORDER BY at,thread,turn",
         )?;
@@ -296,17 +295,17 @@ impl State {
     pub fn enqueue(&mut self, key: &RunKey, project: &str, cwd: &str, now: i64) -> Result<Enqueue> {
         // Reconciliation queues work but never authorizes capture: only a live
         // hint does, so this path records no hint.
-        self.enqueue_in(key, project, cwd, now, false)
+        self.enqueue_in(key, project, cwd, now, None)
     }
-    /// Queue one run, and record its capture hint when the caller is a live
-    /// runtime, in a single transaction.
+    /// Queue one run, and record its capture hint when `hinted_at` is set, in a
+    /// single transaction.
     fn enqueue_in(
         &mut self,
         key: &RunKey,
         project: &str,
         cwd: &str,
         now: i64,
-        hint: bool,
+        hinted_at: Option<i64>,
     ) -> Result<Enqueue> {
         let tx = self
             .db
@@ -322,10 +321,10 @@ impl State {
             |r| r.get(0),
         )?;
         ensure!(p == project, "Conflicting run project association");
-        if hint {
+        if let Some(at) = hinted_at {
             tx.execute(
                 "INSERT OR IGNORE INTO capture_hints VALUES(?1,?2,?3,?4)",
-                params![key.store, key.thread, key.turn, now],
+                params![key.store, key.thread, key.turn, at],
             )?;
         }
         tx.commit()?;
@@ -338,25 +337,14 @@ impl State {
     pub fn claim(&mut self, now: i64, lease: i64) -> Result<Option<Claim>> {
         self.claim_store(None, now, lease)
     }
-    /// Claim the next run of one session in one store.
+    /// Claim one session's run, optionally pinned to an exact turn.
     ///
     /// A capture reads one session's projection, so it may only publish that
     /// session's run; claiming the store's oldest run could lease, or complete,
-    /// an unrelated session's work.
-    pub fn claim_session(
-        &mut self,
-        store: Option<&str>,
-        thread: &str,
-        now: i64,
-        lease: i64,
-    ) -> Result<Option<Claim>> {
-        self.claim_session_turn(store, thread, None, now, lease)
-    }
-    /// Claim one session's run, optionally pinned to an exact turn.
-    ///
-    /// Pinning keeps a `capture --turn N` from leasing a different queued run of
-    /// the same session, which would hold it `capturing` for the lease duration
-    /// even though this command can never use it.
+    /// an unrelated session's work. Pinning keeps a `capture --turn N` from
+    /// leasing a different queued run of the same session, which would hold it
+    /// `capturing` for the lease duration even though this command can never
+    /// use it.
     pub fn claim_session_turn(
         &mut self,
         store: Option<&str>,
@@ -365,9 +353,7 @@ impl State {
         now: i64,
         lease: i64,
     ) -> Result<Option<Claim>> {
-        let session = format!("/{thread}");
-        let turn = turn.map(|turn| format!("/{turn}"));
-        self.claim_matching(store, Some(&session), turn.as_deref(), now, lease)
+        self.claim_matching(store, Some(thread), turn, now, lease)
     }
     pub fn claim_store(
         &mut self,
@@ -377,7 +363,7 @@ impl State {
     ) -> Result<Option<Claim>> {
         self.claim_matching(store, None, None, now, lease)
     }
-    /// Claim by store and an optional `"/<thread>"` filter (SQL parameter only).
+    /// Claim by store and optional exact `thread` / `turn` filters.
     fn claim_matching(
         &mut self,
         store: Option<&str>,
@@ -394,7 +380,7 @@ impl State {
             .db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute("UPDATE runs SET state='held',reason='excluded' WHERE state IN ('queued','capturing') AND (EXISTS(SELECT 1 FROM owned_stores o WHERE o.id=runs.store) OR EXISTS(SELECT 1 FROM exclusions e WHERE e.store=runs.store AND e.thread=runs.thread AND e.turn=runs.turn))",[])?;
-        let claim=tx.query_row("SELECT store,thread,turn,project,cwd,token+1,attempts+1 FROM runs WHERE ((state='queued' AND available_at<=?1) OR (state='capturing' AND lease_until<=?1)) AND (?2 IS NULL OR store=?2) AND (?3 IS NULL OR ('/'||thread)=?3) AND (?4 IS NULL OR ('/'||turn)=?4) ORDER BY available_at,store,thread,turn LIMIT 1",params![now,store,thread,turn],|r|Ok(Claim {key:RunKey{store:r.get(0)?,thread:r.get(1)?,turn:r.get(2)?},project:r.get(3)?,cwd:r.get(4)?,token:r.get(5)?,attempts:r.get(6)?})).optional()?;
+        let claim=tx.query_row("SELECT store,thread,turn,project,cwd,token+1,attempts+1 FROM runs WHERE ((state='queued' AND available_at<=?1) OR (state='capturing' AND lease_until<=?1)) AND (?2 IS NULL OR store=?2) AND (?3 IS NULL OR thread=?3) AND (?4 IS NULL OR turn=?4) ORDER BY available_at,store,thread,turn LIMIT 1",params![now,store,thread,turn],|r|Ok(Claim {key:RunKey{store:r.get(0)?,thread:r.get(1)?,turn:r.get(2)?},project:r.get(3)?,cwd:r.get(4)?,token:r.get(5)?,attempts:r.get(6)?})).optional()?;
         if let Some(c) = &claim {
             tx.execute("UPDATE runs SET state='capturing',lease_until=?4,token=?5,attempts=attempts+1 WHERE store=?1 AND thread=?2 AND turn=?3",params![c.key.store,c.key.thread,c.key.turn,until,c.token])?;
         }

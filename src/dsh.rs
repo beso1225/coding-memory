@@ -6,29 +6,31 @@
 //! detection, exclusion, attribution, outcomes, sizes, and evidence shape. It
 //! never reads DSH storage directly, so a persisted format change only reaches
 //! the bridge.
-use crate::{
-    domain::{Evidence, RunKey},
-    project,
-};
+use crate::domain::{Evidence, RunKey};
 use anyhow::{Result, ensure};
 use serde::Deserialize;
 use serde_json::Value;
-use std::{collections::HashSet, path::Path};
+use std::collections::{HashMap, HashSet};
 
 /// Bridge document revision this engine interprets. It is separate from the
 /// DSH logical session format: the projection's own shape can change alone.
-pub const PROJECTION_SCHEMA: u32 = 1;
+pub const PROJECTION_SCHEMA: u64 = 1;
 /// Highest logical session format this adapter interprets. A newer format is
 /// held, not guessed: field meanings can change between generations.
 pub const MAX_LOG_VERSION: u64 = 4;
 /// Bounded projection of one turn, matching the Codex reader's item bound.
 pub const MAX_BYTES: usize = 8 * 1024 * 1024;
+/// Largest completion hint the bridge may send to `dsh enqueue`.
+pub const MAX_SIGNAL_BYTES: usize = 64 * 1024;
+/// Identity bounds shared with the bridge's config and projection writer.
+const MAX_SESSION_ID: usize = 256;
+const MAX_CWD: usize = 4096;
 /// The only message source kind treated as a human run.
 const HUMAN: &str = "user";
 
 /// One projected log record. Unused fields are ignored so a newer bridge can add
 /// metadata without breaking an older engine.
-#[derive(Clone, Debug, Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct Record {
     pub seq: Option<u64>,
     #[serde(rename = "type")]
@@ -42,7 +44,6 @@ pub struct Record {
 /// Why a projected run cannot become evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reason {
-    ProjectionSchema,
     HistoryVersion,
     Header,
     Sequence,
@@ -57,7 +58,6 @@ pub enum Reason {
 impl Reason {
     pub fn reason(self) -> &'static str {
         match self {
-            Self::ProjectionSchema => "unsupported_projection_schema",
             Self::HistoryVersion => "unsupported_history_version",
             Self::Header => "invalid_session_header",
             Self::Sequence => "invalid_session_sequence",
@@ -81,7 +81,7 @@ pub enum Capture {
     Unsupported(Reason),
     OverLimit,
     Excluded,
-    /// The turn ended at or before the project's registration second.
+    /// The turn ended at or before the project's registration instant.
     BeforeEnablement,
     WrongProject,
 }
@@ -98,16 +98,21 @@ pub fn projection_schema(document: &Value) -> Option<u64> {
 ///
 /// Discovery and capture read the same document, so a hint recorded before
 /// registration can resolve the exact run it names without a second reader.
-#[derive(Debug, Deserialize, serde::Serialize)]
+#[derive(Debug, Deserialize)]
 pub struct Projection {
     /// The bridge document revision, independent of DSH's session format.
-    schema: u32,
+    schema: u64,
     header: Header,
     records: Vec<Record>,
 }
 impl Projection {
     pub fn parse(bytes: &[u8]) -> Result<Self> {
-        let projection: Self = serde_json::from_slice(bytes)?;
+        Self::from_value(serde_json::from_slice(bytes)?)
+    }
+    /// Parse an already decoded document, checking the bridge revision here so
+    /// every caller of the typed projection has the same guarantee.
+    pub fn from_value(document: Value) -> Result<Self> {
+        let projection: Self = serde_json::from_value(document)?;
         ensure!(
             projection.schema == PROJECTION_SCHEMA,
             "Unsupported bridge projection schema"
@@ -119,8 +124,8 @@ impl Projection {
         self.header.cwd.as_deref()
     }
     /// The session this projection describes.
-    pub fn session(&self) -> &str {
-        self.header.id.as_deref().unwrap_or_default()
+    pub fn session(&self) -> Option<&str> {
+        self.header.id.as_deref().filter(|id| !id.is_empty())
     }
     /// Whether this session continues an earlier one as a resumed process.
     ///
@@ -145,23 +150,21 @@ impl Projection {
     /// the projection" (keep the hint pending) and "this turn is present but
     /// nonhuman" (resolve the hint as excluded).
     pub fn completed_turns(&self) -> Vec<CompletedRun> {
-        if exclude_header(&self.header) {
+        if self.excluded() {
             return Vec::new();
         }
-        let (human_seqs, ends) = scan_turns(&self.records);
-        ends.into_iter()
+        let mut scan = scan_turns(&self.records);
+        scan.ends
+            .into_iter()
             .map(|(turn, ended_at)| CompletedRun {
                 turn,
                 ended_at,
-                human_messages: self
-                    .records
-                    .iter()
-                    .filter(|r| r.seq.is_some_and(|seq| human_seqs.contains(&seq)))
-                    .filter(|r| r.seq.and_then(|seq| owning_turn(&self.records, seq)) == Some(turn))
-                    .filter_map(|r| r.seq)
-                    .collect(),
+                human_messages: scan.humans.remove(&turn).unwrap_or_default(),
             })
             .collect()
+    }
+    fn excluded(&self) -> bool {
+        exclude_header(&self.header)
     }
 }
 
@@ -181,13 +184,8 @@ pub struct Discovered {
     pub ended_at: i64,
 }
 
-/// A projected session: header fields plus contiguous records.
+/// A projected session header.
 #[derive(Debug, Deserialize)]
-struct Log {
-    header: Header,
-    records: Vec<Record>,
-}
-#[derive(Debug, Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Header {
     #[serde(rename = "type")]
@@ -196,8 +194,8 @@ struct Header {
     id: Option<String>,
     cwd: Option<String>,
     #[serde(default)]
-    #[allow(dead_code)]
-    created_at: Option<i64>,
+    #[serde(rename = "createdAt")]
+    _created_at: Option<i64>,
     #[serde(default)]
     is_seeded: Option<bool>,
     #[serde(default)]
@@ -209,6 +207,21 @@ struct Header {
     /// on the value.
     #[serde(default)]
     parent_session: Option<String>,
+}
+impl Header {
+    /// The logical format version, or why the header cannot be interpreted.
+    fn validate(&self) -> Result<u64, Reason> {
+        if self.kind.as_deref() != Some("session") {
+            return Err(Reason::Header);
+        }
+        let Some(version) = self.version else {
+            return Err(Reason::Header);
+        };
+        if version > MAX_LOG_VERSION {
+            return Err(Reason::HistoryVersion);
+        }
+        Ok(version)
+    }
 }
 
 /// Harness bookkeeping the bridge may omit without changing how an owned turn
@@ -255,117 +268,51 @@ const RELEVANT_FOR_EVIDENCE: &[&str] = &[
     "developer/message",
 ];
 
-fn parse(log: &Value) -> Result<Log> {
-    Ok(serde_json::from_value(log.clone())?)
-}
-fn text(value: Option<&Value>) -> Option<&str> {
-    value?.as_str()
-}
-fn integer(value: Option<&Value>) -> Option<i64> {
-    value?.as_i64()
-}
-
-/// Parse a bounded bridge signal into a run key and cwd.
-///
-/// The signal is a hint: it names a turn and the directory the harness recorded.
-/// It authorizes nothing; capture re-reads the session and re-validates.
-pub fn signal(value: &Value, store: &str) -> Result<(RunKey, String)> {
-    ensure!(
-        value["kind"].as_str() == Some("turn-end"),
-        "Unsupported DSH capture signal"
-    );
-    let session = text(value.get("session"))
-        .filter(|s| !s.is_empty() && s.len() <= 256)
-        .ok_or_else(|| anyhow::anyhow!("Missing session identity"))?;
-    let turn = integer(value.get("turn"))
-        .filter(|t| *t >= 1)
-        .ok_or_else(|| anyhow::anyhow!("Missing turn number"))?;
-    ensure!(
-        value.get("reason").is_none_or(|r| r.as_str().is_some()),
-        "Invalid turn end reason"
-    );
-    let cwd = text(value.get("cwd"))
-        .filter(|s| !s.is_empty() && s.len() <= 4096)
-        .ok_or_else(|| anyhow::anyhow!("Missing or invalid cwd"))?;
-    Ok((
-        RunKey {
-            store: store.into(),
-            thread: session.into(),
-            turn: turn.to_string(),
-        },
-        cwd.into(),
-    ))
-}
-
-/// List completed turns whose session recorded `cwd`.
+/// List completed human turns whose session recorded `cwd`.
 ///
 /// Discovery is a hint generator, exactly like reconciliation against Codex: a
 /// turn here still passes `decode` before evidence exists. Sessions that are
 /// subagent children or forks contribute nothing.
-pub fn discover(path: &Path, cwd: &str, store: &str) -> Result<Vec<Discovered>> {
-    let document: Value = serde_json::from_slice(&crate::evidence::read_bounded(
-        path,
-        crate::evidence::MAX_SOURCE_BYTES,
-    )?)?;
+pub fn discover(projection: &Projection, cwd: &str, store: &str) -> Result<Vec<Discovered>> {
     // Registration fixes the enablement boundary permanently. It must not scan a
-    // document whose bridge schema this engine cannot interpret, or the project
+    // document whose logical format this engine cannot interpret, or the project
     // would be enabled against a baseline it never understood.
-    ensure!(
-        projection_schema(&document) == Some(u64::from(PROJECTION_SCHEMA)),
-        "Unsupported bridge projection schema"
-    );
-    let log: Log = parse(&document)?;
-    // The logical version decides field meaning. Registration must not record a
-    // permanent boundary for a generation this engine would later reject on
-    // every capture.
-    ensure!(
-        log.header.kind.as_deref() == Some("session"),
-        "Invalid session header"
-    );
-    ensure!(
-        log.header
-            .version
-            .is_some_and(|version| version <= MAX_LOG_VERSION),
-        "Unsupported DSH logical history version"
-    );
-    if exclude_header(&log.header) || log.header.cwd.as_deref() != Some(cwd) {
+    projection
+        .header
+        .validate()
+        .map_err(|reason| anyhow::anyhow!("{}", reason.reason()))?;
+    if projection.excluded() || projection.cwd() != Some(cwd) {
         return Ok(Vec::new());
     }
-    let id = log
-        .header
-        .id
-        .clone()
+    let session = projection
+        .session()
         .ok_or_else(|| anyhow::anyhow!("Missing session identity"))?;
-    let mut runs = Vec::new();
-    let (human_seqs, ends) = scan_turns(&log.records);
-    let mut human_turns = HashSet::new();
-    for seq in &human_seqs {
-        if let Some(turn) = owning_turn(&log.records, *seq) {
-            human_turns.insert(turn);
-        }
-    }
-    for (turn, ended_at) in ends {
-        if !human_turns.contains(&turn) {
-            continue;
-        }
-        runs.push(Discovered {
+    Ok(projection
+        .completed_runs()
+        .into_iter()
+        .map(|run| Discovered {
             turn: RunKey {
                 store: store.into(),
-                thread: id.clone(),
-                turn: turn.to_string(),
+                thread: session.into(),
+                turn: run.turn.to_string(),
             },
-            ended_at,
-        });
-    }
-    Ok(runs)
+            ended_at: run.ended_at,
+        })
+        .collect())
 }
 
 /// Decode one turn of a projected session into evidence.
 ///
 /// `epoch` is the project's registration second. A turn that ended at or before
 /// it predates enablement and is excluded, matching Codex's baseline rule.
-pub fn decode(log: &Value, store: &str, cwd: &str, turn: u64, epoch: i64) -> Result<Capture> {
-    decode_after(log, store, cwd, turn, &Boundary::Second(epoch))
+pub fn decode(
+    projection: &Projection,
+    store: &str,
+    cwd: &str,
+    turn: u64,
+    epoch: i64,
+) -> Result<Capture> {
+    decode_after(projection, store, cwd, turn, Boundary::Second(epoch))
 }
 
 /// The instant a project became enabled, at the precision its record allows.
@@ -388,57 +335,43 @@ impl Boundary {
 
 /// Decode one turn against an enablement boundary of any recorded precision.
 pub fn decode_after(
-    log: &Value,
+    projection: &Projection,
     store: &str,
     cwd: &str,
     turn: u64,
-    boundary: &Boundary,
+    boundary: Boundary,
 ) -> Result<Capture> {
-    if projection_schema(log) != Some(u64::from(PROJECTION_SCHEMA)) {
-        // The bridge's own document shape, not DSH's logical format.
-        return Ok(Capture::Unsupported(Reason::ProjectionSchema));
-    }
-    let log = parse(log)?;
-    if log.header.kind.as_deref() != Some("session") || log.header.version.is_none() {
-        return Ok(Capture::Unsupported(Reason::Header));
-    }
-    if log.header.version.is_some_and(|v| v > MAX_LOG_VERSION) {
-        return Ok(Capture::Unsupported(Reason::HistoryVersion));
-    }
-    if exclude_header(&log.header) {
+    let version = match projection.header.validate() {
+        Ok(version) => version,
+        Err(reason) => return Ok(Capture::Unsupported(reason)),
+    };
+    if projection.excluded() {
         return Ok(Capture::Excluded);
     }
-    let Some(session) = log.header.id.as_deref().filter(|id| !id.is_empty()) else {
+    let Some(session) = projection.session() else {
         return Ok(Capture::Unsupported(Reason::Header));
     };
-    if log.header.cwd.as_deref() != Some(cwd) {
+    if projection.cwd() != Some(cwd) {
         return Ok(Capture::WrongProject);
     }
-    let mut previous: Option<u64> = None;
-    for record in &log.records {
-        let Some(seq) = record.seq else {
-            return Ok(Capture::Unsupported(Reason::Sequence));
-        };
-        if previous.is_some_and(|p| seq != p + 1) {
-            return Ok(Capture::Unsupported(Reason::Sequence));
-        }
-        previous = Some(seq);
+    if !contiguous(&projection.records) {
+        return Ok(Capture::Unsupported(Reason::Sequence));
     }
-    let Some(start) = log
+    let Some(start) = projection
         .records
         .iter()
         .find(|r| r.kind == "turn/start" && turn_of(r) == Some(turn))
     else {
         return Ok(Capture::Missing);
     };
-    let Some(end) = log
+    let Some(end) = projection
         .records
         .iter()
         .find(|r| r.kind == "turn/end" && turn_of(r) == Some(turn))
     else {
         // An open turn may still receive events; a later turn proves this one is
         // no longer open and its end record is genuinely absent.
-        let superseded = log
+        let superseded = projection
             .records
             .iter()
             .any(|r| r.kind == "turn/start" && turn_of(r).is_some_and(|t| t > turn));
@@ -448,13 +381,13 @@ pub fn decode_after(
             Capture::Pending
         });
     };
-    let Some(end_seq) = end.seq else {
+    let (Some(start_seq), Some(end_seq)) = (start.seq, end.seq) else {
         return Ok(Capture::Unsupported(Reason::Sequence));
     };
-    let Some(ended_ms) = end.millis() else {
+    let Some(ended_ms) = end.time else {
         return Ok(Capture::Unsupported(Reason::TurnIdentity));
     };
-    let Some(started_ms) = start.millis() else {
+    let Some(started_ms) = start.time else {
         return Ok(Capture::Unsupported(Reason::StartedAt));
     };
     // Compare the recorded instants, not their truncated seconds: an end before
@@ -463,21 +396,15 @@ pub fn decode_after(
         return Ok(Capture::Unsupported(Reason::StartedAt));
     }
     let started_at = started_ms / 1000;
-    let reason = match text(
-        end.data
-            .as_ref()
-            .and_then(|d| d.get("reason").and_then(|r| r.get("kind"))),
-    ) {
-        Some("completed") => "completed",
-        Some("error") => "failed",
-        Some("aborted") | Some("interrupted") => "interrupted",
-        _ => return Ok(Capture::Unsupported(Reason::TurnEndReason)),
+    let Some(reason) = end_reason(end) else {
+        return Ok(Capture::Unsupported(Reason::TurnEndReason));
     };
     // A turn ending in the same second but after registration is post-enablement.
     if ended_ms <= boundary.millis() {
         return Ok(Capture::BeforeEnablement);
     }
     let ended_at = ended_ms / 1000;
+    let turn_number = i64::try_from(turn).unwrap_or(i64::MAX);
     let mut ids = HashSet::new();
     // Call identities seen in this turn, and the subset already answered.
     let mut calls = HashSet::new();
@@ -487,35 +414,34 @@ pub fn decode_after(
     // that never become items: the projection's own size is the cost paid.
     let mut bytes = 0;
     let mut human = false;
-    for record in &log.records {
+    // The turn opened by the nearest preceding `turn/start`. DSH records no
+    // `turn` on `user/message`, so ownership comes from this walk rather than
+    // from each record's own payload.
+    let mut owner = None;
+    for record in &projection.records {
+        if record.kind == "turn/start" {
+            let started = turn_of(record);
+            // A start for another turn inside this turn's window breaks the
+            // ownership the rest of the walk relies on. It is not bookkeeping.
+            if record
+                .seq
+                .is_some_and(|seq| seq > start_seq && seq < end_seq)
+                && started != Some(turn)
+            {
+                return Ok(Capture::Unsupported(Reason::TurnAttribution));
+            }
+            owner = started;
+            continue;
+        }
         let Some(seq) = record.seq else {
             return Ok(Capture::Unsupported(Reason::Sequence));
         };
-        if seq <= start_seq_of(&log, turn) || seq >= end_seq {
+        if seq <= start_seq || seq >= end_seq {
             continue;
         }
-        let Some(data) = record.data.as_ref() else {
-            return Ok(Capture::Unsupported(Reason::TurnIdentity));
-        };
-        // Only records that carry a turn field can disagree with the turned-end
-        // turn. A message's ownership comes from the enclosing `turn/start`,
-        // because DSH records no `turn` on `user/message`.
-        if let Some(attributed) = integer(data.get("turn")) {
-            if attributed != turn as i64 {
-                return Ok(Capture::Unsupported(Reason::TurnAttribution));
-            }
-        } else if owning_turn(&log.records, seq) != Some(turn) {
-            return Ok(Capture::Unsupported(Reason::TurnAttribution));
-        }
-        let human_message = record.kind == "user/message"
-            && text(data.get("source").and_then(|s| s.get("kind"))) == Some(HUMAN);
-        if human_message {
-            human = true;
-        } else if record.kind == "user/message" {
-            // Injected context is the harness's framing, not the human's run. It
-            // is projected away instead of becoming reusable-looking evidence.
-            continue;
-        }
+        // Bookkeeping may be omitted entirely, so requiring a payload (or an
+        // attribution field) from it would hold a turn the bridge could have
+        // safely projected less of.
         if BOOKKEEPING.contains(&record.kind.as_str()) {
             continue;
         }
@@ -524,6 +450,26 @@ pub fn decode_after(
             // how this turn reads. Unknown vocabulary, or an event the bridge
             // deliberately dropped, is held instead of silently narrowed.
             return Ok(Capture::Unsupported(Reason::UnknownEventType));
+        }
+        let Some(data) = record.data.as_ref() else {
+            return Ok(Capture::Unsupported(Reason::TurnIdentity));
+        };
+        // Only records that carry a turn field can disagree with the turn-end
+        // turn. A message's ownership comes from the enclosing `turn/start`.
+        if let Some(attributed) = data.get("turn").and_then(Value::as_i64) {
+            if attributed != turn_number {
+                return Ok(Capture::Unsupported(Reason::TurnAttribution));
+            }
+        } else if owner != Some(turn) {
+            return Ok(Capture::Unsupported(Reason::TurnAttribution));
+        }
+        let human_message = record.kind == "user/message" && is_human_message(record);
+        if human_message {
+            human = true;
+        } else if record.kind == "user/message" {
+            // Injected context is the harness's framing, not the human's run. It
+            // is projected away instead of becoming reusable-looking evidence.
+            continue;
         }
         if record.kind == "assistant/attempt" {
             // A settled attempt keeps its exact compact stream, which is never
@@ -586,7 +532,9 @@ pub fn decode_after(
             turn: turn.to_string(),
         },
         project: String::new(),
-        runtime_version: log.header.version.unwrap_or_default().to_string(),
+        // DSH exposes its logical log format, not an application version, so
+        // this is the most precise runtime identity the projection carries.
+        runtime_version: version.to_string(),
         capture_runtime: None,
         outcome: reason.into(),
         completed_at: ended_at,
@@ -601,8 +549,7 @@ pub fn decode_after(
         items,
         coverage: vec![
             format!(
-                "DSH sessionQuery projection of a dsh-session v{} logical log",
-                log.header.version.unwrap_or_default()
+                "DSH sessionQuery projection of a dsh-session v{version} logical log"
             ),
             "Injected context, job, and approval events are projected away".into(),
             "Attachment bytes, provider-hidden reasoning streams, reasoning blocks, and replaced surface nodes are not captured"
@@ -611,12 +558,164 @@ pub fn decode_after(
     })))
 }
 
+/// Parse a bounded bridge signal into a run key and cwd.
+///
+/// The signal is a hint: it names a turn and the directory the harness recorded.
+/// It authorizes nothing; capture re-reads the session and re-validates.
+pub fn signal(value: &Value, store: &str) -> Result<(RunKey, String)> {
+    ensure!(
+        value["kind"].as_str() == Some("turn-end"),
+        "Unsupported DSH capture signal"
+    );
+    let session = value
+        .get("session")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty() && s.len() <= MAX_SESSION_ID)
+        .ok_or_else(|| anyhow::anyhow!("Missing session identity"))?;
+    let turn = value
+        .get("turn")
+        .and_then(Value::as_i64)
+        .filter(|t| *t >= 1)
+        .ok_or_else(|| anyhow::anyhow!("Missing turn number"))?;
+    ensure!(
+        value.get("reason").is_none_or(|r| r.as_str().is_some()),
+        "Invalid turn end reason"
+    );
+    let cwd = value
+        .get("cwd")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty() && s.len() <= MAX_CWD)
+        .ok_or_else(|| anyhow::anyhow!("Missing or invalid cwd"))?;
+    Ok((
+        RunKey {
+            store: store.into(),
+            thread: session.into(),
+            turn: turn.to_string(),
+        },
+        cwd.into(),
+    ))
+}
+
+/// Whether every projected record carries a seq and the values are contiguous.
+///
+/// A bounded projection starts at the captured turn's native seq, so only the
+/// step is required: the engine must not assume seq starts at zero.
+fn contiguous(records: &[Record]) -> bool {
+    let mut previous: Option<u64> = None;
+    for record in records {
+        let Some(seq) = record.seq else {
+            return false;
+        };
+        if previous.is_some_and(|p| seq != p + 1) {
+            return false;
+        }
+        previous = Some(seq);
+    }
+    true
+}
+
+/// The end reason, mapped onto the closed outcome set evidence understands.
+fn end_reason(end: &Record) -> Option<&'static str> {
+    match end.data.as_ref()?.get("reason")?.get("kind")?.as_str()? {
+        "completed" => Some("completed"),
+        "error" => Some("failed"),
+        "aborted" | "interrupted" => Some("interrupted"),
+        _ => None,
+    }
+}
+
+/// The direct human prompts and completed turns in a raw log.
+///
+/// A `user/message` carries **no** `turn` field in DSH; it belongs to the turn
+/// opened by the nearest preceding `turn/start`. Scanning by attribute instead
+/// of by ownership leaves every real turn looking non-human.
+struct TurnScan {
+    humans: HashMap<u64, Vec<u64>>,
+    ends: Vec<(u64, i64)>,
+}
+
+fn scan_turns(records: &[Record]) -> TurnScan {
+    // Ends are in milliseconds: an enablement boundary is second-resolution,
+    // and truncating first would exclude a turn that ended later in the same
+    // second as registration.
+    let mut scan = TurnScan {
+        humans: HashMap::new(),
+        ends: Vec::new(),
+    };
+    let mut owner = None;
+    for record in records {
+        if record.kind == "turn/start" {
+            owner = turn_of(record);
+            continue;
+        }
+        if record.kind == "turn/end" {
+            if let (Some(turn), Some(ended)) = (turn_of(record), record.time) {
+                scan.ends.push((turn, ended));
+            }
+            continue;
+        }
+        if is_human_message(record)
+            && let (Some(turn), Some(seq)) = (owner, record.seq)
+        {
+            scan.humans.entry(turn).or_default().push(seq);
+        }
+    }
+    scan
+}
+
+/// Whether a record is a direct human prompt rather than injected context.
+fn is_human_message(record: &Record) -> bool {
+    record.kind == "user/message"
+        && record
+            .data
+            .as_ref()
+            .and_then(|d| d.get("source"))
+            .and_then(|s| s.get("kind"))
+            .and_then(Value::as_str)
+            == Some(HUMAN)
+}
+
+fn exclude_header(header: &Header) -> bool {
+    header.is_seeded == Some(true)
+        || header.origin.as_deref() == Some("subagent")
+        || header.delegation_depth.is_some_and(|d| d > 0)
+        || header.parent_session.is_some()
+}
+
+fn turn_of(record: &Record) -> Option<u64> {
+    record
+        .data
+        .as_ref()
+        .and_then(|d| d.get("turn"))
+        .and_then(Value::as_u64)
+}
+
 /// The identity a projected record contributes to evidence.
 ///
 /// A user message is a message; a developer message identifies itself; a tool
 /// result is identified by the call it answers, which also survives an outer
 /// `id` added by projection metadata. Preferring an outer `id` would let one
 /// turn's envelope collide with another record's native identity.
+fn projected_identity(record: &Record) -> Option<&str> {
+    let data = record.data.as_ref()?;
+    let field = match record.kind.as_str() {
+        "user/message" => data.get("id"),
+        // A developer message nests its identity like every other message; an
+        // outer `id` is accepted only as a fallback for older projections.
+        "developer/message" => data
+            .get("message")
+            .and_then(|m| m.get("id"))
+            .or_else(|| data.get("id")),
+        "assistant/message" => data.get("message").and_then(|m| m.get("id")),
+        "tool/result" => data
+            .get("message")
+            .and_then(|m| m.get("toolCallId"))
+            .or_else(|| data.get("toolCallId"))
+            .or_else(|| data.get("id")),
+        _ => data.get("callId"),
+    };
+    field.and_then(Value::as_str)
+}
 /// The evidence item id: the native projection identity, kept unique per turn
 /// because a turn is the whole evidence scope.
 fn item_id(identity: &str, seq: u64) -> String {
@@ -679,106 +778,8 @@ fn evidence_data(kind: &str, data: &Value) -> Value {
     value
 }
 
-fn projected_identity(record: &Record) -> Option<&str> {
-    let data = record.data.as_ref()?;
-    text(match record.kind.as_str() {
-        "user/message" => data.get("id"),
-        // A developer message nests its identity like every other message; an
-        // outer `id` is accepted only as a fallback for older projections.
-        "developer/message" => data
-            .get("message")
-            .and_then(|m| m.get("id"))
-            .or_else(|| data.get("id")),
-        "assistant/message" => data.get("message").and_then(|m| m.get("id")),
-        "tool/result" => data
-            .get("message")
-            .and_then(|m| m.get("toolCallId"))
-            .or_else(|| data.get("toolCallId"))
-            .or_else(|| data.get("id")),
-        _ => data.get("callId"),
-    })
-}
 /// A missing or colliding projection identity makes the turn inspectable rather
 /// than silently merging two items.
 fn assert_identity(identity: &str, ids: &mut HashSet<String>) -> bool {
     !identity.is_empty() && ids.insert(identity.to_owned())
-}
-
-/// The direct human prompts and completed turns in a raw log.
-///
-/// A `user/message` carries **no** `turn` field in DSH; it belongs to the turn
-/// opened by the nearest preceding `turn/start`. Scanning by attribute instead
-/// of by ownership leaves every real turn looking non-human.
-fn scan_turns(records: &[Record]) -> (HashSet<u64>, Vec<(u64, i64)>) {
-    // Ends are in milliseconds: an enablement boundary is second-resolution,
-    // and truncating first would exclude a turn that ended later in the same
-    // second as registration.
-    let mut humans = HashSet::new();
-    let mut ends = Vec::new();
-    for record in records {
-        if is_human_message(record)
-            && let Some(seq) = record.seq
-        {
-            humans.insert(seq);
-        }
-        if record.kind == "turn/end"
-            && let Some(turn) = turn_of(record)
-            && let Some(ended) = record.millis()
-        {
-            ends.push((turn, ended));
-        }
-    }
-    (humans, ends)
-}
-
-/// The turn that owns `seq`: the nearest `turn/start` at or before it.
-fn owning_turn(records: &[Record], seq: u64) -> Option<u64> {
-    records
-        .iter()
-        .filter(|r| r.kind == "turn/start" && r.seq.is_some_and(|s| s <= seq))
-        .max_by_key(|r| r.seq)
-        .and_then(turn_of)
-}
-
-/// Whether a record is a direct human prompt rather than injected context.
-fn is_human_message(record: &Record) -> bool {
-    record.kind == "user/message"
-        && record
-            .data
-            .as_ref()
-            .and_then(|d| d.get("source"))
-            .and_then(|s| s.get("kind"))
-            .and_then(Value::as_str)
-            == Some(HUMAN)
-}
-fn exclude_header(header: &Header) -> bool {
-    header.is_seeded == Some(true)
-        || header.origin.as_deref() == Some("subagent")
-        || header.delegation_depth.is_some_and(|d| d > 0)
-        || header.parent_session.is_some()
-}
-fn turn_of(record: &Record) -> Option<u64> {
-    record
-        .data
-        .as_ref()
-        .and_then(|d| d.get("turn"))
-        .and_then(Value::as_u64)
-}
-impl Record {
-    /// The committed time in milliseconds, as DSH records it.
-    fn millis(&self) -> Option<i64> {
-        self.time
-    }
-}
-fn start_seq_of(log: &Log, turn: u64) -> u64 {
-    log.records
-        .iter()
-        .find(|r| r.kind == "turn/start" && turn_of(r) == Some(turn))
-        .and_then(|r| r.seq)
-        .unwrap_or(0)
-}
-
-/// Resolve the project directory a bridge invocation named.
-pub fn project_at(cwd: &str) -> Result<project::Project> {
-    project::resolve(Path::new(cwd))
 }
