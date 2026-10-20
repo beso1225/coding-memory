@@ -54,6 +54,38 @@ the same predicate for live delivery, reconciliation, and claims. The library al
 supports excluding individual Run keys before generation. Changing observer or
 runtime version does not create a new run identity.
 
+## DeepSeek Harness
+
+DSH capture runs through a bridge plugin rather than a history decoder. The
+bridge (`bridge/dsh-capture/index.mjs`) is an out-of-tree Cordis plugin mounted
+with a `--patch` overlay; it reads sessions through DSH's own `sessionQuery` and
+writes a bounded projection, and the engine decides everything else:
+
+```sh
+coding-memory --state-dir /absolute/engine-state dsh --dsh-home /absolute/dsh-home \
+  register --session /absolute/projection.json --project /absolute/project
+coding-memory --state-dir /absolute/engine-state dsh --dsh-home /absolute/dsh-home \
+  reconcile --session /absolute/projection.json --project /absolute/project
+coding-memory --state-dir /absolute/engine-state dsh --dsh-home /absolute/dsh-home \
+  capture --session /absolute/projection.json --project /absolute/project [--turn N]
+```
+
+`enqueue` is what the bridge calls on `turn/end`; it accepts a bounded
+`{"kind":"turn-end","session":...,"turn":N,"cwd":...}` hint from stdin or
+`--event`. The hint names the run: capture publishes only a run a live runtime
+hinted (`no_capture_hint` otherwise), a hint recorded before its project is
+registered is kept and resolved by `reconcile`, and `reconcile` itself never
+queues a run. `/compact` and its durable bracket are harness bookkeeping and do
+not reach evidence. `--dsh-home` selects the
+runtime store, so DSH runs never share identity with Codex runs.
+
+Registration, the enablement epoch, exclusions, engine-owned stores, dedup,
+size bounds, evidence immutability, `retry`, and held-reason reporting behave as
+for Codex, and `status` lists DSH runs beside Codex runs. The verified contract,
+exclusions, and current limitations are in
+[DeepSeek Harness capture](dsh-capture-experiment.md). OpenCode capture is not
+implemented.
+
 ## Identity and boundaries
 
 Project identity is a SHA-256 of the canonical Git common-directory path. Linked

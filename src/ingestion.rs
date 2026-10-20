@@ -1,12 +1,15 @@
 use crate::{
     codex::{self, Capture, Client},
     domain::{RunKey, hash},
-    evidence, project,
+    dsh, evidence, project,
     state::{Enqueue, State},
 };
 use anyhow::{Result, ensure};
 use serde_json::{Value, json};
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 pub fn now() -> i64 {
     std::time::SystemTime::now()
@@ -251,4 +254,319 @@ pub async fn capture_one(
         )?,
     }
     Ok(true)
+}
+
+/// A DeepSeek Harness capture request from the bridge.
+///
+/// The bridge is a hint source, like a Codex notification: it names a turn and
+/// the projection file to read, and the engine alone decides whether that turn
+/// becomes evidence.
+#[derive(Debug, Clone)]
+pub enum DshOperation {
+    Enqueue,
+    Capture {
+        session: PathBuf,
+        project: PathBuf,
+        turn: Option<u64>,
+    },
+    Reconcile {
+        session: PathBuf,
+        project: PathBuf,
+    },
+    Register {
+        session: PathBuf,
+        project: PathBuf,
+    },
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DshReport {
+    pub action: &'static str,
+    /// State reached by the run this invocation handled, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run: Option<RunKey>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<String>,
+    /// Runs queued by `reconcile`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queued: Option<usize>,
+    /// Turns excluded by `register` as the enablement baseline.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<usize>,
+}
+
+/// Execute one bridge request.
+pub async fn dsh(
+    state: &mut State,
+    store: &str,
+    root: &Path,
+    operation: &DshOperation,
+    event: Option<String>,
+) -> Result<DshReport> {
+    match operation {
+        DshOperation::Enqueue => {
+            let mut bytes = Vec::new();
+            if let Some(event) = event {
+                bytes = event.into_bytes();
+            } else {
+                use std::io::Read;
+                std::io::stdin().take(65537).read_to_end(&mut bytes)?;
+            }
+            ensure!(bytes.len() <= 65536, "Signal exceeds size limit");
+            let (key, cwd) = dsh::signal(&serde_json::from_slice(&bytes)?, store)?;
+            let p = project::resolve(Path::new(&cwd))?;
+            if state.project_epoch(&p.id).is_err() {
+                // A live run can end before its project is registered. Keep the
+                // exact hint and let a later reconcile resolve it; silently
+                // dropping it would lose the only record that this turn ended.
+                state.save_pending_hint(&key, &cwd, now())?;
+                return Ok(DshReport {
+                    action: "enqueue",
+                    state: Some("deferred"),
+                    run: Some(key),
+                    reason: Some("project_not_registered".into()),
+                    evidence: None,
+                    queued: None,
+                    baseline: None,
+                });
+            }
+            let queued = state.enqueue_hinted(&key, &p.id, &cwd, now())?;
+            Ok(DshReport {
+                action: "enqueue",
+                state: Some(match queued {
+                    Enqueue::Inserted => "queued",
+                    Enqueue::Duplicate => "duplicate",
+                    Enqueue::Excluded => "held",
+                }),
+                run: Some(key),
+                reason: (queued == Enqueue::Excluded).then(|| "excluded".into()),
+                evidence: None,
+                queued: None,
+                baseline: None,
+            })
+        }
+        DshOperation::Register { session, project } => {
+            let p = project::resolve(project)?;
+            let cwd = session_cwd(&p, session)?;
+            let epoch = now();
+            let baseline = dsh::discover(session, &cwd, store)?;
+            state.register_project(
+                &p.id,
+                p.repository
+                    .to_str()
+                    .ok_or_else(|| anyhow::anyhow!("Non-UTF8 path"))?,
+                epoch,
+            )?;
+            for run in &baseline {
+                state.exclude(&run.turn, "enablement_baseline")?;
+            }
+            Ok(DshReport {
+                action: "register",
+                state: None,
+                run: None,
+                reason: None,
+                evidence: None,
+                queued: None,
+                baseline: Some(baseline.len()),
+            })
+        }
+        DshOperation::Reconcile { session, project } => {
+            let p = project::resolve(project)?;
+            let cwd = session_cwd(&p, session)?;
+            let epoch = state.project_epoch(&p.id)?;
+            let mut queued = 0;
+            let hinted: Vec<RunKey> = state
+                .pending_hints(store)?
+                .into_iter()
+                .filter(|(_, hint_cwd)| {
+                    project::resolve(Path::new(hint_cwd)).is_ok_and(|h| h.id == p.id)
+                })
+                .map(|(key, _)| key)
+                .collect();
+            let projection = dsh::Projection::parse(&evidence::read_bounded(
+                session,
+                evidence::MAX_SOURCE_BYTES,
+            )?)?;
+            ensure!(
+                projection.cwd() == Some(cwd.as_str()),
+                "Projection recorded a different project directory"
+            );
+            // A hint is authoritative: the engine only captures a run some live
+            // process saw end. Each hint resolves to its exact turn; a run that
+            // ended before enablement is excluded exactly like a baseline turn.
+            let runs = projection.completed_runs();
+            for hint in hinted {
+                let Some(turn) = runs.iter().find(|run| run.turn.to_string() == hint.turn) else {
+                    state.hold_hint(&hint, "history_missing")?;
+                    continue;
+                };
+                if turn.ended_at <= epoch {
+                    state.exclude(&hint, "before_enablement")?;
+                    state.resolve_hint(&hint)?;
+                    continue;
+                }
+                if state.enqueue_hinted(&hint, &p.id, &cwd, now())? == Enqueue::Inserted {
+                    queued += 1;
+                }
+                state.resolve_hint(&hint)?;
+            }
+            Ok(DshReport {
+                action: "reconcile",
+                state: None,
+                run: None,
+                reason: None,
+                evidence: None,
+                queued: Some(queued),
+                baseline: None,
+            })
+        }
+        DshOperation::Capture {
+            session,
+            project,
+            turn,
+        } => {
+            let p = project::resolve(project)?;
+            let cwd = session_cwd(&p, session)?;
+            let document: serde_json::Value = serde_json::from_slice(&evidence::read_bounded(
+                session,
+                evidence::MAX_SOURCE_BYTES,
+            )?)?;
+            let Some(claim) = state.claim_store(Some(store), now(), 3600)? else {
+                return Ok(DshReport {
+                    action: "capture",
+                    state: None,
+                    run: None,
+                    reason: Some("no_ready_run".into()),
+                    evidence: None,
+                    queued: None,
+                    baseline: None,
+                });
+            };
+            if !state.hinted(&claim.key)? {
+                // Only a hint can name the turned-ended run this process saw.
+                // Without one, the projection belongs to a different process
+                // or turn and must not be published as this run's evidence.
+                state.hold(&claim, "no_capture_hint", now())?;
+                return Ok(DshReport {
+                    action: "capture",
+                    state: Some("held"),
+                    run: Some(claim.key),
+                    reason: Some("no_capture_hint".into()),
+                    evidence: None,
+                    queued: None,
+                    baseline: None,
+                });
+            }
+            if claim.key.store != store || claim.project != p.id {
+                state.hold(&claim, "wrong_runtime_store", now())?;
+                return Ok(DshReport {
+                    action: "capture",
+                    state: Some("held"),
+                    run: Some(claim.key),
+                    reason: Some("wrong_runtime_store".into()),
+                    evidence: None,
+                    queued: None,
+                    baseline: None,
+                });
+            }
+            // An explicit turn may only name the run already claimed for this
+            // store, so a stale bridge hint cannot capture a different run than
+            // the one the queue selected.
+            if let Some(turn) = turn {
+                ensure!(
+                    claim.key.turn == turn.to_string(),
+                    "Requested turn is not the claimed run"
+                );
+            }
+            let turn_number: u64 = claim.key.turn.parse()?;
+            let epoch = state.project_epoch(&claim.project)?;
+            let outcome = dsh::decode(&document, store, &cwd, turn_number, epoch)?;
+            dsh_capture(state, root, &claim, outcome)
+        }
+    }
+}
+
+/// The cwd a projection recorded, which must belong to the registered project:
+/// a session cannot be attributed to a project it did not run in.
+fn session_cwd(p: &crate::project::Project, session: &Path) -> Result<String> {
+    let document: serde_json::Value = serde_json::from_slice(&evidence::read_bounded(
+        session,
+        evidence::MAX_SOURCE_BYTES,
+    )?)?;
+    let cwd = document["header"]["cwd"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Projection recorded no cwd"))?;
+    let recorded = project::resolve(Path::new(cwd))?;
+    ensure!(recorded.id == p.id, "project_mismatch");
+    Ok(cwd.into())
+}
+
+/// Publish one decoded DSH turn with the same transitions Codex capture uses.
+fn dsh_capture(
+    state: &mut State,
+    root: &Path,
+    claim: &crate::state::Claim,
+    outcome: dsh::Capture,
+) -> Result<DshReport> {
+    use dsh::Capture;
+    let mut report = DshReport {
+        action: "capture",
+        state: None,
+        run: Some(claim.key.clone()),
+        reason: None,
+        evidence: None,
+        queued: None,
+        baseline: None,
+    };
+    match outcome {
+        Capture::Ready(bundle) => {
+            let mut bundle = *bundle;
+            bundle.project = claim.project.clone();
+            let digest = evidence::save(root, &bundle)?;
+            let state_name = if bundle.outcome == "completed" {
+                "ready"
+            } else {
+                "recorded"
+            };
+            state.finish(claim, &bundle.outcome, Some(&digest), now())?;
+            report.state = Some(state_name);
+            report.evidence = Some(digest);
+        }
+        Capture::Pending => {
+            state.defer(claim, "history_pending", now(), 10)?;
+            report.state = Some("queued");
+            report.reason = Some("history_pending".into());
+        }
+        Capture::Missing => {
+            state.hold(claim, "history_missing", now())?;
+            report.state = Some("held");
+            report.reason = Some("history_missing".into());
+        }
+        Capture::Unsupported(reason) => {
+            state.hold(claim, reason.reason(), now())?;
+            report.state = Some("held");
+            report.reason = Some(reason.reason().into());
+        }
+        Capture::OverLimit => {
+            state.hold(claim, "history_over_limit", now())?;
+            report.state = Some("held");
+            report.reason = Some("history_over_limit".into());
+        }
+        Capture::Excluded => {
+            state.hold(claim, "excluded_inherited_or_nonhuman", now())?;
+            report.state = Some("held");
+            report.reason = Some("excluded_inherited_or_nonhuman".into());
+        }
+        Capture::WrongProject => {
+            state.hold(claim, "project_mismatch", now())?;
+            report.state = Some("held");
+            report.reason = Some("project_mismatch".into());
+        }
+    }
+    Ok(report)
 }

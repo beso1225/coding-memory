@@ -1,0 +1,262 @@
+{
+ "schema": 1,
+ "header": {
+  "type": "session",
+  "version": 4,
+  "id": "session-fixture",
+  "createdAt": 1792454157000,
+  "cwd": "/synthetic/project",
+  "isSeeded": false
+ },
+ "records": [
+  {
+   "seq": 0,
+   "type": "permission/preset",
+   "time": 1792454157000,
+   "data": {
+    "preset": "default"
+   }
+  },
+  {
+   "seq": 1,
+   "type": "sandbox/mode",
+   "time": 1792454157001,
+   "data": {
+    "mode": "workspace"
+   }
+  },
+  {
+   "seq": 2,
+   "type": "approval/policy",
+   "time": 1792454157002,
+   "data": {
+    "policy": "ask"
+   }
+  },
+  {
+   "seq": 3,
+   "type": "agent/inbox/spliced",
+   "time": 1792454157003,
+   "data": {
+    "target": "nextTurn",
+    "start": 0,
+    "inserted": [
+     "msg-8"
+    ]
+   }
+  },
+  {
+   "seq": 4,
+   "type": "turn/start",
+   "time": 1792454157004,
+   "data": {
+    "turn": 1
+   }
+  },
+  {
+   "seq": 5,
+   "type": "step/start",
+   "time": 1792454157005,
+   "data": {
+    "turn": 1,
+    "step": 1
+   }
+  },
+  {
+   "seq": 6,
+   "type": "system/message",
+   "time": 1792454157006,
+   "data": {
+    "turn": 1,
+    "step": 1,
+    "message": {
+     "id": "sys-1",
+     "role": "system",
+     "content": [
+      {
+       "type": "text",
+       "text": "system prompt"
+      }
+     ],
+     "source": {
+      "kind": "system-prompt"
+     }
+    }
+   }
+  },
+  {
+   "seq": 7,
+   "type": "user/message",
+   "time": 1792454157007,
+   "data": {
+    "turn": 1,
+    "step": 1,
+    "id": "msg-7",
+    "role": "user",
+    "content": [
+     {
+      "type": "text",
+      "text": "time context"
+     }
+    ],
+    "source": {
+     "kind": "time-context"
+    }
+   }
+  },
+  {
+   "seq": 8,
+   "type": "user/message",
+   "time": 1792454157008,
+   "data": {
+    "turn": 1,
+    "step": 1,
+    "id": "msg-8",
+    "role": "user",
+    "content": [
+     {
+      "type": "text",
+      "text": "inspect the worker"
+     }
+    ],
+    "source": {
+     "kind": "user"
+    }
+   }
+  },
+  {
+   "seq": 9,
+   "type": "user/message",
+   "time": 1792454157009,
+   "data": {
+    "turn": 1,
+    "step": 1,
+    "id": "msg-9",
+    "role": "user",
+    "content": [
+     {
+      "type": "text",
+      "text": "agent instructions"
+     }
+    ],
+    "source": {
+     "kind": "agent-instructions"
+    }
+   }
+  },
+  {
+   "seq": 10,
+   "type": "request/header",
+   "time": 1792454157010,
+   "data": {
+    "header": {},
+    "reason": "initial"
+   }
+  },
+  {
+   "seq": 11,
+   "type": "assistant/attempt",
+   "time": 1792454157011,
+   "data": {
+    "turn": 1,
+    "step": 1,
+    "attemptId": "attempt-1",
+    "stream": []
+   }
+  },
+  {
+   "seq": 12,
+   "type": "tool/call",
+   "time": 1792454157012,
+   "data": {
+    "turn": 1,
+    "step": 1,
+    "callId": "call-1",
+    "name": "read",
+    "arguments": {
+     "path": "README.md"
+    }
+   }
+  },
+  {
+   "seq": 13,
+   "type": "tool/result",
+   "time": 1792454157013,
+   "data": {
+    "turn": 1,
+    "step": 1,
+    "sourceEventSeqs": [
+     12
+    ],
+    "message": {
+     "id": "tool-1",
+     "role": "tool",
+     "toolCallId": "call-1",
+     "content": [
+      {
+       "type": "text",
+       "text": "synthetic file"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "seq": 14,
+   "type": "assistant/message",
+   "time": 1792454157014,
+   "data": {
+    "turn": 1,
+    "step": 1,
+    "message": {
+     "id": "assistant-1",
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "The worker is bounded."
+      }
+     ],
+     "source": {
+      "kind": "model",
+      "provider": "synthetic-route",
+      "model": "synthetic-model",
+      "replayState": {
+       "response": {
+        "kind": "fixture",
+        "version": 1,
+        "provider": "synthetic-route",
+        "model": "synthetic-model"
+       },
+       "blocks": [
+        {
+         "type": "text"
+        }
+       ]
+      }
+     }
+    }
+   }
+  },
+  {
+   "seq": 15,
+   "type": "step/end",
+   "time": 1792454157015,
+   "data": {
+    "turn": 1,
+    "step": 1
+   }
+  },
+  {
+   "seq": 16,
+   "type": "turn/end",
+   "time": 1792454157016,
+   "data": {
+    "turn": 1,
+    "reason": {
+     "kind": "completed"
+    }
+   }
+  }
+ ]
+}

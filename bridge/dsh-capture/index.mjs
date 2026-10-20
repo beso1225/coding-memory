@@ -1,0 +1,311 @@
+/**
+ * @coding-memory/dsh-capture — the DeepSeek Harness side of Coding Memory capture.
+ *
+ * The plugin never decides what becomes memory. On a completed turn it writes a
+ * bounded completion hint, and when a session ends it writes a bounded
+ * projection of that session read through DSH's own `sessionQuery`. The Rust
+ * engine validates, scopes, and stores everything.
+ *
+ * Mount it as an out-of-tree Cordis plugin with a `--patch` overlay:
+ *
+ *   - insert:
+ *       - id: coding-memory-capture
+ *         name: '/absolute/bridge/dsh-capture/index.mjs'
+ *         config:
+ *           executable: /absolute/coding-memory
+ *           stateDir: /absolute/engine-state
+ *           dshHome: /absolute/dsh-home
+ *
+ * @module @coding-memory/dsh-capture
+ */
+
+import { spawn } from 'node:child_process'
+import { mkdir, rename, writeFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
+
+/** Cordis plugin name. */
+export const name = 'coding-memory-capture'
+/** Services required to observe turns and read session history. */
+export const inject = ['sessions', 'sessionQuery']
+
+/**
+ * The plugin's configuration schema in Cordis's standard-schema shape, keeping
+ * this bridge dependency-free. `apply` validates the three absolute paths.
+ */
+export const Config = {
+  '~standard': {
+    version: 1,
+    vendor: 'coding-memory',
+    validate(value) {
+      if (typeof value !== 'object' || value === null) {
+        return { issues: [{ message: 'config must be an object' }] }
+      }
+      return { value }
+    },
+  },
+}
+
+/** How long capture waits for a compaction request announced at turn end. */
+export const COMPACTION_SETTLE_MS = 1500
+/** Markers a producer emits when it is about to compact one session. */
+export const COMPACTION_REQUEST_EVENTS = ['coding-memory/compaction-requested']
+/** Largest projection the bridge will write, in bytes. */
+export const MAX_PROJECTION_BYTES = 16 * 1024 * 1024
+/** Largest completion hint the bridge will write, in bytes. */
+export const MAX_SIGNAL_BYTES = 65536
+/** Session ids containing this marker are Coding Memory's own generation runs. */
+export const ENGINE_SESSION = 'coding-memory-'
+
+/**
+ * Keep a projected record replayable.
+ *
+ * A projected record must stay the shape DSH stores: an `assistant/message`
+ * whose model source lost its provider fails replay with "message must have
+ * model source", and a user message flattened to `{source, turn, step}` fails
+ * with "not losslessly JSON-serializable". Projecting only the envelope fields
+ * (a fresh object, selected keys) is what keeps replay working; never rewrite a
+ * message payload.
+ * @param record - one raw log event.
+ * @returns the record with its envelope fields, unchanged `data`.
+ */
+export function projectRecord(record) {
+  return {
+    seq: record.seq,
+    type: record.type,
+    time: record.time,
+    ...record.surfaceOp === undefined ? {} : { surfaceOp: record.surfaceOp },
+    ...record.sourceEventSeqs === undefined ? {} : { sourceEventSeqs: record.sourceEventSeqs },
+    ...record.ignorable === undefined ? {} : { ignorable: record.ignorable },
+    ...record.data === undefined ? {} : { data: record.data },
+  }
+}
+
+/**
+ * Refuse a projection DSH could not replay itself.
+ *
+ * The engine only ever sees the projection, so it cannot validate replay
+ * fidelity. Checking it here keeps a projection change from silently producing
+ * an unreadable session: the harness reloads these records on resume.
+ * @param header - session header.
+ * @param records - projected records.
+ * @returns the unchanged pair, or throws with the replay failure.
+ */
+export function assertReplayable(Session, SessionId, header, records) {
+  Session.create(SessionId(header.id), records, header, 0, [])
+}
+
+/**
+ * Project one session read into the document the engine validates.
+ * @param header - replay-validated session header from `sessionQuery`.
+ * @param events - the complete raw log.
+ * @returns a plain JSON document: header fields and contiguous records.
+ */
+export function project(header, events) {
+  return {
+    schema: 1,
+    header: {
+      type: 'session',
+      version: header.version,
+      id: header.id,
+      createdAt: header.createdAt,
+      ...header.cwd === undefined ? {} : { cwd: header.cwd },
+      isSeeded: header.isSeeded,
+      ...header.parentSession === undefined ? {} : { parentSession: header.parentSession },
+      ...header.origin === undefined ? {} : { origin: header.origin },
+      ...header.delegationDepth === undefined ? {} : { delegationDepth: header.delegationDepth },
+    },
+    records: events.map(projectRecord),
+  }
+}
+
+/**
+ * Whether a session is Coding Memory's own, which must never be captured.
+ * @param sessionId - session identity.
+ * @returns true for engine-owned generation sessions.
+ */
+export function engineOwned(sessionId) {
+  return String(sessionId).includes(ENGINE_SESSION)
+}
+
+/**
+ * Replace `path` atomically so a reader never sees a partial projection.
+ * @param path - destination file.
+ * @param text - complete document.
+ */
+export async function publish(path, text) {
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 })
+  const temporary = `${path}.${process.pid}.tmp`
+  await writeFile(temporary, text, { mode: 0o600 })
+  await rename(temporary, path)
+}
+
+/**
+ * Mount the bridge.
+ * @param ctx - Cordis context with `sessionQuery` injected.
+ * @param config - validated absolute paths and a bounded timeout.
+ */
+export function apply(ctx, config) {
+  const { executable, stateDir, dshHome, timeoutMs = 15000 } = config
+  /**
+   * A compaction in flight for one session, from its durable bracket. Capture
+   * waits for it so the projection reflects the finished surface: reading a
+   * mid-`compaction/start` log would record an unfinished bracket, and a turn
+   * that ended just before `/compact` would otherwise be captured before the
+   * compaction it is about to be part of.
+   * @type {Map<string, {done: Promise<void>, finish: () => void}>}
+   */
+  const compacting = new Map()
+  const settleCompaction = (sessionId) => {
+    const entry = compacting.get(String(sessionId))
+    if (entry === undefined) return Promise.resolve()
+    return Promise.race([entry.done, new Promise(resolve => setTimeout(resolve, timeoutMs))])
+  }
+  /**
+   * Wait for a compaction of this session: one already running, or one a
+   * producer announced synchronously at the turn's end (`agent.ctx.emit`).
+   * The settle window is short and bounded; its result is always a full turn.
+   * @param sessionId - session whose ended turn is being captured.
+   */
+  async function waitForCompaction(sessionId) {
+    // Costless when no compaction is announced: a timer here would keep the
+    // process alive past the point where the harness tears its services down,
+    // which is exactly when this read must already be in flight.
+    if (!compacting.has(String(sessionId))) return
+    await settleCompaction(sessionId)
+  }
+  // Diagnostics must reach the harness's own stderr even under `--json`, so
+  // they never go through a logger object whose shape varies by composition.
+  const warn = (message) => process.stderr.write(`coding-memory-capture: ${message}\n`)
+
+  /** Run one engine subcommand with a bounded wait; diagnostics never escape. */
+  async function run(args, input) {
+    return await new Promise((resolve) => {
+      let output = ''
+      let settled = false
+      const finish = (result) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        resolve(result)
+      }
+      const child = spawn(executable, args, { stdio: ['pipe', 'pipe', 'pipe'] })
+      const timer = setTimeout(() => {
+        child.kill('SIGTERM')
+        finish({ code: -1, output: 'engine timed out' })
+      }, timeoutMs)
+      child.stdout.on('data', (chunk) => {
+        if (output.length < 65536) output += String(chunk)
+      })
+      child.stderr.on('data', (chunk) => warn(`engine: ${String(chunk).trim().slice(0, 500)}`))
+      child.on('error', (error) => finish({ code: -1, output: String(error) }))
+      child.on('close', (code) => finish({ code: code ?? -1, output }))
+      child.stdin.on('error', () => {})
+      child.stdin.end(input ?? '')
+    })
+  }
+
+  /**
+   * Capture one ended run, reading the session log it just closed.
+   *
+   * The read starts synchronously here: an experiment plugin issuing the same
+   * `readSession` from a `turn/end` listener succeeds, while this bridge's
+   * first successful call is still unexplained under the headless runner's
+   * teardown, so the read must begin at the earliest possible point.
+   * @param sessionId - session whose queued run to capture.
+   * @param turn - the turn that just ended.
+   */
+  function captureTurn(sessionId, turn, started) {
+    // `started` must be a read begun *before* the engine hint ran: the harness
+    // can deactivate the service tree as soon as the turn's process winds down,
+    // and only a read already in flight survives that. It is also read through
+    // the live `ctx` property, never a captured service proxy, which loses its
+    // owning context (`cannot get required service ... in inactive context`).
+    started
+      .then(async ({ session, events }) => {
+        if (session.cwd === undefined) return
+        const text = JSON.stringify(project(session, events))
+        if (Buffer.byteLength(text) > MAX_PROJECTION_BYTES) throw new Error('projection exceeds the bridge bound')
+        const path = join(stateDir, 'dsh', 'projections', `${sessionId}.json`)
+        await publish(path, text)
+        const result = await run([
+          '--state-dir', stateDir, 'dsh', '--dsh-home', dshHome,
+          'capture', '--session', path, '--project', session.cwd, '--turn', String(turn),
+        ])
+        if (result.code !== 0) warn(`capture failed for turn ${turn}: ${result.output.slice(0, 500)}`)
+      })
+      .catch((error) => warn(`capture deferred for turn ${turn}: ${String(error && error.stack ? error.stack.split('\n').slice(0, 4).join(' | ') : error).slice(0, 600)}`))
+  }
+
+  /** Arm the latch for one session so capture waits for that compaction. */
+  const armCompaction = (sessionId) => {
+    if (compacting.has(String(sessionId))) return
+    let finish
+    const done = new Promise(resolve => { finish = resolve })
+    compacting.set(String(sessionId), { done, finish })
+  }
+  for (const marker of COMPACTION_REQUEST_EVENTS) {
+    ctx.on(marker, (payload) => {
+      if (payload !== null && typeof payload === 'object' && 'sessionId' in payload) {
+        armCompaction(payload.sessionId)
+      }
+    })
+  }
+
+  // A serial listener: the agent factory awaits it during creation, so the
+  // per-agent observer exists before the queued prompt opens its first turn.
+  // The observer is owned by this agent's scope, so it ends with the agent.
+  ctx.on('agent/created', ({ agent }) => {
+    const session = agent.session
+    if (engineOwned(session.id)) return
+    agent.ctx.effect(() => {
+      const stop = agent.ctx.on('session/event', (subject, event) => {
+        if (subject !== session) return
+        if (event.type === 'compaction/start') {
+          armCompaction(session.id)
+          return
+        }
+        if (event.type === 'compaction/end') {
+          compacting.get(String(session.id))?.finish()
+          compacting.delete(String(session.id))
+          return
+        }
+        if (event.type !== 'turn/end') return
+        const header = subject.header
+        if (header.isSeeded === true || header.origin === 'subagent' || (header.delegationDepth ?? 0) > 0) return
+        if (header.cwd === undefined) return
+        const turn = event.data.turn
+        const signal = JSON.stringify({
+          kind: 'turn-end',
+          session: session.id,
+          turn,
+          cwd: header.cwd,
+          reason: event.data.reason.kind,
+        })
+        if (Buffer.byteLength(signal) > MAX_SIGNAL_BYTES) return
+        // Start the read immediately, one microtask past the commit, then hint
+        // the engine. Starting earlier (inside the commit) or later (after the
+        // engine subprocess exits, near teardown) both fail: see the experiment
+        // report. A failed read leaves the run queued for a documented reconcile.
+        // Wait out a compaction of this session (bounded), then read: one
+        // microtask past the commit is the timing that keeps the service live.
+        // Read one microtask past the commit (the timing that keeps the service
+        // live), but let a compaction that is running or about to run finish
+        // first: reading mid-compaction would record an unfinished bracket, and
+        // reading first would miss the compaction this turn is part of.
+        const started = waitForCompaction(session.id)
+          .then(() => ctx.sessionQuery.readSession(session.id))
+        started.catch(() => {})
+        run(['--state-dir', stateDir, 'dsh', '--dsh-home', dshHome, '--event', signal, 'enqueue'])
+          .then((queued) => {
+            if (queued.code !== 0) {
+              warn(`enqueue failed for turn ${turn}: ${queued.output.slice(0, 500)}`)
+              return
+            }
+            captureTurn(session.id, turn, started)
+          })
+          .catch((error) => warn(`hint/capture failed: ${String(error && error.stack ? error.stack.split('\n').slice(0, 4).join(' | ') : error).slice(0, 600)}`))
+      })
+      return () => stop()
+    }, 'coding-memory-capture.observe')
+  })
+}

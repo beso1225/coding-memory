@@ -73,6 +73,7 @@ impl State {
             CREATE TABLE IF NOT EXISTS batch_candidates(batch INTEGER REFERENCES consolidation_jobs(id),candidate TEXT REFERENCES candidates(id),PRIMARY KEY(batch,candidate));
             CREATE TABLE IF NOT EXISTS vault_changes(batch INTEGER REFERENCES consolidation_jobs(id),note_id TEXT NOT NULL,path TEXT NOT NULL,before_hash TEXT,after_hash TEXT NOT NULL,content TEXT NOT NULL,applied INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(batch,note_id));
             CREATE TABLE IF NOT EXISTS exclusions(store TEXT, thread TEXT, turn TEXT, reason TEXT NOT NULL, PRIMARY KEY(store,thread,turn));
+            CREATE TABLE IF NOT EXISTS capture_hints(store TEXT, thread TEXT, turn TEXT, at INTEGER NOT NULL, PRIMARY KEY(store,thread,turn));
             CREATE TABLE IF NOT EXISTS runs(store TEXT, thread TEXT, turn TEXT, project TEXT NOT NULL REFERENCES projects(id), cwd TEXT NOT NULL,
                 state TEXT NOT NULL DEFAULT 'queued', outcome TEXT, reason TEXT, evidence TEXT, available_at INTEGER NOT NULL,
                 lease_until INTEGER, token INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(store,thread,turn));")?;
@@ -115,6 +116,86 @@ impl State {
             params![key.store, key.thread, key.turn, reason],
         )?;
         Ok(())
+    }
+    /// Record that a live runtime observed this turn end, and queue it.
+    ///
+    /// The hint is what authorizes capture: `claim` refuses a run no hint
+    /// introduced, so a run discovered only by reconciliation or retry is never
+    /// captured from a session read that never saw this turn end.
+    pub fn enqueue_hinted(
+        &mut self,
+        key: &RunKey,
+        project: &str,
+        cwd: &str,
+        now: i64,
+    ) -> Result<Enqueue> {
+        let result = self.enqueue(key, project, cwd, now)?;
+        if result != Enqueue::Excluded {
+            self.db.execute(
+                "INSERT OR IGNORE INTO capture_hints VALUES(?1,?2,?3,?4)",
+                params![key.store, key.thread, key.turn, now],
+            )?;
+        }
+        Ok(result)
+    }
+    /// Record a hint for a project that is not registered yet.
+    ///
+    /// A live run can end before its project is registered; the hint still names
+    /// the exact run a process observed ending, so it is kept and resolved by a
+    /// later `reconcile` instead of being dropped.
+    pub fn save_pending_hint(&mut self, key: &RunKey, cwd: &str, now: i64) -> Result<()> {
+        self.db.execute(
+            "CREATE TABLE IF NOT EXISTS pending_hints(store TEXT, thread TEXT, turn TEXT, cwd TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(store,thread,turn))",
+            [],
+        )?;
+        self.db.execute(
+            "INSERT OR IGNORE INTO pending_hints VALUES(?1,?2,?3,?4,?5)",
+            params![key.store, key.thread, key.turn, cwd, now],
+        )?;
+        Ok(())
+    }
+    /// Pending hints for one runtime store, oldest first.
+    pub fn pending_hints(&mut self, store: &str) -> Result<Vec<(RunKey, String)>> {
+        self.db.execute(
+            "CREATE TABLE IF NOT EXISTS pending_hints(store TEXT, thread TEXT, turn TEXT, cwd TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(store,thread,turn))",
+            [],
+        )?;
+        let mut stmt = self.db.prepare(
+            "SELECT store,thread,turn,cwd FROM pending_hints WHERE store=?1 ORDER BY at,thread,turn",
+        )?;
+        let rows = stmt.query_map([store], |r| {
+            Ok((
+                RunKey {
+                    store: r.get(0)?,
+                    thread: r.get(1)?,
+                    turn: r.get(2)?,
+                },
+                r.get::<_, String>(3)?,
+            ))
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+    /// Forget a hinted run whose project is now registered and which was queued.
+    pub fn resolve_hint(&mut self, key: &RunKey) -> Result<()> {
+        self.db.execute(
+            "DELETE FROM pending_hints WHERE store=?1 AND thread=?2 AND turn=?3",
+            params![key.store, key.thread, key.turn],
+        )?;
+        Ok(())
+    }
+    /// Retire a hint whose run can never be queued, keeping it inspectable.
+    pub fn hold_hint(&mut self, key: &RunKey, reason: &str) -> Result<()> {
+        self.exclude(key, reason)?;
+        self.resolve_hint(key)?;
+        Ok(())
+    }
+    /// Whether a live runtime observed this exact turn end.
+    pub fn hinted(&self, key: &RunKey) -> Result<bool> {
+        Ok(self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM capture_hints WHERE store=?1 AND thread=?2 AND turn=?3)",
+            params![key.store, key.thread, key.turn],
+            |r| r.get(0),
+        )?)
     }
     pub fn enqueue(&mut self, key: &RunKey, project: &str, cwd: &str, now: i64) -> Result<Enqueue> {
         let tx = self.db.transaction()?;

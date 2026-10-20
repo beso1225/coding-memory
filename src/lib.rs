@@ -3,7 +3,9 @@ pub mod codex;
 pub mod consolidation_state;
 pub mod dashboard;
 pub mod dashboard_server;
+
 pub mod domain;
+pub mod dsh;
 pub mod evidence;
 pub mod extraction;
 pub mod extraction_state;
