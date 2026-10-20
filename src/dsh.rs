@@ -81,6 +81,8 @@ pub enum Capture {
     Unsupported(Reason),
     OverLimit,
     Excluded,
+    /// The turn ended at or before the project's registration second.
+    BeforeEnablement,
     WrongProject,
 }
 
@@ -406,10 +408,13 @@ pub fn decode(log: &Value, store: &str, cwd: &str, turn: u64, epoch: i64) -> Res
     };
     // A turn ending in the same second but after registration is post-enablement.
     if ended_ms <= epoch.saturating_mul(1000) {
-        return Ok(Capture::Excluded);
+        return Ok(Capture::BeforeEnablement);
     }
     let ended_at = ended_ms / 1000;
     let mut ids = HashSet::new();
+    // Call identities seen in this turn, and the subset already answered.
+    let mut calls = HashSet::new();
+    let mut results = HashSet::new();
     let mut items = Vec::new();
     // The bound covers every projected record of the turn, including attempts
     // that never become items: the projection's own size is the cost paid.
@@ -466,12 +471,23 @@ pub fn decode(log: &Value, store: &str, cwd: &str, turn: u64, epoch: i64) -> Res
         let Some(identity) = projected_identity(record) else {
             return Ok(Capture::Unsupported(Reason::ItemIdentity));
         };
-        // A tool result is identified by the call it answers, so it shares that
-        // identity with the call. Every other record has its own identity, and
-        // a collision there means the projection cannot tell two items apart.
-        let unique = record.kind == "tool/result" || assert_identity(identity, &mut ids);
-        if !unique {
-            return Ok(Capture::Unsupported(Reason::DuplicateIdentity));
+        if record.kind == "tool/result" {
+            // A result is identified by the call it answers, which must already
+            // be in this turn: an orphan or a repeat would otherwise become a
+            // "completed" commandExecution and pass as observed support.
+            if identity.is_empty()
+                || !calls.contains(identity)
+                || !results.insert(identity.to_owned())
+            {
+                return Ok(Capture::Unsupported(Reason::ItemIdentity));
+            }
+        } else {
+            if !assert_identity(identity, &mut ids) {
+                return Ok(Capture::Unsupported(Reason::DuplicateIdentity));
+            }
+            if record.kind == "tool/call" {
+                calls.insert(identity.to_owned());
+            }
         }
         // Normalized into the shared evidence item envelope: extraction builds
         // its citation schema from a top-level string `id` and verifies support

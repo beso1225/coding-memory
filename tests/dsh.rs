@@ -418,6 +418,87 @@ fn items_carry_a_citable_id_and_the_shared_vocabulary() {
 }
 
 #[test]
+fn a_tool_result_must_answer_a_call_in_the_same_turn() {
+    // A result whose call is absent would otherwise become a "completed"
+    // commandExecution and count as observed support in extraction.
+    let orphan = log(vec![
+        turn_start(3, 1),
+        real_human(4),
+        record(
+            5,
+            "tool/result",
+            json!({"turn":1,"step":1,"message":{"id":"t-orphan","role":"tool","toolCallId":"missing","content":[]}}),
+        ),
+        turn_end(6, 1, json!({"kind":"completed"})),
+    ]);
+    assert!(matches!(
+        decode(&orphan, 1),
+        Capture::Unsupported(Reason::ItemIdentity)
+    ));
+    // Two results for one call are equally unusable.
+    let duplicated = log(vec![
+        turn_start(3, 1),
+        real_human(4),
+        record(
+            5,
+            "tool/call",
+            json!({"turn":1,"step":1,"callId":"c1","name":"read","arguments":{}}),
+        ),
+        record(
+            6,
+            "tool/result",
+            json!({"turn":1,"step":1,"message":{"id":"t1","role":"tool","toolCallId":"c1","content":[]}}),
+        ),
+        record(
+            7,
+            "tool/result",
+            json!({"turn":1,"step":1,"message":{"id":"t2","role":"tool","toolCallId":"c1","content":[]}}),
+        ),
+        turn_end(8, 1, json!({"kind":"completed"})),
+    ]);
+    assert!(matches!(
+        decode(&duplicated, 1),
+        Capture::Unsupported(Reason::ItemIdentity)
+    ));
+    // An empty identity is not a call identity either.
+    let empty = log(vec![
+        turn_start(3, 1),
+        real_human(4),
+        record(
+            5,
+            "tool/call",
+            json!({"turn":1,"step":1,"name":"read","arguments":{}}),
+        ),
+        turn_end(6, 1, json!({"kind":"completed"})),
+    ]);
+    assert!(matches!(
+        decode(&empty, 1),
+        Capture::Unsupported(Reason::ItemIdentity)
+    ));
+}
+
+#[test]
+fn a_turn_ending_at_the_boundary_reports_before_enablement() {
+    let epoch = 1_700_000_000;
+    let mut value = log(vec![
+        turn_start(3, 1),
+        real_human(4),
+        turn_end(5, 1, json!({"kind":"completed"})),
+    ]);
+    for record in value["records"].as_array_mut().unwrap() {
+        record["time"] = json!(epoch * 1000 + 1);
+    }
+    let records = value["records"].as_array_mut().unwrap();
+    let last = records.len() - 1;
+    records[last]["time"] = json!(epoch * 1000);
+    // The reason must name the boundary, not a fork or a nonhuman run.
+    assert!(matches!(
+        decode_at(&value, 1, epoch),
+        Capture::BeforeEnablement
+    ));
+}
+
+#[test]
 fn record_times_are_compared_in_seconds() {
     // DSH commits milliseconds; an enablement epoch is seconds. Comparing the
     // units directly made every pre-registration check false.
@@ -432,7 +513,10 @@ fn record_times_are_compared_in_seconds() {
         record["time"] = json!(epoch_second * 1000);
     }
     assert!(
-        matches!(decode_at(&value, 1, epoch_second), Capture::Excluded),
+        matches!(
+            decode_at(&value, 1, epoch_second),
+            Capture::BeforeEnablement
+        ),
         "a turn ending at the epoch second predates enablement"
     );
     let mut later = value.clone();
@@ -474,7 +558,7 @@ fn a_turn_ending_later_in_the_registration_second_is_captured() {
         records[last]["time"] = json!(epoch * 1000);
     }
     assert!(
-        matches!(decode_at(&value, 1, epoch), Capture::Excluded),
+        matches!(decode_at(&value, 1, epoch), Capture::BeforeEnablement),
         "a turn ending exactly at the epoch still predates enablement"
     );
 }
@@ -699,10 +783,15 @@ fn oversized_turns_are_over_limit() {
         human(4, 1, 1),
         record(
             5,
-            "tool/result",
-            json!({"turn":1,"step":1,"message":{"id":"t1","role":"tool","toolCallId":"c1","content":[{"type":"text","text":big}]},"sourceEventSeqs":[4]}),
+            "tool/call",
+            json!({"turn":1,"step":1,"callId":"c1","name":"read","arguments":{}}),
         ),
-        turn_end(6, 1, json!({"kind": "completed"})),
+        record(
+            6,
+            "tool/result",
+            json!({"turn":1,"step":1,"message":{"id":"t1","role":"tool","toolCallId":"c1","content":[{"type":"text","text":big}]},"sourceEventSeqs":[5]}),
+        ),
+        turn_end(7, 1, json!({"kind": "completed"})),
     ]);
     let oversized = dsh::decode(&value, "storedigest", "/repo", 1, 3).expect("decode");
     assert!(matches!(oversized, Capture::OverLimit));
@@ -1405,6 +1494,73 @@ mod ingestion {
         };
         state.enqueue_hinted(&key, &project_id, &cwd, 0)?;
         assert!(state.hinted(&key)?, "a queued run always carries its hint");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_historical_hint_reports_before_enablement_not_a_fork() -> anyhow::Result<()> {
+        // A hinted turn that predates registration must be held with a reason
+        // naming the boundary, so operators are not told it was excluded as a
+        // fork or a nonhuman run.
+        let (data, dsh) = runtime();
+        let (repo, _) = project(data.path());
+        let root = data.path().join("state");
+        std::fs::create_dir_all(&root)?;
+        let mut state = State::open(&root.join("state.sqlite"))?;
+        let store = ingestion::store_id(dsh.path())?;
+        let cwd = repo.to_str().unwrap().to_string();
+        let path = data.path().join("session.json");
+        session(&path, &cwd, 1);
+        ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Register {
+                session: path.clone(),
+                project: repo.clone(),
+            },
+            None,
+        )
+        .await?;
+        let epoch = state
+            .project_epoch(&coding_memory::project::resolve(std::path::Path::new(&cwd))?.id)?;
+        // A second projected turn ending in an earlier second than registration.
+        projection_for(&path, &cwd, "session-h", epoch.saturating_sub(60) * 1000);
+        let signal = json!({"kind":"turn-end","session":"session-h","turn":1,"cwd":cwd});
+        let report = ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Enqueue,
+            Some(signal.to_string()),
+        )
+        .await?;
+        assert!(
+            matches!(report.state, Some("queued") | Some("held")),
+            "{report:?}"
+        );
+        let report = ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Capture {
+                session: path,
+                project: repo,
+                turn: None,
+            },
+            None,
+        )
+        .await?;
+        assert_eq!(
+            report.reason.as_deref(),
+            Some("before_enablement"),
+            "{report:?}"
+        );
+        assert_eq!(
+            state.status()?[0].reason.as_deref(),
+            Some("before_enablement"),
+            "status names the enablement boundary, not a fork"
+        );
         Ok(())
     }
 

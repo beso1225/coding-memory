@@ -21,6 +21,7 @@
 
 import { spawn } from 'node:child_process'
 import { mkdir, rename, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import { dirname, isAbsolute, join } from 'node:path'
 
 /** Cordis plugin name. */
@@ -151,7 +152,10 @@ export function engineOwned(sessionId) {
  */
 export async function publish(path, text) {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 })
-  const temporary = `${path}.${process.pid}.tmp`
+  // Two overlapping captures of one session must not share a temporary file:
+  // the second rename could publish the first caller's bytes or fail with
+  // ENOENT. A per-call suffix keeps every publication self-contained.
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`
   await writeFile(temporary, text, { mode: 0o600 })
   await rename(temporary, path)
 }
@@ -173,19 +177,27 @@ export function apply(ctx, config) {
    */
   const compacting = new Map()
   const settleCompaction = (sessionId) => {
-    const entry = compacting.get(String(sessionId))
+    const id = String(sessionId)
+    const entry = compacting.get(id)
     if (entry === undefined) return Promise.resolve()
-    // Clear the losing timer: an armed Node timer keeps the event loop alive
-    // and would otherwise delay teardown for the whole timeout after the
-    // compaction has already finished.
     return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        entry.done.then(() => resolve())
-      }, timeoutMs)
-      entry.done.then(() => {
+      let settled = false
+      const finish = () => {
+        if (settled) return
+        settled = true
+        // Clear the losing timer: an armed Node timer keeps the event loop
+        // alive and would otherwise delay teardown after the compaction ended.
         clearTimeout(timer)
         resolve()
-      })
+      }
+      // A bracket that never closes (cancellation, a failing plugin) must not
+      // block capture forever, so expiry resolves and retires the stale entry.
+      const timer = setTimeout(() => {
+        if (compacting.get(id) === entry) compacting.delete(id)
+        warn(`compaction of ${id} did not finish within ${timeoutMs} ms; capturing anyway`)
+        finish()
+      }, timeoutMs)
+      entry.done.then(finish)
     })
   }
   /**

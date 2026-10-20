@@ -95,6 +95,33 @@ class DshFixture(unittest.TestCase):
         self.assertEqual(jsonlib.loads(output[2]), [], "valid config is accepted")
         self.assertEqual(jsonlib.loads(output[3]), ["timeoutMs must be a positive number"])
 
+    def test_bridge_publication_is_race_free_and_waits_expire(self):
+        import json as jsonlib
+        import subprocess
+        import tempfile
+        script = (
+            "const m = await import(process.argv[1]);"
+            "const fs = await import('node:fs/promises');"
+            "const os = await import('node:os');"
+            "const path = await import('node:path');"
+            "const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'bridge-pub-'));"
+            "const target = path.join(dir, 's.json');"
+            "await Promise.all([m.publish(target, 'A'), m.publish(target, 'B'), m.publish(target, 'C')]);"
+            "const left = (await fs.readdir(dir)).filter(n => n.endsWith('.tmp')).length;"
+            "console.log(JSON.stringify({ text: await fs.readFile(target, 'utf8'), left }));"
+            "await fs.rm(dir, { recursive: true });"
+        )
+        output = subprocess.run(
+            ["node", "--input-type=module", "-e", script, str(BRIDGE)],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        self.assertEqual(jsonlib.loads(output), {"text": "C", "left": 0}, "a concurrent publish leaves no temporary file")
+        source = BRIDGE.read_text()
+        self.assertIn("randomUUID()}.tmp", source)
+        # A bracket that never closes must not block capture forever.
+        self.assertIn("did not finish within", source)
+        self.assertIn("compacting.delete(id)", source)
+
     def test_bridge_exports_compaction_wait(self):
         source = BRIDGE.read_text()
         self.assertIn("COMPACTION_SETTLE_MS", source)

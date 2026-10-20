@@ -123,8 +123,10 @@ covered by `tests/dsh.rs`:
   plugin-defined kinds are held as `unsupported_turn_end_reason` instead of
   guessed.
 - Item identities come from the event payload (`message.id`, `toolCallId`,
-  `callId`). A collision is `duplicate_item_identity`. Tool results intentionally
-  share their call's identity, as `sourceEventSeqs` references it.
+  `callId`). A collision is `duplicate_item_identity`. A tool result shares its
+  call's identity and must answer a call recorded in the same turn, exactly
+  once; an orphan, an empty identity, or a second answer is
+  `invalid_item_identity`, so nothing unverifiable becomes observed support.
 - Items are normalized into the shared evidence envelope before they become
   evidence: a top-level `id` (`<native identity>@<seq>`), the extraction
   vocabulary (`userMessage`, `agentMessage`, `toolCall`, `commandExecution`,
@@ -142,6 +144,9 @@ covered by `tests/dsh.rs`:
 - Project attribution uses the session header `cwd`; a projection whose recorded
   session directory no longer resolves to the registered project is held as
   `project_mismatch`.
+- A turn that ended at or before the project's registration second is held as
+  `before_enablement`, a reason distinct from the fork/nonhuman
+  `excluded_inherited_or_nonhuman`.
 - Evidence reuses the existing envelope and `items`/`coverage` shape, so
   extraction, consolidation, review, and MCP retrieval need no DSH branch.
 
@@ -207,9 +212,11 @@ projection read at `turn/end` can be pre-compaction. The bridge:
 
 The wait is costless when no compaction is announced, because a pending timer
 would keep the process alive past the teardown point where the read must already
-be in flight. With the wait, a capture reads the finished bracket
-(`compaction/start`, `compaction/summary`, `compaction/end`) and still publishes
-only the turn's own message and answer.
+be in flight. A bracket that never closes (cancellation, a failing plugin) is
+bounded by the timeout: capture proceeds and the stale entry is retired.
+Concurrent captures publish through unique temporary files. With the wait, a
+capture reads the finished bracket (`compaction/start`, `compaction/summary`,
+`compaction/end`) and still publishes only the turn's own message and answer.
 
 Measured matrix (one run each, same route): plain run, compacted run, resumed
 run, and resumed-then-compacted run all reached `ready`; the resumed cases

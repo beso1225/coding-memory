@@ -610,6 +610,13 @@ fn dsh_capture(
             report.state = Some("held");
             report.reason = Some("history_over_limit".into());
         }
+        Capture::BeforeEnablement => {
+            // Reported separately: an operator diagnosing a missing capture must
+            // not be told a historical run was a fork or a nonhuman run.
+            state.hold(claim, "before_enablement", now())?;
+            report.state = Some("held");
+            report.reason = Some("before_enablement".into());
+        }
         Capture::Excluded => {
             state.hold(claim, "excluded_inherited_or_nonhuman", now())?;
             report.state = Some("held");
