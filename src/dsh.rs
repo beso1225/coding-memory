@@ -454,12 +454,15 @@ pub fn decode_after(
     let Some(ended_ms) = end.millis() else {
         return Ok(Capture::Unsupported(Reason::TurnIdentity));
     };
-    let Some(started_at) = record_time(start) else {
+    let Some(started_ms) = start.millis() else {
         return Ok(Capture::Unsupported(Reason::StartedAt));
     };
-    if ended_ms / 1000 < started_at {
+    // Compare the recorded instants, not their truncated seconds: an end before
+    // its start inside one second would otherwise look ordered.
+    if ended_ms < started_ms {
         return Ok(Capture::Unsupported(Reason::StartedAt));
     }
+    let started_at = started_ms / 1000;
     let reason = match text(
         end.data
             .as_ref()
@@ -760,12 +763,6 @@ fn turn_of(record: &Record) -> Option<u64> {
         .as_ref()
         .and_then(|d| d.get("turn"))
         .and_then(Value::as_u64)
-}
-/// A record's committed time in Unix **seconds**, the unit the engine's
-/// enablement epoch uses. DSH commits milliseconds; comparing them directly
-/// would make every enablement check false and admit pre-registration turns.
-fn record_time(record: &Record) -> Option<i64> {
-    record.time.map(|millis| millis / 1000)
 }
 impl Record {
     /// The committed time in milliseconds, as DSH records it.

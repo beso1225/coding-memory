@@ -301,6 +301,64 @@ class DshFixture(unittest.TestCase):
         source = BRIDGE.read_text()
         self.assertIn("hint.state === 'held'", source)
 
+    def test_bridge_classifies_an_oversized_turn_as_permanent(self):
+        # A turn that itself exceeds the transport bound cannot become smaller
+        # by re-reading it, so it must not consume the retry budget.
+        import json as jsonlib
+        import subprocess
+        script = (
+            "const m = await import(process.argv[1]);"
+            "const big = 'x'.repeat(17 * 1024 * 1024);"
+            "const header = { version: 4, id: 's', createdAt: 1, cwd: '/repo', isSeeded: false };"
+            "const events = ["
+            " { seq: 0, type: 'turn/start', time: 1000, data: { turn: 1 } },"
+            " { seq: 1, type: 'user/message', time: 1001, data: { id: 'm', role: 'user',"
+            " content: [{ type: 'text', text: 'work' }], source: { kind: 'user' } } },"
+            " { seq: 2, type: 'tool/result', time: 1002, data: { turn: 1, step: 1, message: {"
+            " id: 't', role: 'tool', toolCallId: 'c', content: [{ type: 'text', text: big }] } } },"
+            " { seq: 3, type: 'turn/end', time: 1003, data: { turn: 1, reason: { kind: 'completed' } } } ];"
+            "let over = false;"
+            "try { m.projectForCapture(header, events, 1); }"
+            "catch (error) { over = error instanceof m.OverLimitProjection; }"
+            "console.log(JSON.stringify({ over, errors: m.CAPTURE_ERRORS, attempts: m.CAPTURE_ATTEMPTS,"
+            " errorDelay: m.CAPTURE_ERROR_RETRY_MS }));"
+        )
+        output = subprocess.run(
+            ["node", "--input-type=module", "-e", script, str(BRIDGE)],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        result = jsonlib.loads(output)
+        self.assertTrue(result["over"], "an oversized turn is a permanent outcome")
+        self.assertEqual(result["attempts"], 60)
+        self.assertGreater(result["errors"], 0, "transient failures have a separate budget")
+        self.assertLess(result["errorDelay"], 10000)
+
+    def test_publish_removes_a_failed_temporary(self):
+        # A failed rename must not leave a raw-session .tmp file behind.
+        import json as jsonlib
+        import subprocess
+        script = (
+            "const m = await import(process.argv[1]);"
+            "const fs = await import('node:fs/promises');"
+            "const os = await import('node:os');"
+            "const path = await import('node:path');"
+            "const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'bridge-tmp-'));"
+            "const target = path.join(dir, 'target');"
+            "await fs.mkdir(target);"
+            "let failed = false;"
+            "try { await m.publish(target, 'x'); } catch { failed = true; }"
+            "const left = (await fs.readdir(dir)).filter(name => name.endsWith('.tmp')).length;"
+            "console.log(JSON.stringify({ failed, left }));"
+            "await fs.rm(dir, { recursive: true });"
+        )
+        output = subprocess.run(
+            ["node", "--input-type=module", "-e", script, str(BRIDGE)],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        result = jsonlib.loads(output)
+        self.assertTrue(result["failed"], "renaming onto a directory fails")
+        self.assertEqual(result["left"], 0, "the failed temporary is removed")
+
     def test_bridge_keeps_session_ids_inside_the_projection_directory(self):
         # A DSH session id is an arbitrary string. An unencoded id containing
         # path separators would publish outside the state directory.

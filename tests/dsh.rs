@@ -262,6 +262,27 @@ fn the_committed_fixture_decodes_with_the_engine() {
 }
 
 #[test]
+fn an_end_before_its_start_is_rejected_within_one_second() {
+    // Truncating both instants to seconds would hide the invalid ordering.
+    let mut value = log(vec![
+        turn_start(3, 1),
+        human(4, 1, 1),
+        turn_end(5, 1, json!({"kind": "completed"})),
+    ]);
+    for record in value["records"].as_array_mut().unwrap() {
+        match record["type"].as_str() {
+            Some("turn/start") => record["time"] = json!(1_500_500),
+            Some("turn/end") => record["time"] = json!(1_500_100),
+            _ => {}
+        }
+    }
+    assert!(matches!(
+        decode(&value, 1),
+        Capture::Unsupported(Reason::StartedAt)
+    ));
+}
+
+#[test]
 fn a_bounded_turn_window_without_earlier_records_decodes() {
     // The bridge's bounded projection drops every earlier turn, so the range
     // starts at the captured turn's own native `seq` rather than zero. The
@@ -613,7 +634,7 @@ fn a_turn_ending_at_the_boundary_reports_before_enablement() {
         turn_end(5, 1, json!({"kind":"completed"})),
     ]);
     for record in value["records"].as_array_mut().unwrap() {
-        record["time"] = json!(epoch * 1000 + 1);
+        record["time"] = json!(epoch * 1000 - 10);
     }
     let records = value["records"].as_array_mut().unwrap();
     let last = records.len() - 1;
@@ -681,6 +702,9 @@ fn a_turn_ending_later_in_the_registration_second_is_captured() {
     );
     {
         let records = value["records"].as_array_mut().unwrap();
+        for record in records.iter_mut() {
+            record["time"] = json!(epoch * 1000 - 100);
+        }
         let last = records.len() - 1;
         records[last]["time"] = json!(epoch * 1000);
     }

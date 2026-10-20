@@ -159,8 +159,8 @@ covered by `tests/dsh.rs`:
   so this is a generic "tool output" category; extraction treats a completed
   result as observed tool output, not as proof that a shell command ran.
 - Record `time` is committed in milliseconds. The turn end is compared in
-  milliseconds against the registration instant; only the stored evidence
-  timestamps are seconds.
+  milliseconds against the registration instant, and the start/end ordering is
+  checked before truncation; only the stored evidence timestamps are seconds.
 - The bridge document declares `schema: 1`, checked independently of DSH's
   logical format version. Registration refuses an unknown projection schema
   before enabling the project, and capture claims the run its header names
@@ -328,8 +328,9 @@ These were found by the measurement and are fixed with regression tests:
   turn, not silent capture.
 - The verified DSH revision is `0.2.1-rc.2` (logical session format v4). The
   adapter accepts versions up to 4; revalidate after a DSH upgrade. A turn whose
-  own records exceed the bridge's 16 MiB projection bound is logged and left
-  queued rather than captured partially.
+  own records exceed the bridge's 16 MiB projection bound is a permanent
+  over-limit outcome: it is logged and left queued rather than retried or
+  captured partially.
 - A deferred projection written before registration is retained for
   `register`/`reconcile` and is not removed automatically. Delete consumed
   snapshots under `<state-dir>/dsh/projections/` when they are no longer needed.

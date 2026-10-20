@@ -73,6 +73,11 @@ export const Config = {
  */
 export const CAPTURE_ATTEMPTS = 60
 /**
+ * How many transient failures (session read, projection publication, engine
+ * invocation) are retried without consuming one of the 60 engine claims.
+ */
+export const CAPTURE_ERRORS = 5
+/**
  * Delay between capture retries, in milliseconds.
  *
  * It must not be shorter than the engine's ten-second deferral after
@@ -80,10 +85,14 @@ export const CAPTURE_ATTEMPTS = 60
  * `no_ready_run`, and used to discard a projection whose run was still queued.
  */
 export const CAPTURE_RETRY_MS = 10000
+/** Delay between transient-failure retries, in milliseconds. */
+export const CAPTURE_ERROR_RETRY_MS = 2000
 /** Markers a producer emits when it is about to compact one session. */
 export const COMPACTION_REQUEST_EVENTS = ['coding-memory/compaction-requested']
 /** A read that does not yet contain the hinted turn; retry with a fresh one. */
 export class StaleProjection extends Error {}
+/** A turn whose own records exceed the projection bound; retrying cannot help. */
+export class OverLimitProjection extends Error {}
 /** Largest projection the bridge will write, in bytes. */
 export const MAX_PROJECTION_BYTES = 16 * 1024 * 1024
 /** Largest completion hint the bridge will write, in bytes. */
@@ -202,7 +211,7 @@ export function projectForCapture(header, events, turn) {
   const bounded = project(header, events.slice(start, stop))
   const text = JSON.stringify(bounded)
   if (Buffer.byteLength(text) > MAX_PROJECTION_BYTES) {
-    throw new Error('turn projection exceeds the bridge bound')
+    throw new OverLimitProjection('turn projection exceeds the bridge bound')
   }
   return text
 }
@@ -251,8 +260,15 @@ export async function publish(path, text) {
   // the second rename could publish the first caller's bytes or fail with
   // ENOENT. A per-call suffix keeps every publication self-contained.
   const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`
-  await writeFile(temporary, text, { mode: 0o600 })
-  await rename(temporary, path)
+  try {
+    await writeFile(temporary, text, { mode: 0o600 })
+    await rename(temporary, path)
+  } catch (error) {
+    // A failed write or rename must not leave a partial raw-session snapshot
+    // behind; the capture retry uses a fresh UUID and would never revisit it.
+    await rm(temporary, { force: true }).catch(() => {})
+    throw error
+  }
 }
 
 /**
@@ -395,7 +411,21 @@ export function apply(ctx, config) {
    * @param read - a function returning the session read; the first call's
    *   promise is already in flight (see the caller), a retry starts a fresh one.
    */
-  function captureTurn(sessionId, turn, read, attemptsLeft = CAPTURE_ATTEMPTS) {
+  /** Schedule one capture retry with a fresh read; timers stay referenced. */
+  const retryLater = (delay, sessionId, turn, attemptsLeft, errorsLeft) => {
+    setTimeout(
+      () => captureTurn(sessionId, turn, () => ctx.sessionQuery.readSession(sessionId), attemptsLeft, errorsLeft),
+      delay,
+    )
+  }
+
+  function captureTurn(
+    sessionId,
+    turn,
+    read,
+    attemptsLeft = CAPTURE_ATTEMPTS,
+    errorsLeft = CAPTURE_ERRORS,
+  ) {
     // The read goes through the live `ctx` property, never a captured service
     // proxy, which loses its owning context (`cannot get required service ...
     // in inactive context`).
@@ -408,7 +438,15 @@ export function apply(ctx, config) {
           'capture', '--session', path, '--project', cwd, '--turn', String(turn),
         ])
         if (result.code !== 0) {
-          warn(`capture failed for turn ${turn}: ${result.output.slice(0, 500)}`)
+          // The run is already queued and nothing else drives it. A timeout,
+          // locked state database, or spawn failure is worth retrying, but it
+          // must not consume one of the 60 engine claims.
+          warn(`capture invocation failed for turn ${turn}: ${result.output.slice(0, 500)}`)
+          if (errorsLeft > 1) {
+            retryLater(CAPTURE_ERROR_RETRY_MS, sessionId, turn, attemptsLeft, errorsLeft - 1)
+          } else {
+            warn(`capture invocation retries exhausted for turn ${turn}`)
+          }
           return
         }
         const report = parseReport(result.output)
@@ -417,36 +455,40 @@ export function apply(ctx, config) {
           // this retry, so an early attempt reports `no_ready_run`; either
           // reason may still become captureable, and the projection must stay.
           if (attemptsLeft > 1) {
-            // A retry needs a fresh snapshot: the harness flushes over time.
-            setTimeout(
-              () => captureTurn(sessionId, turn, () => ctx.sessionQuery.readSession(sessionId), attemptsLeft - 1),
-              CAPTURE_RETRY_MS,
-            )
-            return
+            retryLater(CAPTURE_RETRY_MS, sessionId, turn, attemptsLeft - 1, CAPTURE_ERRORS)
+          } else {
+            warn(`capture still ${report.reason} for turn ${turn}; run a fresh capture manually`)
           }
-          warn(`capture still ${report.reason} for turn ${turn}; run a fresh capture manually`)
           return
         }
         if (report.state === undefined) {
-          // An unparsable report: keep the projection for an explicit fresh
-          // capture rather than deleting the only snapshot of a queued run.
-          warn(`capture reported no run for turn ${turn}; run a fresh capture manually`)
+          // An unparsable report: retry transiently, but keep the projection
+          // for an explicit fresh capture rather than deleting the only
+          // snapshot of a queued run.
+          warn(`capture reported no run for turn ${turn}`)
+          if (errorsLeft > 1) {
+            retryLater(CAPTURE_ERROR_RETRY_MS, sessionId, turn, attemptsLeft, errorsLeft - 1)
+          } else {
+            warn(`capture reported no run for turn ${turn}; run a fresh capture manually`)
+          }
           return
         }
         // Every other result is terminal: evidence, a hold, or an exclusion.
         await removeProjection(path)
       })
       .catch((error) => {
+        if (error instanceof OverLimitProjection) {
+          // The turn itself is over the transport bound. Re-reading and
+          // reserializing it cannot change that outcome.
+          warn(`turn ${turn} exceeds the projection bound; not capturing`)
+          return
+        }
         // The run was already enqueued, and `reconcile` only processes pending
         // hints, so a failed read must retry with a fresh snapshot rather than
-        // leave the run queued forever. The timer stays referenced: it is the
-        // only driver that can finish the run.
+        // leave the run queued forever.
         warn(`capture deferred for turn ${turn}: ${describe(error)}`)
-        if (attemptsLeft > 1) {
-          setTimeout(
-            () => captureTurn(sessionId, turn, () => ctx.sessionQuery.readSession(sessionId), attemptsLeft - 1),
-            CAPTURE_RETRY_MS,
-          )
+        if (errorsLeft > 1) {
+          retryLater(CAPTURE_ERROR_RETRY_MS, sessionId, turn, attemptsLeft, errorsLeft - 1)
         } else {
           warn(`capture retries exhausted for turn ${turn}`)
         }
