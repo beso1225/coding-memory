@@ -85,6 +85,8 @@ jobs:
       - name: Test release guards
         run: python3 -m unittest discover -s scripts/tests -v
       - name: Build archive and test the unpacked CLI and MCP server
+        env:
+          DSH_BRIDGE_DEBUG: '1'
         run: bash scripts/build_release.sh
       - name: Record publication intent for the tested commit
         env:

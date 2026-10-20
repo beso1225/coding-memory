@@ -18,6 +18,10 @@ python3 scripts/release_notices.py
 "$release_dist" build --artifacts=local --target=aarch64-apple-darwin \
   --tag="v$release_version" --no-local-paths --output-format=json > target/release-dist-manifest.json
 release_archive=target/distrib/coding-memory-aarch64-apple-darwin.tar.gz
+if [ "${DSH_BRIDGE_DEBUG:-}" = 1 ]; then
+  /usr/bin/tar -tzf "$release_archive" | head -40
+  python3 -c 'import json;m=json.load(open("target/release-dist-manifest.json"));print(json.dumps(m.get("artifacts",{}).get("artifacts\"\"",m),indent=1)[:4000])' || true
+fi
 python3 scripts/release_smoke.py "$release_archive" --version "$release_version"
 mkdir -p target/release-plan/artifacts
 cp "$release_archive" target/release-plan/artifacts/

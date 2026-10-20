@@ -58,6 +58,17 @@ def smoke(archive, version):
         # The DSH capture bridge ships as a runtime dependency; a release user
         # mounts it by absolute path, so it must be inside the version directory.
         bridge = payload / "bridge" / "dsh-capture" / "index.mjs"
+        if os.environ.get("DSH_BRIDGE_DEBUG") == "1":
+            with tarfile.open(archive) as stream:
+                for member in stream.getmembers():
+                    print(f"archive entry: {member.name} ({member.size} bytes)")
+            manifest_path = ROOT / "target/release-dist-manifest.json"
+            if manifest_path.is_file():
+                manifest = json.loads(manifest_path.read_text())
+                for artifact in manifest.get("artifacts", {}).values():
+                    print(f"artifact keys: {sorted(artifact.keys())}")
+                    for asset in artifact.get("assets", []):
+                        print(f"manifest asset: {asset}")
         if not bridge.is_file():
             raise ValueError("Missing archive content: bridge/dsh-capture/index.mjs")
         if "export function apply" not in bridge.read_text():
