@@ -86,6 +86,14 @@ pub enum Capture {
     WrongProject,
 }
 
+/// The bridge document revision a raw document declares.
+///
+/// Readable before the rest of the document is trusted, so a caller can claim
+/// the run it names and hold it instead of failing before any state change.
+pub fn projection_schema(document: &Value) -> Option<u64> {
+    document.get("schema").and_then(Value::as_u64)
+}
+
 /// A bounded projection of one session, as the bridge writes it.
 ///
 /// Discovery and capture read the same document, so a hint recorded before
@@ -289,10 +297,18 @@ pub fn signal(value: &Value, store: &str) -> Result<(RunKey, String)> {
 /// turn here still passes `decode` before evidence exists. Sessions that are
 /// subagent children or forks contribute nothing.
 pub fn discover(path: &Path, cwd: &str, store: &str) -> Result<Vec<Discovered>> {
-    let log: Log = parse(&serde_json::from_slice(&crate::evidence::read_bounded(
+    let document: Value = serde_json::from_slice(&crate::evidence::read_bounded(
         path,
         crate::evidence::MAX_SOURCE_BYTES,
-    )?)?)?;
+    )?)?;
+    // Registration fixes the enablement boundary permanently. It must not scan a
+    // document whose bridge schema this engine cannot interpret, or the project
+    // would be enabled against a baseline it never understood.
+    ensure!(
+        projection_schema(&document) == Some(u64::from(PROJECTION_SCHEMA)),
+        "Unsupported bridge projection schema"
+    );
+    let log: Log = parse(&document)?;
     if exclude_header(&log.header) || log.header.cwd.as_deref() != Some(cwd) {
         return Ok(Vec::new());
     }
@@ -359,7 +375,7 @@ pub fn decode_after(
     turn: u64,
     boundary: &Boundary,
 ) -> Result<Capture> {
-    if log.get("schema").and_then(Value::as_u64) != Some(u64::from(PROJECTION_SCHEMA)) {
+    if projection_schema(log) != Some(u64::from(PROJECTION_SCHEMA)) {
         // The bridge's own document shape, not DSH's logical format.
         return Ok(Capture::Unsupported(Reason::ProjectionSchema));
     }

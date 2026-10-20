@@ -141,7 +141,8 @@ class DshFixture(unittest.TestCase):
             " add('turn/end', { turn, reason: { kind: 'completed' } }); }"
             "const text = projectForCapture(header, events, 20);"
             "const doc = JSON.parse(text);"
-            "console.log(JSON.stringify({ bytes: Buffer.byteLength(text), last: doc.records.at(-1) }));"
+            "console.log(JSON.stringify({ bytes: Buffer.byteLength(text),"
+            " seqs: doc.records.map(r => r.seq), first: doc.records[0], last: doc.records.at(-1) }));"
         )
         output = subprocess.run(
             ["node", "--input-type=module", "-e", script, str(BRIDGE)],
@@ -149,8 +150,56 @@ class DshFixture(unittest.TestCase):
         ).stdout
         result = jsonlib.loads(output)
         self.assertLess(result["bytes"], 16 * 1024 * 1024, "a 19 MiB session projects within the bound")
+        self.assertEqual(result["first"]["type"], "turn/start")
+        self.assertEqual(result["first"]["data"]["turn"], 20, "the window starts at the captured turn")
         self.assertEqual(result["last"]["type"], "turn/end")
         self.assertEqual(result["last"]["data"]["turn"], 20)
+        seqs = result["seqs"]
+        self.assertEqual(
+            seqs, list(range(seqs[0], seqs[0] + len(seqs))),
+            "the bounded window keeps native seqs contiguous",
+        )
+
+    def test_bridge_publishes_one_per_turn_projection(self):
+        # The same publication serves a deferred (unregistered) turn, which has
+        # no capture invocation to write the snapshot registration consumes.
+        import json as jsonlib
+        import subprocess
+        script = (
+            "const m = await import(process.argv[1]);"
+            "const fs = await import('node:fs/promises');"
+            "const os = await import('node:os');"
+            "const path = await import('node:path');"
+            "const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'bridge-pub-'));"
+            "const events = ["
+            " { seq: 0, type: 'turn/start', time: 1000, data: { turn: 3 } },"
+            " { seq: 1, type: 'user/message', time: 1001, data: { id: 'm', role: 'user',"
+            " content: [{ type: 'text', text: 'hi' }], source: { kind: 'user' } } },"
+            " { seq: 2, type: 'turn/end', time: 1002, data: { turn: 3, reason: { kind: 'completed' } } } ];"
+            "const published = await m.publishTurn(dir, 's', 3, async () => ({"
+            " session: { version: 4, id: 's', createdAt: 1, cwd: '/repo', isSeeded: false }, events }));"
+            "const doc = JSON.parse(await fs.readFile(published.path, 'utf8'));"
+            "console.log(JSON.stringify({ rel: path.relative(dir, published.path), cwd: published.cwd,"
+            " schema: doc.schema, last: doc.records.at(-1), count: doc.records.length }));"
+            "await fs.rm(dir, { recursive: true });"
+        )
+        output = subprocess.run(
+            ["node", "--input-type=module", "-e", script, str(BRIDGE)],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        result = jsonlib.loads(output)
+        self.assertEqual(result["rel"], "dsh/projections/s.3.json")
+        self.assertEqual(result["cwd"], "/repo")
+        self.assertEqual(result["schema"], 1)
+        self.assertEqual(result["count"], 3)
+        self.assertEqual(result["last"]["type"], "turn/end")
+        source = BRIDGE.read_text()
+        self.assertIn("hint.state === 'deferred'", source)
+        self.assertIn(
+            "publishTurn(stateDir, session.id, turn, read)",
+            source,
+            "the deferred bootstrap publishes the snapshot register consumes",
+        )
 
     def test_bridge_retries_pending_captures_and_retires_projections(self):
         import json as jsonlib
@@ -169,6 +218,10 @@ class DshFixture(unittest.TestCase):
             " pending: m.parseReport(JSON.stringify({ state: 'queued', reason: 'history_pending' })),"
             " terminal: m.parseReport(JSON.stringify({ state: 'ready', evidence: 'x' })),"
             " empty: m.parseReport('not json'),"
+            " retryPending: m.retryable('history_pending'),"
+            " retryNoRun: m.retryable('no_ready_run'),"
+            " retryTerminal: m.retryable('history_missing'),"
+            " retryDelay: m.CAPTURE_RETRY_MS,"
             " left: (await fs.readdir(dir)).length }));"
             "await fs.rm(dir, { recursive: true });"
         )
@@ -180,6 +233,16 @@ class DshFixture(unittest.TestCase):
         self.assertEqual(result["pending"]["reason"], "history_pending")
         self.assertEqual(result["terminal"]["state"], "ready")
         self.assertEqual(result["empty"], {}, "an unparsable report is never terminal")
+        self.assertTrue(result["retryPending"], "a flushed-too-early turn is retried")
+        self.assertTrue(
+            result["retryNoRun"],
+            "a run inside the engine's deferral window is retried, not discarded",
+        )
+        self.assertFalse(result["retryTerminal"], "terminal reasons stop the retry")
+        self.assertGreaterEqual(
+            result["retryDelay"], 10000,
+            "the retry must not be shorter than the engine's deferral",
+        )
         self.assertEqual(result["left"], 0, "a retired projection is deleted")
         source = BRIDGE.read_text()
         self.assertIn("CAPTURE_ATTEMPTS", source)

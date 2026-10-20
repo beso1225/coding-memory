@@ -65,8 +65,14 @@ export const Config = {
 
 /** How many times one capture may retry while the engine reports pending. */
 export const CAPTURE_ATTEMPTS = 12
-/** Delay between pending-capture retries, in milliseconds. */
-export const CAPTURE_RETRY_MS = 2000
+/**
+ * Delay between capture retries, in milliseconds.
+ *
+ * It must not be shorter than the engine's ten-second deferral after
+ * `history_pending`: an earlier retry finds the run unavailable, reports
+ * `no_ready_run`, and used to discard a projection whose run was still queued.
+ */
+export const CAPTURE_RETRY_MS = 10000
 /** How long capture waits for a compaction request announced at turn end. */
 export const COMPACTION_SETTLE_MS = 1500
 /** Markers a producer emits when it is about to compact one session. */
@@ -90,6 +96,20 @@ export function parseReport(output) {
   } catch {
     return {}
   }
+}
+
+/**
+ * Whether a capture report asks for another attempt later.
+ *
+ * `history_pending` means the log has not recorded the turn's end yet;
+ * `no_ready_run` means no run was claimable at that instant, which includes the
+ * engine's own deferral window and another capture owning the run. Neither is
+ * terminal, so the projection must be kept for the retry.
+ * @param reason - the report's reason code, if any.
+ * @returns true when another attempt can make progress.
+ */
+export function retryable(reason) {
+  return reason === 'history_pending' || reason === 'no_ready_run'
 }
 
 /**
@@ -140,9 +160,11 @@ export function projectRecord(record) {
  * A long-lived session's complete log eventually exceeds the projection bound,
  * and compaction keeps every raw event, so the whole-session projection would
  * permanently disable capture for that session. The engine only reads one
- * turn's window, so the projection keeps the session header, the bookkeeping
- * before the turn, the turn's own records, and the bracket that follows it, and
- * drops earlier turns the engine never needs.
+ * turn's window, so the projection keeps the session header and exactly that
+ * turn's records: one contiguous range. Earlier turns, earlier injected
+ * context, and later brackets are never read for this capture, and keeping
+ * them with their native `seq` values would leave gaps that the engine rejects
+ * as `invalid_session_sequence`.
  * @param header - replay-validated session header.
  * @param events - the complete raw log.
  * @param turn - the turn this capture names.
@@ -157,11 +179,10 @@ export function projectForCapture(header, events, turn) {
   if (start < 0) return JSON.stringify(whole)
   const end = events.findIndex((event, index) => index > start && closes(event))
   const stop = end < 0 ? events.length : end + 1
-  const head = events.slice(0, start).filter(event => event.type !== 'user/message'
-    && event.type !== 'assistant/message' && event.type !== 'tool/call' && event.type !== 'tool/result')
-  const tail = events.slice(stop).filter(event => event.type.startsWith('command/')
-    || event.type.startsWith('compaction/'))
-  const bounded = project(header, [...head, ...events.slice(start, stop), ...tail])
+  // One contiguous range, so every projected record still follows its
+  // predecessor. The engine reads nothing outside the turn window, and the
+  // bridge must not renumber native `seq` values to patch gaps.
+  const bounded = project(header, events.slice(start, stop))
   const text = JSON.stringify(bounded)
   if (Buffer.byteLength(text) > MAX_PROJECTION_BYTES) {
     throw new Error('turn projection exceeds the bridge bound')
@@ -229,6 +250,29 @@ export async function publish(path, text) {
   const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`
   await writeFile(temporary, text, { mode: 0o600 })
   await rename(temporary, path)
+}
+
+/**
+ * Read a session and publish one turn's projection.
+ *
+ * The destination is unique per turn, so an overlapping handler for an older
+ * turn cannot replace the file a newer engine process is about to read. The
+ * same publication serves a deferred turn (project not registered yet): the
+ * snapshot is then what `register` and `reconcile` consume, and no capture
+ * invocation exists to publish it later.
+ * @param stateDir - engine state directory.
+ * @param sessionId - session whose projection to write.
+ * @param turn - the turn the projection is bounded to.
+ * @param read - a function returning a session read.
+ * @returns the projection path and the recorded cwd, or null when the session
+ *   has no cwd.
+ */
+export async function publishTurn(stateDir, sessionId, turn, read) {
+  const { session, events } = await Promise.resolve().then(read)
+  if (session.cwd === undefined) return null
+  const path = join(stateDir, 'dsh', 'projections', `${sessionId}.${turn}.json`)
+  await publish(path, projectForCapture(session, events, turn))
+  return { path, cwd: session.cwd }
 }
 
 /**
@@ -315,72 +359,66 @@ export function apply(ctx, config) {
     })
   }
 
-  /**
-   * Capture one ended run, reading the session log it just closed.
-   *
-   * The read starts synchronously here: an experiment plugin issuing the same
-   * `readSession` from a `turn/end` listener succeeds, while this bridge's
-   * first successful call is still unexplained under the headless runner's
-   * teardown, so the read must begin at the earliest possible point.
-   * @param sessionId - session whose queued run to capture.
-   * @param turn - the turn that just ended.
-   */
+  /** One bounded, readable form of a failure for stderr. */
+  const describe = (error) => String(error && error.stack ? error.stack.split('\n').slice(0, 4).join(' | ') : error).slice(0, 600)
+
   /**
    * Capture one ended run.
+   *
+   * The read starts synchronously from the caller: an experiment plugin issuing
+   * the same `readSession` from a `turn/end` listener succeeds, while this
+   * bridge's first successful call is still unexplained under the headless
+   * runner's teardown, so the read must begin at the earliest possible point.
    * @param sessionId - session whose run to capture.
    * @param turn - the exact turn.
    * @param read - a function returning the session read; the first call's
    *   promise is already in flight (see the caller), a retry starts a fresh one.
    */
   function captureTurn(sessionId, turn, read, attemptsLeft = CAPTURE_ATTEMPTS) {
-    // The first read must begin *before* the engine hint runs: the harness can
-    // deactivate the service tree as soon as the turn's process winds down, and
-    // only a read already in flight survives that. It is read through the live
-    // `ctx` property, never a captured service proxy, which loses its owning
-    // context (`cannot get required service ... in inactive context`).
-    Promise.resolve()
-      .then(read)
-      .then(async ({ session, events }) => {
-        if (session.cwd === undefined) return
-        // A destination unique to this capture: an overlapping handler for an
-        // older turn must not replace the file this engine process is about to
-        // read, which would decode the newer turn as pending.
-        const path = join(stateDir, 'dsh', 'projections', `${sessionId}.${turn}.json`)
-        const text = projectForCapture(session, events, turn)
-        await publish(path, text)
+    // The read goes through the live `ctx` property, never a captured service
+    // proxy, which loses its owning context (`cannot get required service ...
+    // in inactive context`).
+    publishTurn(stateDir, sessionId, turn, read)
+      .then(async (published) => {
+        if (published === null) return
+        const { path, cwd } = published
         const result = await run([
           '--state-dir', stateDir, 'dsh', '--dsh-home', dshHome,
-          'capture', '--session', path, '--project', session.cwd, '--turn', String(turn),
+          'capture', '--session', path, '--project', cwd, '--turn', String(turn),
         ])
         if (result.code !== 0) {
           warn(`capture failed for turn ${turn}: ${result.output.slice(0, 500)}`)
           return
         }
         const report = parseReport(result.output)
-        if (report.state === undefined) {
-          // `no_ready_run`: another capture owns this run.
-          await removeProjection(path)
-          return
-        }
-        if (report.reason === 'history_pending') {
-          // The harness has not flushed the turn's end yet. Nothing else drives
-          // a DSH run, so this bridge must retry until the engine's own attempt
-          // budget turns a persistently pending run into a held one.
+        if (retryable(report.reason)) {
+          // Nothing else drives a DSH run. The engine defers for longer than
+          // this retry, so an early attempt reports `no_ready_run`; either
+          // reason may still become captureable, and the projection must stay.
           if (attemptsLeft > 1) {
             // A retry needs a fresh snapshot: the harness flushes over time.
-            setTimeout(
+            const timer = setTimeout(
               () => captureTurn(sessionId, turn, () => ctx.sessionQuery.readSession(sessionId), attemptsLeft - 1),
               CAPTURE_RETRY_MS,
             )
+            // Do not hold the harness process open merely to retry: if teardown
+            // wins, the run stays queued for the documented `reconcile`.
+            timer.unref?.()
             return
           }
-          warn(`capture still pending for turn ${turn}; left to reconcile`)
+          warn(`capture still ${report.reason} for turn ${turn}; left to reconcile`)
+          return
+        }
+        if (report.state === undefined) {
+          // An unparsable report: keep the projection available for reconcile
+          // rather than deleting the only snapshot of a queued run.
+          warn(`capture reported no run for turn ${turn}; left to reconcile`)
           return
         }
         // Every other result is terminal: evidence, a hold, or an exclusion.
         await removeProjection(path)
       })
-      .catch((error) => warn(`capture deferred for turn ${turn}: ${String(error && error.stack ? error.stack.split('\n').slice(0, 4).join(' | ') : error).slice(0, 600)}`))
+      .catch((error) => warn(`capture deferred for turn ${turn}: ${describe(error)}`))
   }
 
   /** Arm the latch for one session so capture waits for that compaction. */
@@ -456,7 +494,12 @@ export function apply(ctx, config) {
             const hint = parseReport(queued.output)
             if (hint.state === 'deferred') {
               // The project is not registered yet: the hint is kept, but no run
-              // is queued, so capture would only report `no_ready_run`.
+              // is queued, so capture would only report `no_ready_run`. The
+              // projection is still published, because `register` and the
+              // following `reconcile` consume it to establish the baseline and
+              // resolve this hint; no capture invocation would write it later.
+              publishTurn(stateDir, session.id, turn, read)
+                .catch((error) => warn(`deferred projection failed for turn ${turn}: ${describe(error)}`))
               warn(`turn ${turn} is queued for later (${hint.reason ?? 'project not registered'}); run reconcile after registering the project`)
               return
             }

@@ -17,6 +17,10 @@ pub fn now() -> i64 {
         .expect("clock after Unix epoch")
         .as_secs() as i64
 }
+/// Identity of a Codex runtime store.
+///
+/// The historical path-only identity is kept so state written before other
+/// runtimes existed stays valid.
 pub fn store_id(home: &Path) -> Result<String> {
     Ok(hash(
         home.canonicalize()?
@@ -24,6 +28,17 @@ pub fn store_id(home: &Path) -> Result<String> {
             .ok_or_else(|| anyhow::anyhow!("Non-UTF8 runtime store"))?
             .as_bytes(),
     ))
+}
+/// Identity of a DeepSeek Harness runtime store.
+///
+/// Runtime-qualified, so a `--dsh-home` that happens to resolve to a configured
+/// Codex home can never lease, exclude, or publish the other runtime's runs.
+pub fn dsh_store_id(home: &Path) -> Result<String> {
+    let path = home.canonicalize()?;
+    let path = path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("Non-UTF8 runtime store"))?;
+    Ok(hash(format!("dsh\0{path}").as_bytes()))
 }
 fn identity(value: &Value, field: &str) -> Result<String> {
     let id = value[field]
@@ -453,16 +468,22 @@ pub async fn dsh(
             project,
             turn,
         } => {
-            let projection = dsh::Projection::parse(&evidence::read_bounded(
-                session,
-                evidence::MAX_SOURCE_BYTES,
-            )?)?;
+            let bytes = evidence::read_bounded(session, evidence::MAX_SOURCE_BYTES)?;
+            let document: Value = serde_json::from_slice(&bytes)?;
             // Claim first, so a run that cannot be captured is held with a
-            // reason instead of staying queued and being selected forever.
+            // reason instead of staying queued and being selected forever. The
+            // header identity is read before the bridge schema is trusted: a
+            // document with a missing or future schema must still hold the run
+            // it names, not fail before any state change.
+            let session_id = document
+                .pointer("/header/id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("Missing session identity"))?;
             let requested = turn.map(|turn| turn.to_string());
             let Some(claim) = state.claim_session_turn(
                 Some(store),
-                projection.session(),
+                session_id,
                 requested.as_deref(),
                 now(),
                 3600,
@@ -477,6 +498,35 @@ pub async fn dsh(
                     queued: None,
                     baseline: None,
                 });
+            };
+            if dsh::projection_schema(&document) != Some(u64::from(dsh::PROJECTION_SCHEMA)) {
+                state.hold(&claim, "unsupported_projection_schema", now())?;
+                return Ok(DshReport {
+                    action: "capture",
+                    state: Some("held"),
+                    run: Some(claim.key),
+                    reason: Some("unsupported_projection_schema".into()),
+                    evidence: None,
+                    queued: None,
+                    baseline: None,
+                });
+            }
+            let projection = match dsh::Projection::parse(&bytes) {
+                Ok(projection) => projection,
+                Err(_) => {
+                    // The schema is supported but the document cannot be read:
+                    // hold the claimed run instead of leasing it for an hour.
+                    state.hold(&claim, "reader_failure", now())?;
+                    return Ok(DshReport {
+                        action: "capture",
+                        state: Some("held"),
+                        run: Some(claim.key),
+                        reason: Some("reader_failure".into()),
+                        evidence: None,
+                        queued: None,
+                        baseline: None,
+                    });
+                }
             };
             let (p, cwd) = match project::resolve(project)
                 .and_then(|p| session_cwd(&p, session).map(|cwd| (p, cwd)))

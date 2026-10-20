@@ -78,11 +78,16 @@ hinted (`no_capture_hint` otherwise); it claims only the session its projection
 describes, pinned to the requested turn when `--turn` is given. A hint recorded
 before its project is registered is kept and resolved by `reconcile` against
 that hint's own session; `reconcile` itself never queues a run. A projection
-that never records the turn's end is retried with the same bounded budget as
-Codex (`history_readiness_exhausted`). Re-running `register` for a registered
+that never records the turn's end is retried by the bridge a bounded number of
+times with a fresh snapshot, not before the engine's deferral has elapsed; when
+the bridge stops, the run stays queued for `reconcile`. The engine itself holds
+a run as `history_readiness_exhausted` after 60 capture attempts, as it does for
+Codex. Re-running `register` for a registered
 project reports `already_registered` and baselines nothing. `/compact` and its
 durable bracket are harness bookkeeping and do not reach evidence. `--dsh-home`
-selects the runtime store, so DSH runs never share identity with Codex runs.
+selects the runtime store. Its identity is runtime-qualified, so even a directory
+that also serves as a Codex home remains a distinct store: neither runtime can
+lease or exclude the other's runs.
 
 Evidence items use the same envelope as Codex — a top-level `id`, the
 extraction vocabulary (`userMessage`, `agentMessage`, `toolCall`,

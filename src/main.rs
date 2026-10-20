@@ -659,7 +659,7 @@ async fn main() -> Result<()> {
             event,
             action,
         } => {
-            let store = ingestion::store_id(&dsh_home)?;
+            let store = ingestion::dsh_store_id(&dsh_home)?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(

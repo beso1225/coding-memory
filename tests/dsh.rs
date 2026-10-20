@@ -153,6 +153,24 @@ fn completed_turn_becomes_evidence_scoped_to_its_turn() {
 }
 
 #[test]
+fn a_bounded_turn_window_without_earlier_records_decodes() {
+    // The bridge's bounded projection drops every earlier turn, so the range
+    // starts at the captured turn's own native `seq` rather than zero. The
+    // adapter reads only that window and must still accept it.
+    let value = json!({"schema": 1, "header": header("session-a", "/repo"), "records": [
+        turn_start(9, 2),
+        human(10, 2, 1),
+        turn_end(11, 2, json!({"kind": "completed"})),
+    ]});
+    let Capture::Ready(bundle) = decode(&value, 2) else {
+        panic!("expected a ready capture");
+    };
+    assert_eq!(bundle.items.len(), 1);
+    assert_eq!(bundle.items[0]["seq"], json!(10));
+    assert_eq!(bundle.run.turn, "2");
+}
+
+#[test]
 fn a_settled_attempt_does_not_become_an_item() {
     // A real completed turn records `assistant/attempt` (with its compact stream)
     // before the committed `assistant/message`. The message is evidence; the
@@ -1001,7 +1019,7 @@ mod ingestion {
         let root = data.path().join("state");
         std::fs::create_dir_all(&root)?;
         let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::store_id(dsh.path())?;
+        let store = ingestion::dsh_store_id(dsh.path())?;
         let projection = data.path().join("session.json");
         let cwd = repo.to_str().unwrap().to_string();
         session(&projection, &cwd, 2);
@@ -1133,7 +1151,7 @@ mod ingestion {
         let root = data.path().join("state");
         std::fs::create_dir_all(&root)?;
         let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::store_id(dsh.path())?;
+        let store = ingestion::dsh_store_id(dsh.path())?;
         let projection = data.path().join("session.json");
         let cwd = repo.to_str().unwrap().to_string();
         // Register while the session has one completed turn: that turn is the
@@ -1201,7 +1219,7 @@ mod ingestion {
         let root = data.path().join("state");
         std::fs::create_dir_all(&root)?;
         let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::store_id(dsh.path())?;
+        let store = ingestion::dsh_store_id(dsh.path())?;
         let projection = data.path().join("session.json");
         let cwd = repo.to_str().unwrap().to_string();
         session(&projection, &cwd, 1);
@@ -1336,7 +1354,7 @@ mod ingestion {
         let root = data.path().join("state");
         std::fs::create_dir_all(&root)?;
         let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::store_id(dsh.path())?;
+        let store = ingestion::dsh_store_id(dsh.path())?;
         let cwd = repo.to_str().unwrap().to_string();
         let old = data.path().join("old.json");
         projection_for(&old, &cwd, "session-old", 1);
@@ -1412,7 +1430,7 @@ mod ingestion {
         let root = data.path().join("state");
         std::fs::create_dir_all(&root)?;
         let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::store_id(dsh.path())?;
+        let store = ingestion::dsh_store_id(dsh.path())?;
         let cwd = repo.to_str().unwrap().to_string();
         let a = data.path().join("a.json");
         let b = data.path().join("b.json");
@@ -1465,7 +1483,7 @@ mod ingestion {
         let root = data.path().join("state");
         std::fs::create_dir_all(&root)?;
         let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::store_id(dsh.path())?;
+        let store = ingestion::dsh_store_id(dsh.path())?;
         let cwd = repo.to_str().unwrap().to_string();
         let path = data.path().join("session.json");
         session(&path, &cwd, 1);
@@ -1539,7 +1557,7 @@ mod ingestion {
         let root = data.path().join("state");
         std::fs::create_dir_all(&root)?;
         let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::store_id(dsh.path())?;
+        let store = ingestion::dsh_store_id(dsh.path())?;
         let cwd = repo.to_str().unwrap().to_string();
         let path = data.path().join("session.json");
         session(&path, &cwd, 1);
@@ -1600,7 +1618,7 @@ mod ingestion {
         let root = data.path().join("state");
         std::fs::create_dir_all(&root)?;
         let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::store_id(dsh.path())?;
+        let store = ingestion::dsh_store_id(dsh.path())?;
         let cwd = repo.to_str().unwrap().to_string();
         let path = data.path().join("session.json");
         session(&path, &cwd, 1);
@@ -1636,7 +1654,7 @@ mod ingestion {
         let root = data.path().join("state");
         std::fs::create_dir_all(&root)?;
         let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::store_id(dsh.path())?;
+        let store = ingestion::dsh_store_id(dsh.path())?;
         let cwd = repo.to_str().unwrap().to_string();
         let path = data.path().join("session.json");
         session(&path, &cwd, 1);
@@ -1702,7 +1720,7 @@ mod ingestion {
         let root = data.path().join("state");
         std::fs::create_dir_all(&root)?;
         let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::store_id(dsh.path())?;
+        let store = ingestion::dsh_store_id(dsh.path())?;
         let cwd = repo.to_str().unwrap().to_string();
         // Register against a different session, so the baseline it records
         // names that session only; the two-turn projection below is new work.
@@ -1772,7 +1790,7 @@ mod ingestion {
         let root = data.path().join("state");
         std::fs::create_dir_all(&root)?;
         let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::store_id(dsh.path())?;
+        let store = ingestion::dsh_store_id(dsh.path())?;
         let cwd = repo.to_str().unwrap().to_string();
         let path = data.path().join("open.json");
         // One turn with a start, a human message, and no turn/end.
@@ -1871,7 +1889,7 @@ mod ingestion {
         let root = data.path().join("state");
         std::fs::create_dir_all(&root)?;
         let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::store_id(dsh.path())?;
+        let store = ingestion::dsh_store_id(dsh.path())?;
         let signal = json!({"kind":"turn-end","session":"s","turn":1,"cwd":"/nonexistent/project"});
         assert!(
             ingestion::dsh(
@@ -1894,7 +1912,7 @@ mod ingestion {
         let root = data.path().join("state");
         std::fs::create_dir_all(&root)?;
         let mut state = State::open(&root.join("state.sqlite"))?;
-        let store = ingestion::store_id(dsh.path())?;
+        let store = ingestion::dsh_store_id(dsh.path())?;
         let projection = data.path().join("session.json");
         let cwd = repo.to_str().unwrap().to_string();
         session(&projection, &cwd, 1);
@@ -1936,6 +1954,147 @@ mod ingestion {
                 0
             )?,
             Enqueue::Excluded
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_schema_invalid_projection_holds_its_claimed_run() -> anyhow::Result<()> {
+        // The run must not stay queued (or be leased for an hour) merely because
+        // the bridge document declares a schema this engine cannot read.
+        let (data, dsh) = runtime();
+        let (repo, _) = project(data.path());
+        let root = data.path().join("state");
+        std::fs::create_dir_all(&root)?;
+        let mut state = State::open(&root.join("state.sqlite"))?;
+        let store = ingestion::dsh_store_id(dsh.path())?;
+        let cwd = repo.to_str().unwrap().to_string();
+        let baseline = data.path().join("baseline.json");
+        session(&baseline, &cwd, 0);
+        ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Register {
+                session: baseline,
+                project: repo.clone(),
+            },
+            None,
+        )
+        .await?;
+        let signal = json!({"kind":"turn-end","session":"session-x","turn":2,"cwd":cwd.clone()});
+        let queued = ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Enqueue,
+            Some(signal.to_string()),
+        )
+        .await?;
+        assert_eq!(queued.state, Some("queued"));
+
+        let projection = data.path().join("future.json");
+        let document = json!({"schema":2,"header":{
+            "type":"session","version":4,"id":"session-x","createdAt":1,"cwd":cwd,"isSeeded":false},
+            "records":[]});
+        std::fs::write(&projection, serde_json::to_vec(&document)?)?;
+        let report = ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Capture {
+                session: projection,
+                project: repo,
+                turn: Some(2),
+            },
+            None,
+        )
+        .await?;
+        assert_eq!(report.state, Some("held"));
+        assert_eq!(
+            report.reason.as_deref(),
+            Some("unsupported_projection_schema")
+        );
+        let status = state.status()?;
+        assert_eq!(status.len(), 1);
+        assert_eq!(status[0].state, "held");
+        assert_eq!(
+            status[0].reason.as_deref(),
+            Some("unsupported_projection_schema"),
+            "the claimed run reaches the documented held outcome"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn registration_rejects_an_unsupported_projection_schema() -> anyhow::Result<()> {
+        // Registration fixes the enablement boundary permanently, so it must not
+        // baseline a document whose bridge schema is unsupported.
+        let (data, dsh) = runtime();
+        let (repo, id) = project(data.path());
+        let root = data.path().join("state");
+        std::fs::create_dir_all(&root)?;
+        let mut state = State::open(&root.join("state.sqlite"))?;
+        let store = ingestion::dsh_store_id(dsh.path())?;
+        let cwd = repo.to_str().unwrap().to_string();
+        let projection = data.path().join("session.json");
+        session(&projection, &cwd, 1);
+        let mut document: Value = serde_json::from_slice(&std::fs::read(&projection)?)?;
+        document["schema"] = json!(2);
+        std::fs::write(&projection, serde_json::to_vec(&document)?)?;
+        assert!(
+            ingestion::dsh(
+                &mut state,
+                &store,
+                &root,
+                &DshOperation::Register {
+                    session: projection.clone(),
+                    project: repo.clone(),
+                },
+                None,
+            )
+            .await
+            .is_err(),
+            "an unsupported projection schema is refused"
+        );
+        assert!(
+            state.project_epoch(&id).is_err(),
+            "the project must remain unregistered"
+        );
+
+        document["schema"] = json!(1);
+        std::fs::write(&projection, serde_json::to_vec(&document)?)?;
+        let report = ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Register {
+                session: projection,
+                project: repo,
+            },
+            None,
+        )
+        .await?;
+        assert_eq!(
+            report.baseline,
+            Some(1),
+            "a supported projection registers and baselines its turn"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn dsh_store_identity_is_namespaced_from_codex() -> anyhow::Result<()> {
+        let dir = tempdir()?;
+        assert_ne!(
+            ingestion::store_id(dir.path())?,
+            ingestion::dsh_store_id(dir.path())?,
+            "a shared directory must not collapse both runtimes into one store"
+        );
+        assert_eq!(
+            ingestion::dsh_store_id(dir.path())?,
+            ingestion::dsh_store_id(dir.path())?,
+            "the runtime-qualified identity is stable"
         );
         Ok(())
     }

@@ -88,15 +88,20 @@ directory) is an out-of-tree Cordis plugin:
 - On each `turn/end` it reads the session through `ctx.sessionQuery.readSession`,
   writes an atomically published per-turn projection, and runs
   `coding-memory dsh capture --turn N`. A run the engine reports as
-  `history_pending` is retried with a fresh snapshot, because nothing else drives
-  a DSH run; a failed read leaves the hinted run queued for `reconcile`. A
-  projection is deleted once its capture reaches a terminal result, so a
-  long-running session does not accumulate one full copy per turn.
+  `history_pending`—or as `no_ready_run` while the engine's own ten-second
+  deferral is still open—is retried with a fresh snapshot, because nothing else
+  drives a DSH run. The retry delay is not shorter than that deferral; a failed
+  read leaves the hinted run queued for `reconcile`. A projection is deleted once
+  its capture reaches a terminal result, so a long-running session does not
+  accumulate one full copy per turn. A turn whose project is not registered yet
+  still publishes its projection before the bridge returns, because `register`
+  and the following `reconcile` consume that snapshot.
 - It projects only replay-validated logical events, so the engine never parses
   the zstd JSONL files, follows format migrations, or pins a storage layout. A
-  session whose whole log exceeds the projection bound is projected down to the
-  named turn (the header, bookkeeping, the turn's records, and any compaction
-  bracket after it), so a long-lived session stays capturable. The plugin is
+  session whose whole log exceeds the projection bound is projected down to one
+  contiguous range: the header and the named turn's records only. Earlier turns,
+  bookkeeping, and later brackets are never read for that capture, and keeping
+  them would leave `seq` gaps that the engine rejects. The plugin is
   dependency-free.
 
 Two failure modes were found and fixed during this experiment:
@@ -145,10 +150,16 @@ covered by `tests/dsh.rs`:
 - Record `time` is committed in milliseconds; the adapter converts it to seconds
   before comparing it with the enablement epoch.
 - The bridge document declares `schema: 1`, checked independently of DSH's
-  logical format version. A discovery or capture from an unknown projection
-  schema is held as `unsupported_projection_schema`.
+  logical format version. Registration refuses an unknown projection schema
+  before enabling the project, and capture claims the run its header names
+  first, then holds it as `unsupported_projection_schema` rather than failing
+  before any state change. A document with a supported schema that still cannot
+  be parsed is held as `reader_failure`.
 - Capture claims only the run of the session the projection names, and
   reconciliation resolves only hints for that same session.
+- A DSH store identity is runtime-qualified, so `--dsh-home` pointing at a
+  configured Codex home remains a distinct store and neither runtime can lease
+  or exclude the other's runs.
 - Project attribution uses the session header `cwd`; a projection whose recorded
   session directory no longer resolves to the registered project is held as
   `project_mismatch`.
