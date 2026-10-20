@@ -21,5 +21,7 @@ include = [
     "target/release-notices",
     # The DSH capture bridge is a runtime dependency: release-installed users
     # mount it by absolute path, so it ships inside the version directory.
-    "bridge/dsh-capture",
+    # Named as a file, not a directory: a directory entry was not expanded into
+    # the archive by cargo-dist 0.33.0 (CI smoke caught the omission).
+    "bridge/dsh-capture/index.mjs",
 ]
