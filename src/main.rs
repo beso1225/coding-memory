@@ -320,6 +320,13 @@ pub enum DshAction {
     /// Mark this DSH store as engine-owned before an independent generation
     /// runtime writes into it.
     OwnStore,
+    /// Hold a queued run whose own projection exceeds the bridge's bound.
+    HoldOverLimit {
+        #[arg(long)]
+        thread: String,
+        #[arg(long)]
+        turn: u64,
+    },
 }
 impl DshAction {
     fn into_operation(self) -> DshOperation {
@@ -337,6 +344,7 @@ impl DshAction {
             Self::Reconcile { session, project } => DshOperation::Reconcile { session, project },
             Self::Register { session, project } => DshOperation::Register { session, project },
             Self::OwnStore => DshOperation::OwnStore,
+            Self::HoldOverLimit { thread, turn } => DshOperation::HoldOverLimit { thread, turn },
         }
     }
 }

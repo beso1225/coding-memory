@@ -208,7 +208,7 @@ class DshFixture(unittest.TestCase):
         source = BRIDGE.read_text()
         self.assertIn("hint.state === 'deferred'", source)
         self.assertIn(
-            "publishTurn(stateDir, session.id, turn, read)",
+            "publishDeferred(session.id, turn, read)",
             source,
             "the deferred bootstrap publishes the snapshot register consumes",
         )
@@ -289,7 +289,12 @@ class DshFixture(unittest.TestCase):
             "let stale = false; let bytes = 0;"
             "try { const text = m.projectForCapture(header, events, 2); bytes = Buffer.byteLength(text); }"
             "catch (error) { stale = error instanceof m.StaleProjection; }"
-            "console.log(JSON.stringify({ stale, bytes }));"
+            "const small = events.slice(0, 2).concat([{ seq: 99, type: 'turn/end', time: 1,"
+            " data: { turn: 1, reason: { kind: 'completed' } } }]);"
+            "let staleSmall = false;"
+            "try { m.projectForCapture(header, small, 2); }"
+            "catch (error) { staleSmall = error instanceof m.StaleProjection; }"
+            "console.log(JSON.stringify({ stale, staleSmall, bytes }));"
         )
         output = subprocess.run(
             ["node", "--input-type=module", "-e", script, str(BRIDGE)],
@@ -297,6 +302,7 @@ class DshFixture(unittest.TestCase):
         ).stdout
         result = jsonlib.loads(output)
         self.assertTrue(result["stale"], "an oversized stale snapshot is retryable")
+        self.assertTrue(result["staleSmall"], "a small stale snapshot is retryable too")
         self.assertEqual(result["bytes"], 0, "nothing over the bound is published")
         source = BRIDGE.read_text()
         self.assertIn("hint.state === 'held'", source)
@@ -332,6 +338,11 @@ class DshFixture(unittest.TestCase):
         self.assertEqual(result["attempts"], 60)
         self.assertGreater(result["errors"], 0, "transient failures have a separate budget")
         self.assertLess(result["errorDelay"], 10000)
+        source = BRIDGE.read_text()
+        self.assertIn("hold-over-limit", source)
+        self.assertIn("report.reason === 'history_pending'", source)
+        self.assertIn("enqueueTurn", source)
+        self.assertIn("publishDeferred", source)
 
     def test_publish_removes_a_failed_temporary(self):
         # A failed rename must not leave a raw-session .tmp file behind.

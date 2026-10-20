@@ -187,22 +187,17 @@ export function projectRecord(record) {
  * @returns the projection text, within {@link MAX_PROJECTION_BYTES}.
  */
 export function projectForCapture(header, events, turn) {
-  const whole = project(header, events)
-  if (Buffer.byteLength(JSON.stringify(whole)) <= MAX_PROJECTION_BYTES) return JSON.stringify(whole)
   const owned = (event) => event.type === 'turn/start' && event.data?.turn === turn
   const closes = (event) => event.type === 'turn/end' && event.data?.turn === turn
   const start = events.findIndex(owned)
   if (start < 0) {
-    // A stale read can omit the hinted turn's start while the session is
-    // already over the whole-projection bound. Publishing that oversized
-    // document would make the engine reject it before claiming the run, so
-    // report a retryable stale snapshot instead.
-    const text = JSON.stringify(whole)
-    if (Buffer.byteLength(text) > MAX_PROJECTION_BYTES) {
-      throw new StaleProjection('the read does not contain the turn start yet')
-    }
-    return text
+    // `turn/end` was observed, so a correct snapshot contains its start. An
+    // absent start (small or oversized) is a stale read: publishing it would
+    // let the engine hold the run as `history_missing` before a refresh.
+    throw new StaleProjection('the read does not contain the turn start yet')
   }
+  const whole = project(header, events)
+  if (Buffer.byteLength(JSON.stringify(whole)) <= MAX_PROJECTION_BYTES) return JSON.stringify(whole)
   const end = events.findIndex((event, index) => index > start && closes(event))
   const stop = end < 0 ? events.length : end + 1
   // One contiguous range, so every projected record still follows its
@@ -419,6 +414,24 @@ export function apply(ctx, config) {
     )
   }
 
+  /**
+   * Publish the bootstrap projection of an unregistered project, with bounded
+   * retries. `register` has no other source once this read or write fails.
+   */
+  const publishDeferred = (sessionId, turn, read, errorsLeft = CAPTURE_ERRORS) => {
+    publishTurn(stateDir, sessionId, turn, read).catch((error) => {
+      warn(`deferred projection failed for turn ${turn}: ${describe(error)}`)
+      if (errorsLeft > 1) {
+        setTimeout(
+          () => publishDeferred(sessionId, turn, read, errorsLeft - 1),
+          CAPTURE_ERROR_RETRY_MS,
+        )
+      } else {
+        warn(`deferred projection retries exhausted for turn ${turn}; a later turn must bootstrap the project`)
+      }
+    })
+  }
+
   function captureTurn(
     sessionId,
     turn,
@@ -451,13 +464,20 @@ export function apply(ctx, config) {
         }
         const report = parseReport(result.output)
         if (retryable(report.reason)) {
-          // Nothing else drives a DSH run. The engine defers for longer than
-          // this retry, so an early attempt reports `no_ready_run`; either
-          // reason may still become captureable, and the projection must stay.
-          if (attemptsLeft > 1) {
-            retryLater(CAPTURE_RETRY_MS, sessionId, turn, attemptsLeft - 1, CAPTURE_ERRORS)
+          // Nothing else drives a DSH run. `history_pending` means the engine
+          // claimed and deferred the run, so it consumes one of the 60 claims.
+          // `no_ready_run` means no claim happened (a competing lease or the
+          // deferral window), so only the transient budget may shrink.
+          if (report.reason === 'history_pending') {
+            if (attemptsLeft > 1) {
+              retryLater(CAPTURE_RETRY_MS, sessionId, turn, attemptsLeft - 1, CAPTURE_ERRORS)
+            } else {
+              warn(`capture still pending for turn ${turn}; run a fresh capture manually`)
+            }
+          } else if (errorsLeft > 1) {
+            retryLater(CAPTURE_RETRY_MS, sessionId, turn, attemptsLeft, errorsLeft - 1)
           } else {
-            warn(`capture still ${report.reason} for turn ${turn}; run a fresh capture manually`)
+            warn(`capture received no ready run for turn ${turn}; run a fresh capture manually`)
           }
           return
         }
@@ -476,11 +496,20 @@ export function apply(ctx, config) {
         // Every other result is terminal: evidence, a hold, or an exclusion.
         await removeProjection(path)
       })
-      .catch((error) => {
+      .catch(async (error) => {
         if (error instanceof OverLimitProjection) {
           // The turn itself is over the transport bound. Re-reading and
-          // reserializing it cannot change that outcome.
-          warn(`turn ${turn} exceeds the projection bound; not capturing`)
+          // reserializing it cannot change that outcome, and the run would
+          // otherwise stay queued with no driver: ask the engine to hold it.
+          const held = await run([
+            '--state-dir', stateDir, 'dsh', '--dsh-home', dshHome,
+            'hold-over-limit', '--thread', String(sessionId), '--turn', String(turn),
+          ])
+          if (held.code !== 0) {
+            warn(`cannot hold oversized turn ${turn}: ${held.output.slice(0, 500)}`)
+          } else if (parseReport(held.output).state !== 'held') {
+            warn(`oversized turn ${turn} was not held: ${held.output.slice(0, 300)}`)
+          }
           return
         }
         // The run was already enqueued, and `reconcile` only processes pending
@@ -564,34 +593,50 @@ export function apply(ctx, config) {
           }
         })()
         started.catch(() => {})
-        run(['--state-dir', stateDir, 'dsh', '--dsh-home', dshHome, '--event', signal, 'enqueue'])
-          .then((queued) => {
-            if (queued.code !== 0) {
-              warn(`enqueue failed for turn ${turn}: ${queued.output.slice(0, 500)}`)
-              return
-            }
-            const hint = parseReport(queued.output)
-            if (hint.state === 'held') {
-              // An engine-owned or explicitly excluded run has no claimable
-              // work. Reading and publishing its raw session would defeat the
-              // exclusion, so stop before capture.
-              warn(`turn ${turn} is excluded (${hint.reason ?? 'held'}); not capturing`)
-              return
-            }
-            if (hint.state === 'deferred') {
-              // The project is not registered yet: the hint is kept, but no run
-              // is queued, so capture would only report `no_ready_run`. The
-              // projection is still published, because `register` and the
-              // following `reconcile` consume it to establish the baseline and
-              // resolve this hint; no capture invocation would write it later.
-              publishTurn(stateDir, session.id, turn, read)
-                .catch((error) => warn(`deferred projection failed for turn ${turn}: ${describe(error)}`))
-              warn(`turn ${turn} is queued for later (${hint.reason ?? 'project not registered'}); run reconcile after registering the project`)
-              return
-            }
-            captureTurn(session.id, turn, read)
-          })
-          .catch((error) => warn(`hint/capture failed: ${String(error && error.stack ? error.stack.split('\n').slice(0, 4).join(' | ') : error).slice(0, 600)}`))
+        // The runtime does not replay `turn/end`; a transient enqueue failure
+        // would lose the only live observation, while duplicate enqueue is
+        // idempotent.
+        const enqueueTurn = (errorsLeft = CAPTURE_ERRORS) => {
+          run(['--state-dir', stateDir, 'dsh', '--dsh-home', dshHome, '--event', signal, 'enqueue'])
+            .then((queued) => {
+              if (queued.code !== 0) {
+                warn(`enqueue failed for turn ${turn}: ${queued.output.slice(0, 500)}`)
+                if (errorsLeft > 1) {
+                  setTimeout(() => enqueueTurn(errorsLeft - 1), CAPTURE_ERROR_RETRY_MS)
+                } else {
+                  warn(`enqueue retries exhausted for turn ${turn}; the turn-end observation is lost`)
+                }
+                return
+              }
+              const hint = parseReport(queued.output)
+              if (hint.state === 'held') {
+                // An engine-owned or explicitly excluded run has no claimable
+                // work. Reading and publishing its raw session would defeat the
+                // exclusion, so stop before capture.
+                warn(`turn ${turn} is excluded (${hint.reason ?? 'held'}); not capturing`)
+                return
+              }
+              if (hint.state === 'deferred') {
+                // The project is not registered yet: the hint is kept, but no
+                // run is queued. The projection is still published, because
+                // `register` and the following `reconcile` consume it to
+                // establish the baseline and resolve this hint.
+                publishDeferred(session.id, turn, read)
+                warn(`turn ${turn} is queued for later (${hint.reason ?? 'project not registered'}); run reconcile after registering the project`)
+                return
+              }
+              captureTurn(session.id, turn, read)
+            })
+            .catch((error) => {
+              warn(`enqueue failed for turn ${turn}: ${describe(error)}`)
+              if (errorsLeft > 1) {
+                setTimeout(() => enqueueTurn(errorsLeft - 1), CAPTURE_ERROR_RETRY_MS)
+              } else {
+                warn(`enqueue retries exhausted for turn ${turn}; the turn-end observation is lost`)
+              }
+            })
+        }
+        enqueueTurn()
       })
       return () => stop()
     }, 'coding-memory-capture.observe')

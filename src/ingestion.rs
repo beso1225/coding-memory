@@ -306,6 +306,14 @@ pub enum DshOperation {
     },
     /// Mark this DSH store as engine-owned, like Codex `own-store`.
     OwnStore,
+    /// Hold one queued run whose projection cannot be transported.
+    ///
+    /// The bridge calls this after deciding a turn exceeds its own projection
+    /// bound; the run would otherwise stay queued with no capture driver.
+    HoldOverLimit {
+        thread: String,
+        turn: u64,
+    },
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -345,6 +353,32 @@ pub async fn dsh(
                 state: None,
                 run: None,
                 reason: None,
+                evidence: None,
+                queued: None,
+                baseline: None,
+            })
+        }
+        DshOperation::HoldOverLimit { thread, turn } => {
+            let turn = turn.to_string();
+            let Some(claim) =
+                state.claim_session_turn(Some(store), thread, Some(&turn), now(), 3600)?
+            else {
+                return Ok(DshReport {
+                    action: "hold",
+                    state: None,
+                    run: None,
+                    reason: Some("no_ready_run".into()),
+                    evidence: None,
+                    queued: None,
+                    baseline: None,
+                });
+            };
+            state.hold(&claim, "history_over_limit", now())?;
+            Ok(DshReport {
+                action: "hold",
+                state: Some("held"),
+                run: Some(claim.key),
+                reason: Some("history_over_limit".into()),
                 evidence: None,
                 queued: None,
                 baseline: None,

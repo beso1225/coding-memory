@@ -2395,6 +2395,63 @@ mod ingestion {
     }
 
     #[tokio::test]
+    async fn an_oversized_turn_can_be_held_without_a_projection() -> anyhow::Result<()> {
+        // The bridge cannot publish a turn over its transport bound, so it asks
+        // the engine to hold the already-queued run instead of leaving it queued.
+        let (data, dsh) = runtime();
+        let (repo, _) = project(data.path());
+        let root = data.path().join("state");
+        std::fs::create_dir_all(&root)?;
+        let mut state = State::open(&root.join("state.sqlite"))?;
+        let store = ingestion::dsh_store_id(dsh.path())?;
+        let cwd = repo.to_str().unwrap().to_string();
+        let baseline = data.path().join("baseline.json");
+        session(&baseline, &cwd, 0);
+        ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Register {
+                session: baseline,
+                project: repo,
+            },
+            None,
+        )
+        .await?;
+        let signal = json!({"kind":"turn-end","session":"session-x","turn":1,"cwd":cwd});
+        ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Enqueue,
+            Some(signal.to_string()),
+        )
+        .await?;
+        let report = ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::HoldOverLimit {
+                thread: "session-x".into(),
+                turn: 1,
+            },
+            None,
+        )
+        .await?;
+        assert_eq!(report.state, Some("held"));
+        assert_eq!(report.reason.as_deref(), Some("history_over_limit"));
+        let status = state.status()?;
+        assert_eq!(status.len(), 1);
+        assert_eq!(status[0].state, "held");
+        assert_eq!(
+            status[0].reason.as_deref(),
+            Some("history_over_limit"),
+            "the run leaves the queue as an inspectable hold"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn a_schema_invalid_projection_holds_its_claimed_run() -> anyhow::Result<()> {
         // The run must not stay queued (or be leased for an hour) merely because
         // the bridge document declares a schema this engine cannot read.

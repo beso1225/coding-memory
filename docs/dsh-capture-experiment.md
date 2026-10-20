@@ -329,11 +329,13 @@ These were found by the measurement and are fixed with regression tests:
 - The verified DSH revision is `0.2.1-rc.2` (logical session format v4). The
   adapter accepts versions up to 4; revalidate after a DSH upgrade. A turn whose
   own records exceed the bridge's 16 MiB projection bound is a permanent
-  over-limit outcome: it is logged and left queued rather than retried or
-  captured partially.
+  over-limit outcome: the bridge asks the engine to hold the run as
+  `history_over_limit` rather than retrying the read or capturing partially.
 - A deferred projection written before registration is retained for
   `register`/`reconcile` and is not removed automatically. Delete consumed
   snapshots under `<state-dir>/dsh/projections/` when they are no longer needed.
+- The bridge retries a failed enqueue and a failed deferred publication with
+  the same bounded transient budget. Duplicate enqueue is idempotent.
 - The bridge retries its own queued run, but `reconcile` does not drive an
   already-queued run: it only processes pending hints. If the harness is killed
   before a retry reaches a terminal state, capture that run explicitly from a

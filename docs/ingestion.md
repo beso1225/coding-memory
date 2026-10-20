@@ -111,6 +111,10 @@ home. If `reconcile` queues a turn that ended after the enablement boundary but
 before registration committed, drive its capture explicitly with `capture
 --session <that projection> --turn N`.
 
+The bridge retries a transient `enqueue` failure (the runtime does not replay
+`turn/end`, and duplicate enqueue is idempotent) and retries the first deferred
+projection publication, because `register` has no other source for it.
+
 `enqueue` is what the bridge calls on `turn/end`; it accepts a bounded
 `{"kind":"turn-end","session":...,"turn":N,"cwd":...}` hint from stdin or
 `--event`. The hint names the run: capture publishes only a run a live runtime
@@ -127,9 +131,12 @@ fresh snapshot, not before the engine's deferral has elapsed, up to the engine's
 60-attempt limit. A failed session read, stale oversized snapshot, or transient
 engine invocation failure is retried with a separate small budget, so it cannot
 consume one of those 60 claims; the retry timers are referenced so a short-lived
-harness does not drop an already-queued run. A turn whose own records exceed the
-16 MiB projection bound is a permanent over-limit outcome and is not retried.
-The engine holds a pending run as `history_readiness_exhausted` on attempt 60,
+harness does not drop an already-queued run. A report that no run was ready
+(`no_ready_run`) is not an engine claim, so it consumes only the transient
+budget. A turn whose own records exceed the 16 MiB projection bound is a
+permanent over-limit outcome: the bridge asks the engine to hold that run as
+`history_over_limit` instead of retrying the read. The engine holds a pending
+run as `history_readiness_exhausted` on attempt 60,
 as it does for Codex. If the process is killed before either happens, capture
 the run explicitly from a fresh projection (`capture --turn N`); `reconcile`
 only processes pending hints.
