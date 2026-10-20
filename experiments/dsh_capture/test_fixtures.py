@@ -152,6 +152,39 @@ class DshFixture(unittest.TestCase):
         self.assertEqual(result["last"]["type"], "turn/end")
         self.assertEqual(result["last"]["data"]["turn"], 20)
 
+    def test_bridge_retries_pending_captures_and_retires_projections(self):
+        import json as jsonlib
+        import os
+        import subprocess
+        import tempfile
+        script = (
+            "const m = await import(process.argv[1]);"
+            "const fs = await import('node:fs/promises');"
+            "const os = await import('node:os');"
+            "const path = await import('node:path');"
+            "const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'bridge-ret-'));"
+            "const file = path.join(dir, 's.1.json');"
+            "await fs.writeFile(file, '{}'); await m.removeProjection(file);"
+            "console.log(JSON.stringify({"
+            " pending: m.parseReport(JSON.stringify({ state: 'queued', reason: 'history_pending' })),"
+            " terminal: m.parseReport(JSON.stringify({ state: 'ready', evidence: 'x' })),"
+            " empty: m.parseReport('not json'),"
+            " left: (await fs.readdir(dir)).length }));"
+            "await fs.rm(dir, { recursive: true });"
+        )
+        output = subprocess.run(
+            ["node", "--input-type=module", "-e", script, str(BRIDGE)],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        result = jsonlib.loads(output)
+        self.assertEqual(result["pending"]["reason"], "history_pending")
+        self.assertEqual(result["terminal"]["state"], "ready")
+        self.assertEqual(result["empty"], {}, "an unparsable report is never terminal")
+        self.assertEqual(result["left"], 0, "a retired projection is deleted")
+        source = BRIDGE.read_text()
+        self.assertIn("CAPTURE_ATTEMPTS", source)
+        self.assertIn("attemptsLeft - 1", source)
+
     def test_bridge_exports_compaction_wait(self):
         source = BRIDGE.read_text()
         self.assertIn("COMPACTION_SETTLE_MS", source)

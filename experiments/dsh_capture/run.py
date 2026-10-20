@@ -219,9 +219,9 @@ def main():
         (line["sessionId"] for line in map(json.loads, first.stdout.splitlines()) if line.get("type") == "session"),
         None,
     )
-    projection = state / "dsh" / "projections" / f"{first_session}.json"
-    sessions = [projection] if projection.is_file() else []
-    record["projection_names"] = [first_session]
+    # The bridge publishes one immutable file per captured turn.
+    sessions = sorted((state / "dsh" / "projections").glob(f"{first_session}.*.json")) if first_session else []
+    record["projection_names"] = [path.name for path in sessions]
     record["projected_sessions"] = len(sessions)
     if sessions:
         reg = run([*engine, "register", "--session", str(sessions[-1]), "--project", str(project)], project)

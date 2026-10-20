@@ -330,6 +330,35 @@ pub fn discover(path: &Path, cwd: &str, store: &str) -> Result<Vec<Discovered>> 
 /// `epoch` is the project's registration second. A turn that ended at or before
 /// it predates enablement and is excluded, matching Codex's baseline rule.
 pub fn decode(log: &Value, store: &str, cwd: &str, turn: u64, epoch: i64) -> Result<Capture> {
+    decode_after(log, store, cwd, turn, &Boundary::Second(epoch))
+}
+
+/// The instant a project became enabled, at the precision its record allows.
+#[derive(Clone, Copy, Debug)]
+pub enum Boundary {
+    /// Whole-second registration epoch (older records, and Codex's rule).
+    Second(i64),
+    /// The exact registration instant.
+    Millis(i64),
+}
+impl Boundary {
+    /// The boundary as milliseconds, for comparing a turn's millisecond end.
+    pub fn millis(self) -> i64 {
+        match self {
+            Self::Second(epoch) => epoch.saturating_mul(1000),
+            Self::Millis(ms) => ms,
+        }
+    }
+}
+
+/// Decode one turn against an enablement boundary of any recorded precision.
+pub fn decode_after(
+    log: &Value,
+    store: &str,
+    cwd: &str,
+    turn: u64,
+    boundary: &Boundary,
+) -> Result<Capture> {
     if log.get("schema").and_then(Value::as_u64) != Some(u64::from(PROJECTION_SCHEMA)) {
         // The bridge's own document shape, not DSH's logical format.
         return Ok(Capture::Unsupported(Reason::ProjectionSchema));
@@ -407,7 +436,7 @@ pub fn decode(log: &Value, store: &str, cwd: &str, turn: u64, epoch: i64) -> Res
         _ => return Ok(Capture::Unsupported(Reason::TurnEndReason)),
     };
     // A turn ending in the same second but after registration is post-enablement.
-    if ended_ms <= epoch.saturating_mul(1000) {
+    if ended_ms <= boundary.millis() {
         return Ok(Capture::BeforeEnablement);
     }
     let ended_at = ended_ms / 1000;

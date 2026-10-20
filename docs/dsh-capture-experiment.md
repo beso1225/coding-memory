@@ -87,8 +87,11 @@ directory) is an out-of-tree Cordis plugin:
   engine re-reads the session and decides.
 - On each `turn/end` it reads the session through `ctx.sessionQuery.readSession`,
   writes an atomically published per-turn projection, and runs
-  `coding-memory dsh capture --turn N`. A failed read leaves the hinted run
-  queued for a documented reconcile instead of capturing a later snapshot.
+  `coding-memory dsh capture --turn N`. A run the engine reports as
+  `history_pending` is retried with a fresh snapshot, because nothing else drives
+  a DSH run; a failed read leaves the hinted run queued for `reconcile`. A
+  projection is deleted once its capture reaches a terminal result, so a
+  long-running session does not accumulate one full copy per turn.
 - It projects only replay-validated logical events, so the engine never parses
   the zstd JSONL files, follows format migrations, or pins a storage layout. A
   session whose whole log exceeds the projection bound is projected down to the
@@ -149,9 +152,11 @@ covered by `tests/dsh.rs`:
 - Project attribution uses the session header `cwd`; a projection whose recorded
   session directory no longer resolves to the registered project is held as
   `project_mismatch`.
-- A turn that ended at or before the project's registration second is held as
+- A turn that ended at or before the project's registration instant is held as
   `before_enablement`, a reason distinct from the fork/nonhuman
-  `excluded_inherited_or_nonhuman`.
+  `excluded_inherited_or_nonhuman`. The instant is recorded in milliseconds, so
+  enabling a project mid-second does not admit a run that ended earlier in that
+  same second; records without it fall back to the whole-second epoch.
 - Evidence reuses the existing envelope and `items`/`coverage` shape, so
   extraction, consolidation, review, and MCP retrieval need no DSH branch.
 

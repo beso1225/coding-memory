@@ -58,7 +58,7 @@ impl State {
         let version: i64 = db.query_row("SELECT version FROM schema_version", [], |r| r.get(0))?;
         ensure!(version == 1, "Unsupported state schema {version}");
         db.execute_batch("CREATE TABLE IF NOT EXISTS runtime_checks(digest TEXT NOT NULL,fixture TEXT NOT NULL,binary TEXT NOT NULL,version TEXT NOT NULL,state TEXT NOT NULL,last_result TEXT,checked_at INTEGER,available_at INTEGER NOT NULL,lease_until INTEGER,token INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(digest,fixture));
-            CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, repository TEXT NOT NULL UNIQUE, enabled_at INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, repository TEXT NOT NULL UNIQUE, enabled_at INTEGER NOT NULL, enabled_ms INTEGER);
             CREATE TABLE IF NOT EXISTS owned_stores(id TEXT PRIMARY KEY);
             CREATE TABLE IF NOT EXISTS pending_notes(note_id TEXT PRIMARY KEY, reason TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS project_policy(project TEXT PRIMARY KEY REFERENCES projects(id), allow_external INTEGER NOT NULL);
@@ -83,9 +83,15 @@ impl State {
         })
     }
     pub fn register_project(&mut self, id: &str, repository: &str, enabled: i64) -> Result<()> {
+        // The second-resolution epoch stays the public boundary; the exact
+        // instant is recorded beside it wherever a source can express more.
+        let enabled_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis() as i64)
+            .unwrap_or(enabled.saturating_mul(1000));
         self.db.execute(
-            "INSERT INTO projects VALUES(?1,?2,?3) ON CONFLICT(id) DO NOTHING",
-            params![id, repository, enabled],
+            "INSERT INTO projects(id,repository,enabled_at,enabled_ms) VALUES(?1,?2,?3,?4) ON CONFLICT(id) DO NOTHING",
+            params![id, repository, enabled, enabled_ms],
         )?;
         let stored: String =
             self.db
@@ -97,6 +103,19 @@ impl State {
             "Project identity cannot be reassigned"
         );
         Ok(())
+    }
+    /// The exact registration instant in milliseconds, when recorded.
+    ///
+    /// Enabling a project inside one second would otherwise admit every run that
+    /// ended anywhere in that same second, including ones before the instant.
+    pub fn project_epoch_ms(&self, id: &str) -> Result<Option<i64>> {
+        Ok(self
+            .db
+            .query_row("SELECT enabled_ms FROM projects WHERE id=?1", [id], |r| {
+                r.get(0)
+            })
+            .optional()?
+            .flatten())
     }
     pub fn project_epoch(&self, id: &str) -> Result<i64> {
         Ok(self

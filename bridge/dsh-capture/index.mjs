@@ -20,7 +20,7 @@
  */
 
 import { spawn } from 'node:child_process'
-import { mkdir, rename, writeFile } from 'node:fs/promises'
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { dirname, isAbsolute, join } from 'node:path'
 
@@ -63,6 +63,10 @@ export const Config = {
   },
 }
 
+/** How many times one capture may retry while the engine reports pending. */
+export const CAPTURE_ATTEMPTS = 12
+/** Delay between pending-capture retries, in milliseconds. */
+export const CAPTURE_RETRY_MS = 2000
 /** How long capture waits for a compaction request announced at turn end. */
 export const COMPACTION_SETTLE_MS = 1500
 /** Markers a producer emits when it is about to compact one session. */
@@ -73,6 +77,38 @@ export const MAX_PROJECTION_BYTES = 16 * 1024 * 1024
 export const MAX_SIGNAL_BYTES = 65536
 /** Session ids containing this marker are Coding Memory's own generation runs. */
 export const ENGINE_SESSION = 'coding-memory-'
+
+/**
+ * The engine's capture report, or an empty object when it cannot be parsed.
+ * @param output - the engine's stdout.
+ * @returns the parsed report.
+ */
+export function parseReport(output) {
+  try {
+    const report = JSON.parse(output.trim())
+    return report !== null && typeof report === 'object' ? report : {}
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * Remove a projection whose capture finished.
+ *
+ * Each capture writes a fresh immutable projection, and before the bounded
+ * fallback activates it holds the whole growing session. Keeping those files
+ * would grow quadratically and retain raw system and injected records after the
+ * filtered evidence is published, so a terminal result deletes its file. A
+ * pending capture keeps it for the retry or a later `reconcile`.
+ * @param path - projection file.
+ */
+export async function removeProjection(path) {
+  try {
+    await rm(path, { force: true })
+  } catch {
+    // Removal is housekeeping: a leftover file never changes capture results.
+  }
+}
 
 /**
  * Keep a projected record replayable.
@@ -289,13 +325,21 @@ export function apply(ctx, config) {
    * @param sessionId - session whose queued run to capture.
    * @param turn - the turn that just ended.
    */
-  function captureTurn(sessionId, turn, started) {
-    // `started` must be a read begun *before* the engine hint ran: the harness
-    // can deactivate the service tree as soon as the turn's process winds down,
-    // and only a read already in flight survives that. It is also read through
-    // the live `ctx` property, never a captured service proxy, which loses its
-    // owning context (`cannot get required service ... in inactive context`).
-    started
+  /**
+   * Capture one ended run.
+   * @param sessionId - session whose run to capture.
+   * @param turn - the exact turn.
+   * @param read - a function returning the session read; the first call's
+   *   promise is already in flight (see the caller), a retry starts a fresh one.
+   */
+  function captureTurn(sessionId, turn, read, attemptsLeft = CAPTURE_ATTEMPTS) {
+    // The first read must begin *before* the engine hint runs: the harness can
+    // deactivate the service tree as soon as the turn's process winds down, and
+    // only a read already in flight survives that. It is read through the live
+    // `ctx` property, never a captured service proxy, which loses its owning
+    // context (`cannot get required service ... in inactive context`).
+    Promise.resolve()
+      .then(read)
       .then(async ({ session, events }) => {
         if (session.cwd === undefined) return
         // A destination unique to this capture: an overlapping handler for an
@@ -308,7 +352,33 @@ export function apply(ctx, config) {
           '--state-dir', stateDir, 'dsh', '--dsh-home', dshHome,
           'capture', '--session', path, '--project', session.cwd, '--turn', String(turn),
         ])
-        if (result.code !== 0) warn(`capture failed for turn ${turn}: ${result.output.slice(0, 500)}`)
+        if (result.code !== 0) {
+          warn(`capture failed for turn ${turn}: ${result.output.slice(0, 500)}`)
+          return
+        }
+        const report = parseReport(result.output)
+        if (report.state === undefined) {
+          // `no_ready_run`: another capture owns this run.
+          await removeProjection(path)
+          return
+        }
+        if (report.reason === 'history_pending') {
+          // The harness has not flushed the turn's end yet. Nothing else drives
+          // a DSH run, so this bridge must retry until the engine's own attempt
+          // budget turns a persistently pending run into a held one.
+          if (attemptsLeft > 1) {
+            // A retry needs a fresh snapshot: the harness flushes over time.
+            setTimeout(
+              () => captureTurn(sessionId, turn, () => ctx.sessionQuery.readSession(sessionId), attemptsLeft - 1),
+              CAPTURE_RETRY_MS,
+            )
+            return
+          }
+          warn(`capture still pending for turn ${turn}; left to reconcile`)
+          return
+        }
+        // Every other result is terminal: evidence, a hold, or an exclusion.
+        await removeProjection(path)
       })
       .catch((error) => warn(`capture deferred for turn ${turn}: ${String(error && error.stack ? error.stack.split('\n').slice(0, 4).join(' | ') : error).slice(0, 600)}`))
   }
@@ -369,8 +439,21 @@ export function apply(ctx, config) {
         // live), but let a compaction that is running or about to run finish
         // first: reading mid-compaction would record an unfinished bracket, and
         // reading first would miss the compaction this turn is part of.
-        const started = waitForCompaction(session.id)
+        // The read starts one microtask after the commit. Compaction intent is
+        // rechecked there: a producer whose listener runs after this bridge's
+        // announces it later in the same dispatch, so the check must not happen
+        // here, where listener order would decide the outcome.
+        const started = Promise.resolve()
+          .then(() => waitForCompaction(session.id))
           .then(() => ctx.sessionQuery.readSession(session.id))
+        const read = (() => {
+          let consumed = false
+          return () => {
+            if (consumed) return ctx.sessionQuery.readSession(session.id)
+            consumed = true
+            return started
+          }
+        })()
         started.catch(() => {})
         run(['--state-dir', stateDir, 'dsh', '--dsh-home', dshHome, '--event', signal, 'enqueue'])
           .then((queued) => {
@@ -378,7 +461,7 @@ export function apply(ctx, config) {
               warn(`enqueue failed for turn ${turn}: ${queued.output.slice(0, 500)}`)
               return
             }
-            captureTurn(session.id, turn, started)
+            captureTurn(session.id, turn, read)
           })
           .catch((error) => warn(`hint/capture failed: ${String(error && error.stack ? error.stack.split('\n').slice(0, 4).join(' | ') : error).slice(0, 600)}`))
       })

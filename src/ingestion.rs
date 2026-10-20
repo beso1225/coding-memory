@@ -423,8 +423,12 @@ pub async fn dsh(
                     state.hold_hint(&hint, "history_missing")?;
                     continue;
                 };
-                // `ended_at` is milliseconds; the epoch is a second.
-                if turn.ended_at <= epoch.saturating_mul(1000) {
+                // `ended_at` is milliseconds; compare against the exact instant.
+                let boundary = match state.project_epoch_ms(&p.id)? {
+                    Some(ms) => dsh::Boundary::Millis(ms),
+                    None => dsh::Boundary::Second(epoch),
+                };
+                if turn.ended_at <= boundary.millis() {
                     state.exclude(&hint, "before_enablement")?;
                     state.resolve_hint(&hint)?;
                     continue;
@@ -544,7 +548,13 @@ pub async fn dsh(
             let turn_number: u64 = claim.key.turn.parse()?;
             let epoch = state.project_epoch(&claim.project)?;
             let document = serde_json::to_value(&projection)?;
-            let outcome = dsh::decode(&document, store, &cwd, turn_number, epoch)?;
+            // Prefer the exact instant: the whole-second epoch would admit a run
+            // that ended earlier in the same second the project was enabled.
+            let boundary = match state.project_epoch_ms(&claim.project)? {
+                Some(ms) => dsh::Boundary::Millis(ms),
+                None => dsh::Boundary::Second(epoch),
+            };
+            let outcome = dsh::decode_after(&document, store, &cwd, turn_number, &boundary)?;
             dsh_capture(state, root, &claim, outcome)
         }
     }

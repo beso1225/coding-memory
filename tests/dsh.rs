@@ -564,6 +564,55 @@ fn a_turn_ending_later_in_the_registration_second_is_captured() {
 }
 
 #[test]
+fn the_exact_registration_instant_is_honoured() {
+    // Enabling a project mid-second must not admit a run that ended earlier in
+    // that same second, which a whole-second epoch would.
+    let mut value = log(vec![
+        turn_start(3, 1),
+        real_human(4),
+        turn_end(5, 1, json!({"kind": "completed"})),
+    ]);
+    let enabled_ms = 1_700_000_000_900;
+    for record in value["records"].as_array_mut().unwrap() {
+        record["time"] = json!(enabled_ms - 500);
+    }
+    {
+        let records = value["records"].as_array_mut().unwrap();
+        let last = records.len() - 1;
+        records[last]["time"] = json!(enabled_ms - 300);
+    }
+    let outcome = dsh::decode_after(
+        &value,
+        "storedigest",
+        "/repo",
+        1,
+        &dsh::Boundary::Millis(enabled_ms),
+    )
+    .expect("decode");
+    assert!(
+        matches!(outcome, Capture::BeforeEnablement),
+        "a run ending before the exact instant predates enablement"
+    );
+    // The same turn, ending after the instant, is post-enablement.
+    {
+        let records = value["records"].as_array_mut().unwrap();
+        let last = records.len() - 1;
+        records[last]["time"] = json!(enabled_ms + 100);
+    }
+    assert!(matches!(
+        dsh::decode_after(
+            &value,
+            "storedigest",
+            "/repo",
+            1,
+            &dsh::Boundary::Millis(enabled_ms)
+        )
+        .expect("decode"),
+        Capture::Ready(_)
+    ));
+}
+
+#[test]
 fn a_projection_must_declare_a_supported_bridge_schema() {
     let mut value = two_turn_log();
     value.as_object_mut().unwrap().remove("schema");
