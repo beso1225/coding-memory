@@ -209,8 +209,10 @@ export function projectForCapture(header, events, turn) {
     // let the engine hold the run as `history_missing` before a refresh.
     throw new StaleProjection('the read does not contain the turn start yet')
   }
-  const whole = project(header, events)
-  if (Buffer.byteLength(JSON.stringify(whole)) <= MAX_PROJECTION_BYTES) return JSON.stringify(whole)
+  // Serialize once: a near-limit session would otherwise be stringified twice
+  // and hold both copies while the bounded fallback is constructed.
+  const whole = JSON.stringify(project(header, events))
+  if (Buffer.byteLength(whole) <= MAX_PROJECTION_BYTES) return whole
   const end = events.findIndex((event, index) => index > start && closes(event))
   const stop = end < 0 ? events.length : end + 1
   // One contiguous range, so every projected record still follows its
@@ -239,7 +241,7 @@ export function project(header, events) {
       id: header.id,
       createdAt: header.createdAt,
       ...optional('cwd', header.cwd),
-      isSeeded: header.isSeeded,
+      ...optional('isSeeded', header.isSeeded),
       ...optional('parentSession', header.parentSession),
       ...optional('origin', header.origin),
       ...optional('delegationDepth', header.delegationDepth),
@@ -408,13 +410,42 @@ export function apply(ctx, config) {
   const engine = (args) =>
     run(['--state-dir', stateDir, 'dsh', '--dsh-home', dshHome, ...args])
 
+  /**
+   * Read one session with a bounded wait.
+   *
+   * A harness read that never settles would leave the enqueued run with no
+   * projection and no retry, and nothing else drives a DSH run. The timer is
+   * unref'd so it cannot delay teardown when the read is already complete.
+   * @param sessionId - session to read through the live service property.
+   * @returns the session read, or a rejection after `timeoutMs`.
+   */
+  const readSession = (sessionId) => new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`session read timed out after ${timeoutMs} ms`)),
+      timeoutMs,
+    )
+    timer.unref?.()
+    Promise.resolve()
+      .then(() => ctx.sessionQuery.readSession(sessionId))
+      .then(
+        (value) => {
+          clearTimeout(timer)
+          resolve(value)
+        },
+        (error) => {
+          clearTimeout(timer)
+          reject(error)
+        },
+      )
+  })
+
   /** One bounded, readable form of a failure for stderr. */
   const describe = (error) => String(error && error.stack ? error.stack.split('\n').slice(0, 4).join(' | ') : error).slice(0, 600)
 
   /** Schedule one capture retry with a fresh read; timers stay referenced. */
   const retryLater = (delay, sessionId, turn, attemptsLeft, errorsLeft) => {
     setTimeout(
-      () => captureTurn(sessionId, turn, () => ctx.sessionQuery.readSession(sessionId), attemptsLeft, errorsLeft),
+      () => captureTurn(sessionId, turn, () => readSession(sessionId), attemptsLeft, errorsLeft),
       delay,
     )
   }
@@ -574,20 +605,24 @@ export function apply(ctx, config) {
         }
         if (event.type !== 'turn/end') return
         const header = subject.header
+        if (header === undefined) return
         if (header.isSeeded === true || header.origin === 'subagent'
           || (header.delegationDepth ?? 0) > 0 || header.parentSession !== undefined) return
         if (header.cwd === undefined) return
-        const turn = event.data.turn
+        const turn = event.data?.turn
         if (!Number.isSafeInteger(turn) || turn < 1) {
           warn(`ignoring turn/end with an invalid turn number: ${String(turn)}`)
           return
         }
+        // A malformed reason must not throw inside the listener and lose the
+        // turn-end observation; the engine validates the persisted reason.
+        const reason = event.data?.reason?.kind
         const signal = JSON.stringify({
           kind: 'turn-end',
           session: session.id,
           turn,
           cwd: header.cwd,
-          reason: event.data.reason.kind,
+          ...optional('reason', reason),
         })
         if (Buffer.byteLength(signal) > MAX_SIGNAL_BYTES) return
         // The read starts one microtask past the commit: starting inside the
@@ -598,11 +633,11 @@ export function apply(ctx, config) {
         // is retried by captureTurn with a fresh snapshot.
         const started = Promise.resolve()
           .then(() => waitForCompaction(session.id))
-          .then(() => ctx.sessionQuery.readSession(session.id))
+          .then(() => readSession(session.id))
         const read = (() => {
           let consumed = false
           return () => {
-            if (consumed) return ctx.sessionQuery.readSession(session.id)
+            if (consumed) return readSession(session.id)
             consumed = true
             return started
           }

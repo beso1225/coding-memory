@@ -439,9 +439,24 @@ pub fn decode_after(
         if seq <= start_seq || seq >= end_seq {
             continue;
         }
-        // Bookkeeping may be omitted entirely, so requiring a payload (or an
-        // attribution field) from it would hold a turn the bridge could have
-        // safely projected less of.
+        // Attribution is checked whenever a payload exists, including for
+        // bookkeeping: a record that names another turn means the window is
+        // misattributed, even if the record itself would be skipped.
+        let data = record.data.as_ref();
+        if let Some(data) = data {
+            // Only records that carry a turn field can disagree with the
+            // turn-end turn. A message's ownership comes from the enclosing
+            // `turn/start`.
+            if let Some(attributed) = data.get("turn").and_then(Value::as_i64) {
+                if attributed != turn_number {
+                    return Ok(Capture::Unsupported(Reason::TurnAttribution));
+                }
+            } else if owner != Some(turn) {
+                return Ok(Capture::Unsupported(Reason::TurnAttribution));
+            }
+        }
+        // Bookkeeping may be omitted entirely, so requiring a payload from it
+        // would hold a turn the bridge could have safely projected less of.
         if BOOKKEEPING.contains(&record.kind.as_str()) {
             continue;
         }
@@ -451,18 +466,9 @@ pub fn decode_after(
             // deliberately dropped, is held instead of silently narrowed.
             return Ok(Capture::Unsupported(Reason::UnknownEventType));
         }
-        let Some(data) = record.data.as_ref() else {
+        let Some(data) = data else {
             return Ok(Capture::Unsupported(Reason::TurnIdentity));
         };
-        // Only records that carry a turn field can disagree with the turn-end
-        // turn. A message's ownership comes from the enclosing `turn/start`.
-        if let Some(attributed) = data.get("turn").and_then(Value::as_i64) {
-            if attributed != turn_number {
-                return Ok(Capture::Unsupported(Reason::TurnAttribution));
-            }
-        } else if owner != Some(turn) {
-            return Ok(Capture::Unsupported(Reason::TurnAttribution));
-        }
         let human_message = record.kind == "user/message" && is_human_message(record);
         if human_message {
             human = true;

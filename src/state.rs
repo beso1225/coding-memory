@@ -260,7 +260,7 @@ impl State {
         Ok(())
     }
     /// Pending hints for one runtime store, oldest first.
-    pub fn pending_hints(&mut self, store: &str) -> Result<Vec<(RunKey, String)>> {
+    pub fn pending_hints(&self, store: &str) -> Result<Vec<(RunKey, String)>> {
         let mut stmt = self.db.prepare(
             "SELECT store,thread,turn,cwd FROM pending_hints WHERE store=?1 ORDER BY at,thread,turn",
         )?;

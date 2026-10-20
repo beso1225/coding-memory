@@ -975,6 +975,20 @@ fn broken_sequences_identities_and_ownership_are_rejected() {
         decode(&ambiguous, 1),
         Capture::Unsupported(Reason::TurnAttribution)
     ));
+
+    // Attribution applies to bookkeeping too: a record that names another turn
+    // proves the window is misattributed, even though the record itself would be
+    // skipped. Missing payloads remain harmless (see the next test).
+    let misattributed = log(vec![
+        turn_start(3, 1),
+        human(4, 1, 1),
+        record(5, "job/registered", json!({"turn":2,"job":"j"})),
+        turn_end(6, 1, json!({"kind":"completed"})),
+    ]);
+    assert!(matches!(
+        decode(&misattributed, 1),
+        Capture::Unsupported(Reason::TurnAttribution)
+    ));
 }
 
 #[test]
