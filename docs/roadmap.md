@@ -3,6 +3,9 @@
 Status: agreed planning baseline, approved on 2026-10-13 (Asia/Tokyo).
 The three milestones and seven initial issues below were registered on
 2026-10-13 (Asia/Tokyo). All seven issues belong to the Codex CLI MVP milestone.
+Later issues are registered only once their milestone's prerequisites are known;
+[#56](https://github.com/beso1225/coding-memory/issues/56) (DSH capture) was
+registered on 2026-10-20 (Asia/Tokyo) in the DSH and Additional Backends milestone.
 
 See [design.md](design.md) for requirements and
 [runtime-research.md](runtime-research.md) for evidence and unverified contracts.
@@ -264,6 +267,43 @@ Dependencies: [#1](https://github.com/beso1225/coding-memory/issues/1),
 [#5](https://github.com/beso1225/coding-memory/issues/5), and
 [#6](https://github.com/beso1225/coding-memory/issues/6).
 
+### [#56](https://github.com/beso1225/coding-memory/issues/56). Implement DeepSeek Harness capture as a first-class evidence source
+
+Registered on 2026-10-20 (Asia/Tokyo) in the DSH and Additional Backends
+milestone. Codex is the only capture source: every ingestion command requires
+`--codex-home`, while OpenCode and DSH can only read memory through the
+harness-agnostic MCP server from #51. This issue adds DSH as a producer without
+changing extraction, consolidation or retrieval, and leaves OpenCode capture out
+of scope.
+
+Acceptance criteria:
+
+- An isolated synthetic experiment at a pinned DSH revision establishes the
+  completion boundary (`turn/end` plus `session/flush` versus reconciliation),
+  crash/resume, fork and subagent behavior, and supported `TurnEndReason` kinds.
+- Capture holds subagent children, inherited fork prefixes, turns without a human
+  `source.kind == 'user'` message, unknown end reasons, and event vocabularies
+  that would change interpretation, with a stable metadata-only reason.
+- Project attribution and the enablement epoch follow `SessionHeader.cwd` and the
+  existing `register` baseline; no implicit historical backfill is added.
+- Engine-owned sessions are excluded, and held runs can be retried without
+  recapturing successful runs.
+- Evidence from DSH keeps the existing envelope, so extraction, consolidation,
+  review and MCP retrieval need no DSH-specific branch.
+- The bridge, commands, supported revision range and unsupported cases are
+  documented; `pkf run check` passes.
+
+Dependencies: #1, #3, #6, and #51.
+
+Progress: implemented in PR #57 on 2026-10-20 (Asia/Tokyo); the issue closes on
+merge. The
+[capture experiment](dsh-capture-experiment.md) records the verified turn
+boundaries, the bridge plugin, the engine-side exclusions and held reasons, and
+the credentialed measurements: plain and tool-using turns, compaction, and
+resume (including compaction in a resumed process). Deliberate limits remain
+documented there (fork/subagent capture excluded; a `/compact` issued long
+after a turn is appended after that turn).
+
 ## Validation strategy
 
 Issue #7 progress: [background operation](worker.md) implements foreground cycles,
@@ -282,7 +322,7 @@ Separate deterministic tests from provider/runtime experiments:
   scope filters, schema/locator checks, Markdown serialization, retention
   references, and interrupted file application.
 - Runtime: installed CLI/App event behavior, history readiness, generation
-  isolation, MCP invocation, launch environment, and later DSH persistence.
+  isolation, MCP invocation, launch environment, and DSH persistence (#56).
 - Knowledge quality: representative supported/unsupported/no-value evidence,
   preserved conditions, review decisions, expected retrieval, and useful links.
 
@@ -301,6 +341,8 @@ held work. Revalidate bundled versions when the App changes.
 For DSH, prefer a small host bridge over prematurely reimplementing its compressed,
 versioned persistence. Validate terminal events, flush/readiness, boundaries,
 fork/restart behavior, and independent generation configuration.
+[#56](https://github.com/beso1225/coding-memory/issues/56) tracks that work against
+the contract in [runtime-research.md](runtime-research.md#deepseek-harness).
 
 Compare additional generation backends against the same evidence and quality
 fixtures. Ollama Cloud capability must be checked independently of Local. Local

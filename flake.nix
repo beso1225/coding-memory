@@ -53,6 +53,8 @@
               pkgs.pkl
               pkgs.actionlint
               pkgs.python3
+              # The DSH capture bridge and its fixture tests run under Node.
+              pkgs.nodejs
               pkfire.packages.${system}.default
             ];
 

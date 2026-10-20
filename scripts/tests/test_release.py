@@ -55,6 +55,19 @@ class ReleaseTests(unittest.TestCase):
                 smoke.extract(archive, root / "unpacked")
             self.assertFalse((root / "outside").exists())
 
+    def test_distribution_ships_the_dsh_capture_bridge(self):
+        # The bridge is a runtime dependency mounted by absolute path, so a
+        # release archive without it makes DSH capture unusable.
+        import tomllib
+        dist = tomllib.loads((Path(__file__).resolve().parents[2] / "dist-workspace.toml").read_text())
+        includes = dist["dist"]["include"]
+        # The file itself, not its directory: cargo-dist 0.33.0 did not expand a
+        # directory entry into the archive, which the CI smoke check caught.
+        self.assertIn("bridge/dsh-capture/index.mjs", includes)
+        smoke = (Path(__file__).resolve().parents[1] / "release_smoke.py").read_text()
+        # cargo-dist flattens includes to the archive root.
+        self.assertIn('bridge = payload / "index.mjs"', smoke)
+
     def test_publication_refuses_dry_run_or_mismatched_commit_without_api_calls(self):
         release = module("release")
         with tempfile.TemporaryDirectory() as directory:

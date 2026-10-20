@@ -56,9 +56,17 @@ local workflowLint: Task = new {
 
 local captureFixtures: Task = new {
   name = "capture-fixtures"
-  description = "Check observed Codex capture contracts without runtime or model calls"
+  description = "Check observed capture contracts without runtime or model calls"
   cmd =
-    "python3 -m unittest discover -s experiments/codex_capture -p 'test_*.py' && python3 -m unittest discover -s experiments/codex_generation -p 'test_*.py' && python3 -m unittest discover -s experiments/worker -p 'test_*.py'"
+    "python3 -m unittest discover -s experiments/codex_capture -p 'test_*.py' && python3 -m unittest discover -s experiments/codex_generation -p 'test_*.py' && python3 -m unittest discover -s experiments/worker -p 'test_*.py' && python3 -m unittest discover -s experiments/dsh_capture -p 'test_*.py'"
+  cache = false
+}
+
+local bridgeCheck: Task = new {
+  name = "bridge-check"
+  description = "Syntax-check the DeepSeek Harness capture bridge"
+  cmd =
+    "node --check bridge/dsh-capture/index.mjs && node --input-type=module -e \"await import('./bridge/dsh-capture/index.mjs')\""
   cache = false
 }
 
@@ -79,7 +87,7 @@ local releaseBuild: Task = new {
 local check: Task = new {
   name = "check"
   description = "Run formatting, lint, test, build, workflow, and capture fixture checks"
-  deps { fmtCheck; lint; test; build; workflowLint; captureFixtures; releaseTests }
+  deps { fmtCheck; lint; test; build; workflowLint; captureFixtures; bridgeCheck; releaseTests }
   cache = false
 }
 
@@ -100,6 +108,7 @@ tasks {
   build
   workflowLint
   captureFixtures
+  bridgeCheck
   releaseTests
   releaseBuild
   check

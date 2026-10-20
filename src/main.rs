@@ -6,6 +6,7 @@ use coding_memory::{
     evidence, extraction_worker,
     generation::{self, CodexExec},
     ingestion,
+    ingestion::DshOperation,
     state::State,
 };
 use coding_memory::{
@@ -254,6 +255,14 @@ enum Commands {
     Register(Runtime),
     Reconcile(Runtime),
     Capture(Runtime),
+    /// DeepSeek Harness capture through a bridge-produced session projection.
+    Dsh {
+        /// DSH home whose `sessions` root identifies this runtime store.
+        #[arg(long)]
+        dsh_home: PathBuf,
+        #[command(subcommand)]
+        action: DshAction,
+    },
     /// Consume a bounded legacy notification argument or Stop/Interrupt JSON stdin.
     Enqueue {
         #[arg(long)]
@@ -274,6 +283,78 @@ enum Commands {
     Evidence {
         digest: String,
     },
+}
+#[derive(Subcommand)]
+enum DshAction {
+    /// Record a bounded turn-end signal as a queued capture hint.
+    Enqueue {
+        /// Bridge `turn-end` signal JSON; defaults to bounded stdin.
+        #[arg(long)]
+        event: Option<String>,
+    },
+    /// Read a bounded session projection and capture one run.
+    Capture {
+        /// Projection file for one session, as written by the bridge.
+        #[arg(long)]
+        session: PathBuf,
+        /// Registered project directory the session recorded.
+        #[arg(long)]
+        project: PathBuf,
+        /// Exact turn number to capture; defaults to the next ready run.
+        #[arg(long)]
+        turn: Option<u64>,
+        /// Session identity, used to claim the run before reading the
+        /// projection. The bridge always passes it; the document is still
+        /// checked against it.
+        #[arg(long)]
+        thread: Option<String>,
+    },
+    /// Queue completed human turns of a session for capture.
+    Reconcile {
+        #[arg(long)]
+        session: PathBuf,
+        #[arg(long)]
+        project: PathBuf,
+    },
+    /// Record the enablement baseline of a session projection.
+    Register {
+        #[arg(long)]
+        session: PathBuf,
+        #[arg(long)]
+        project: PathBuf,
+    },
+    /// Mark this DSH store as engine-owned before an independent generation
+    /// runtime writes into it.
+    OwnStore,
+    /// Hold a queued run whose own projection exceeds the bridge's bound.
+    HoldOverLimit {
+        #[arg(long)]
+        thread: String,
+        #[arg(long)]
+        turn: u64,
+    },
+}
+impl DshAction {
+    fn into_operation(self) -> DshOperation {
+        match self {
+            Self::Enqueue { event } => DshOperation::Enqueue { signal: event },
+            Self::Capture {
+                session,
+                project,
+                turn,
+                thread,
+            } => DshOperation::Capture {
+                session,
+                project,
+                turn,
+                thread,
+            },
+            Self::Reconcile { session, project } => DshOperation::Reconcile { session, project },
+            Self::Register { session, project } => DshOperation::Register { session, project },
+            Self::OwnStore => DshOperation::OwnStore,
+            Self::HoldOverLimit { thread, turn } => DshOperation::HoldOverLimit { thread, turn },
+        }
+    }
 }
 #[derive(Clone, clap::ValueEnum)]
 enum ExternalDecision {
@@ -593,6 +674,18 @@ async fn main() -> Result<()> {
             serde_json::to_string_pretty(&evidence::load(&root, &digest)?)?
         ),
         Commands::OwnStore { codex_home } => state.own_store(&ingestion::store_id(&codex_home)?)?,
+        Commands::Dsh { dsh_home, action } => {
+            let store = ingestion::dsh_store_id(&dsh_home)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&ingestion::dsh(
+                    &mut state,
+                    &store,
+                    &root,
+                    action.into_operation(),
+                )?)?
+            );
+        }
         Commands::Retry {
             store,
             thread,

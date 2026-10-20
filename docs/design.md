@@ -353,6 +353,9 @@ policy is configurable and can be disabled. Retention is based on references,
 not merely on whether an associated job has finished.
 
 Deferred work includes manual-edit protection, failed/interrupted-run extraction,
-DSH capture, additional generation backends, automated code/test reexecution,
-server-side query translation, semantic search, graph traversal, and Pi capture.
+additional generation backends, automated code/test reexecution, server-side
+query translation, semantic search, graph traversal, and Pi capture. DSH capture
+is implemented through the bridge described in
+[DeepSeek Harness capture](dsh-capture-experiment.md); fork/subagent capture
+remains deferred.
 Automatic vault commit/push and multi-machine writers are outside the MVP.

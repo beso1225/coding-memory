@@ -54,6 +54,120 @@ the same predicate for live delivery, reconciliation, and claims. The library al
 supports excluding individual Run keys before generation. Changing observer or
 runtime version does not create a new run identity.
 
+## DeepSeek Harness
+
+DSH capture runs through a bridge plugin rather than a history decoder. The
+bridge (`bridge/dsh-capture/index.mjs`, installed as `index.mjs` beside the
+binary) is an out-of-tree Cordis plugin mounted with a `--patch` overlay; it
+reads sessions through DSH's own `sessionQuery` and writes a bounded
+projection, and the engine decides everything else.
+
+Mount the plugin with a DSH overlay. The release archive places `index.mjs` at
+the version-directory root:
+
+```yaml
+# coding-memory-capture.yml
+- insert:
+    - id: coding-memory-capture
+      name: '/absolute/path/to/coding-memory/index.mjs'
+      config:
+        executable: '/absolute/path/to/coding-memory'
+        stateDir: '/absolute/engine-state'
+        dshHome: '/absolute/dsh-home'
+        timeoutMs: 30000
+```
+
+```sh
+dsh <profile> --patch /absolute/coding-memory-capture.yml
+```
+
+All three paths must be absolute; the plugin validates them at startup. An
+installed bridge is
+`$HOME/.local/share/coding-memory/versions/<version>/index.mjs`. Repoint the
+overlay when the version directory changes, or keep a stable symlink to the
+current bridge. The plugin has been verified against DSH `0.2.1-rc.2` (logical
+session format v4). The adapter accepts logical format versions up to 4 and
+holds a newer format as `unsupported_history_version`; revalidate capture after
+a DSH upgrade.
+
+The first turn of an unregistered project is deferred, and the plugin publishes
+`<state-dir>/dsh/projections/<session>.<turn>.json`. Register and reconcile that
+snapshot once; later turns are captured automatically:
+
+```sh
+coding-memory --state-dir /absolute/engine-state dsh --dsh-home /absolute/dsh-home \
+  register --session <state-dir>/dsh/projections/<session>.<turn>.json --project /absolute/project
+coding-memory --state-dir /absolute/engine-state dsh --dsh-home /absolute/dsh-home \
+  reconcile --session <state-dir>/dsh/projections/<session>.<turn>.json --project /absolute/project
+coding-memory --state-dir /absolute/engine-state dsh --dsh-home /absolute/dsh-home \
+  capture --session /absolute/projection.json --project /absolute/project [--turn N] [--thread SESSION]
+coding-memory --state-dir /absolute/engine-state dsh --dsh-home /absolute/dsh-home \
+  own-store
+```
+
+`own-store` marks the whole DSH store as engine-owned, exactly like Codex
+`own-store`; use it before an independent generation runtime writes into that
+home. If `reconcile` queues a turn that ended after the enablement boundary but
+before registration committed, drive its capture explicitly with `capture
+--session <that projection> --turn N`.
+
+The bridge retries a transient `enqueue` failure (the runtime does not replay
+`turn/end`, and duplicate enqueue is idempotent) and retries the first deferred
+projection publication, because `register` has no other source for it.
+
+`enqueue` is what the bridge calls on `turn/end`; it accepts a bounded
+`{"kind":"turn-end","session":...,"turn":N,"cwd":...}` hint from stdin or
+`--event`. The hint names the run: capture publishes only a run a live runtime
+hinted (`no_capture_hint` otherwise); it claims only the session its projection
+describes, pinned to the requested turn when `--turn` is given. A hint recorded
+before its project is registered is kept and resolved by `reconcile` against
+that hint's own session. `reconcile` queues only turns named by a live hint; it
+never invents a run. Because the bridge publishes one projection per turn, a
+hint absent from the supplied projection stays pending for the reconcile of the
+projection that contains it; a turn that is present but has no direct human
+message is resolved as `excluded_inherited_or_nonhuman`.
+A projection that never records the turn's end is retried by the bridge with a
+fresh snapshot, not before the engine's deferral has elapsed, up to the engine's
+60-attempt limit. DSH capture uses a 60-second lease, and a failed capture
+invocation is retried at the ten-second no-ready interval with the same
+eight-attempt budget (about 80 seconds), so a process that dies after claiming is
+reclaimable inside the bridge's retry window. A failed session read, stale
+oversized snapshot, or transient invocation failure uses a separate small budget
+and cannot consume one of those 60 claims; the retry timers are referenced so a
+short-lived harness does not drop an already-queued run. A report that no run was ready
+(`no_ready_run`) is not an engine claim, so it consumes only the transient
+budget. A turn whose own records exceed the 16 MiB projection bound is a
+permanent over-limit outcome: the bridge asks the engine to hold that run as
+`history_over_limit` instead of retrying the read. The engine holds a pending
+run as `history_readiness_exhausted` on attempt 60,
+as it does for Codex. If the process is killed before either happens, capture
+the run explicitly from a fresh projection (`capture --thread <session> --turn N`); `reconcile`
+only processes pending hints. `retry STORE THREAD TURN` requeues a held DSH run;
+the bridge keeps that turn's projection instead of deleting it, so drive the
+retry with `capture --session <retained file> --thread <session> --turn N` (omit
+`--turn` to select the session's next queued run). Delete retained held snapshots
+under `<state-dir>/dsh/projections/` once inspected. Pending hints older than 30
+days are dropped when `reconcile` runs, so a turn that never appears in a
+projection cannot accumulate forever.
+Re-running `register` for a registered
+project reports `already_registered` and baselines nothing. `/compact` and its
+durable bracket are harness bookkeeping and do not reach evidence. `--dsh-home`
+selects the runtime store. Its identity is runtime-qualified, so even a directory
+that also serves as a Codex home remains a distinct store: neither runtime can
+lease or exclude the other's runs.
+
+Evidence items use the same envelope as Codex — a top-level `id`, the
+extraction vocabulary (`userMessage`, `agentMessage`, `toolCall`,
+`commandExecution`), and a `status` for tool results — with the native DSH type
+kept in `ds_type`, so extraction can cite and verify them.
+
+Registration, the enablement epoch, exclusions, engine-owned stores, dedup,
+size bounds, evidence immutability, `retry`, and held-reason reporting behave as
+for Codex, and `status` lists DSH runs beside Codex runs. The verified contract,
+exclusions, and current limitations are in
+[DeepSeek Harness capture](dsh-capture-experiment.md). OpenCode capture is not
+implemented.
+
 ## Identity and boundaries
 
 Project identity is a SHA-256 of the canonical Git common-directory path. Linked
@@ -118,8 +232,10 @@ there is no command that resets this durable database. Unknown schema versions f
 | `recorded` | Failed/interrupted Run retained with evidence, ineligible for automatic extraction |
 | `held` | Missing/unsupported/over-limit/ambiguous history, exclusion, or reader failure |
 
-Claims are scoped to the selected runtime store. Their lease is one hour; an expired
-claim can be reclaimed after restart, and stale workers cannot finalize it. Pending
+Claims are scoped to the selected runtime store. Codex capture leases are one hour;
+DSH capture uses 60 seconds so a crashed attempt becomes claimable again within the
+bridge's retry window. An expired claim can be reclaimed after restart, and stale
+workers cannot finalize it. Pending
 history is rescheduled after ten seconds; after 60 attempts it is held as
 `history_readiness_exhausted`. These are operational defaults, not measured latency
 or throughput guarantees. `retry STORE THREAD TURN` deliberately retries a held run

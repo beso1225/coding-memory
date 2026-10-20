@@ -166,10 +166,12 @@ Sources: [session query](https://github.com/shiguredo/deepseek-harness/blob/975e
 [format version](https://github.com/shiguredo/deepseek-harness/blob/975e4aff0c6a3c90af42005eef557b8720dd0a00/packages/core/session/src/types.ts#L89),
 and [persistence provider](https://github.com/shiguredo/deepseek-harness/blob/975e4aff0c6a3c90af42005eef557b8720dd0a00/packages/session/session-persistence-jsonl/README.md).
 
-A thin TypeScript bridge to logical history is the leading future option, compared
-with implementing compression, migration, and versioned decoding in Rust. This
-is a proposal, not a completed bridge. Evaluate flush barriers, retry/reconciliation,
-fork prefixes, synthetic interrupted endings, and root-versus-child capture.
+A thin TypeScript bridge to logical history was chosen over implementing
+compression, migration, and versioned decoding in Rust, and is now implemented in
+[DeepSeek Harness capture](dsh-capture-experiment.md). Flush barriers,
+retry/reconciliation, the enabled boundary, and resume were measured; fork and
+subagent capture remain deferred, and a DSH upgrade must revalidate the event
+vocabulary.
 
 Tool-call/result events provide recorded arguments, model-visible results, and
 metadata, but not a blanket guarantee of complete tool stdout or attachments.
