@@ -89,8 +89,6 @@
    "type": "user/message",
    "time": 1792454157007,
    "data": {
-    "turn": 1,
-    "step": 1,
     "id": "msg-7",
     "role": "user",
     "content": [
@@ -109,8 +107,6 @@
    "type": "user/message",
    "time": 1792454157008,
    "data": {
-    "turn": 1,
-    "step": 1,
     "id": "msg-8",
     "role": "user",
     "content": [
@@ -129,8 +125,6 @@
    "type": "user/message",
    "time": 1792454157009,
    "data": {
-    "turn": 1,
-    "step": 1,
     "id": "msg-9",
     "role": "user",
     "content": [
@@ -173,9 +167,7 @@
     "step": 1,
     "callId": "call-1",
     "name": "read",
-    "arguments": {
-     "path": "README.md"
-    }
+    "arguments": "{\"path\":\"README.md\"}"
    }
   },
   {
@@ -185,9 +177,6 @@
    "data": {
     "turn": 1,
     "step": 1,
-    "sourceEventSeqs": [
-     12
-    ],
     "message": {
      "id": "tool-1",
      "role": "tool",
@@ -199,7 +188,10 @@
       }
      ]
     }
-   }
+   },
+   "sourceEventSeqs": [
+    12
+   ]
   },
   {
    "seq": 14,
@@ -235,7 +227,8 @@
        ]
       }
      }
-    }
+    },
+    "stream": []
    }
   },
   {

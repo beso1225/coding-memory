@@ -317,6 +317,9 @@ pub enum DshAction {
         #[arg(long)]
         project: PathBuf,
     },
+    /// Mark this DSH store as engine-owned before an independent generation
+    /// runtime writes into it.
+    OwnStore,
 }
 impl DshAction {
     fn into_operation(self) -> DshOperation {
@@ -333,6 +336,7 @@ impl DshAction {
             },
             Self::Reconcile { session, project } => DshOperation::Reconcile { session, project },
             Self::Register { session, project } => DshOperation::Register { session, project },
+            Self::OwnStore => DshOperation::OwnStore,
         }
     }
 }

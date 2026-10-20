@@ -153,6 +153,115 @@ fn completed_turn_becomes_evidence_scoped_to_its_turn() {
 }
 
 #[test]
+fn developer_messages_use_the_nested_identity() {
+    // DSH nests the message identity (`data.message.id`); a top-level id is not
+    // part of the developer/message payload. Reading the wrong path held every
+    // turn that changed the tool registry.
+    let value = log(vec![
+        turn_start(3, 1),
+        human(4, 1, 1),
+        record(
+            5,
+            "developer/message",
+            json!({"turn":1,"step":1,"message":{
+                "id":"dev-1","role":"developer",
+                "content":[{"type":"text","text":"tools added"}],
+                "source":{"kind":"developer"}}}),
+        ),
+        turn_end(6, 1, json!({"kind": "completed"})),
+    ]);
+    let Capture::Ready(bundle) = decode(&value, 1) else {
+        panic!("a developer message must not hold the turn");
+    };
+    let item = bundle
+        .items
+        .iter()
+        .find(|item| item["ds_type"] == json!("developer/message"))
+        .expect("developer message becomes an item");
+    assert_eq!(item["id"], json!("dev-1@5"));
+    assert_eq!(item["type"], json!("hookPrompt"));
+}
+
+#[test]
+fn assistant_stream_and_reasoning_blocks_are_not_evidence() {
+    let value = log(vec![
+        turn_start(3, 1),
+        human(4, 1, 1),
+        record(
+            5,
+            "assistant/message",
+            json!({"turn":1,"step":1,
+                "message":{"id":"assistant-1","role":"assistant","content":[
+                    {"type":"reasoning","text":"hidden reasoning"},
+                    {"type":"text","text":"answer"}],
+                    "source":{"kind":"model","provider":"p","model":"m"}},
+                "stream":[{"type":"reasoning-chunks","time0":1,"index":0,"dt":[1],"texts":["hidden reasoning"]}],
+                "usage":{"inputTokens":1,"outputTokens":2}}),
+        ),
+        turn_end(6, 1, json!({"kind": "completed"})),
+    ]);
+    let Capture::Ready(bundle) = decode(&value, 1) else {
+        panic!("expected a ready capture");
+    };
+    let item = bundle
+        .items
+        .iter()
+        .find(|item| item["ds_type"] == json!("assistant/message"))
+        .expect("assistant message becomes an item");
+    assert!(
+        item["data"].get("stream").is_none(),
+        "the timed model stream never becomes evidence"
+    );
+    let content = item["data"]["message"]["content"].as_array().unwrap();
+    assert_eq!(content.len(), 1);
+    assert_eq!(content[0]["type"], json!("text"));
+    assert_eq!(
+        item["data"]["usage"]["outputTokens"],
+        json!(2),
+        "token accounting is retained"
+    );
+}
+
+#[test]
+fn a_fork_lineage_header_is_excluded_not_rejected() {
+    // The bridge emits `parentSession` whenever DSH records lineage. The header
+    // must deserialize, and the session is excluded like every other fork.
+    let mut value = two_turn_log();
+    value["header"]["parentSession"] = json!("parent-session");
+    let bytes = serde_json::to_vec(&value).unwrap();
+    dsh::Projection::parse(&bytes).expect("a lineage header is a valid projection");
+    assert!(matches!(decode(&value, 1), Capture::Excluded));
+}
+
+#[test]
+fn the_committed_fixture_decodes_with_the_engine() {
+    // The fixture is the observed contract; the engine must accept it rather
+    // than only the fixture's own assertions doing so.
+    let value: Value = serde_json::from_str(include_str!(
+        "../experiments/dsh_capture/fixtures/session-v4.json"
+    ))
+    .expect("fixture JSON");
+    let Ok(Capture::Ready(bundle)) = dsh::decode(&value, "store", "/synthetic/project", 1, 0)
+    else {
+        panic!("the committed fixture decodes to evidence");
+    };
+    let types: Vec<_> = bundle
+        .items
+        .iter()
+        .map(|item| item["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        types,
+        vec![
+            "userMessage",
+            "toolCall",
+            "commandExecution",
+            "agentMessage"
+        ]
+    );
+}
+
+#[test]
 fn a_bounded_turn_window_without_earlier_records_decodes() {
     // The bridge's bounded projection drops every earlier turn, so the range
     // starts at the captured turn's own native `seq` rather than zero. The
@@ -316,7 +425,7 @@ fn a_capture_after_a_successful_compaction_still_publishes_the_turn() {
     ]);
     // The checkpoint carries the replacement op and has no turn of its own.
     let mut value = value;
-    value["records"][9]["surfaceOp"] = json!({"op":"replace","startSeq":4,"endSeq":4});
+    value["records"][10]["surfaceOp"] = json!({"op":"replace","startSeq":4,"endSeq":4});
     let Capture::Ready(bundle) = decode(&value, 1) else {
         panic!("the turn is captured from the compacted projection");
     };
@@ -1979,7 +2088,9 @@ mod ingestion {
             None,
         )
         .await?;
-        state.own_store(&store)?;
+        let owned =
+            ingestion::dsh(&mut state, &store, &root, &DshOperation::OwnStore, None).await?;
+        assert_eq!(owned.action, "own-store");
         let signal = json!({"kind":"turn-end","session":"session-x","turn":1,"cwd":cwd});
         let report = ingestion::dsh(
             &mut state,
@@ -2006,6 +2117,238 @@ mod ingestion {
                 0
             )?,
             Enqueue::Excluded
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn registration_keeps_a_turn_that_ends_after_the_boundary() -> anyhow::Result<()> {
+        // The baseline is "ended at or before enablement", not "present during
+        // the scan". Excluding the latter would discard a valid hinted run.
+        let (data, dsh) = runtime();
+        let (repo, _) = project(data.path());
+        let root = data.path().join("state");
+        std::fs::create_dir_all(&root)?;
+        let mut state = State::open(&root.join("state.sqlite"))?;
+        let store = ingestion::dsh_store_id(dsh.path())?;
+        let cwd = repo.to_str().unwrap().to_string();
+        let time = (ingestion::now() + 3600) * 1000;
+        let projection = data.path().join("session.json");
+        let document = json!({"schema":1,"header":{
+        "type":"session","version":4,"id":"session-x","createdAt":time,"cwd":cwd,"isSeeded":false},
+        "records":[
+            {"seq":0,"type":"turn/start","time":time,"data":{"turn":1}},
+            {"seq":1,"type":"user/message","time":time+1,"data":{
+                "id":"m1","role":"user","content":[{"type":"text","text":"work"}],
+                "source":{"kind":"user"}}},
+            {"seq":2,"type":"turn/end","time":time+2,"data":{"turn":1,"reason":{"kind":"completed"}}},
+        ]});
+        std::fs::write(&projection, serde_json::to_vec(&document)?)?;
+        let signal = json!({"kind":"turn-end","session":"session-x","turn":1,"cwd":cwd.clone()});
+        let hinted = ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Enqueue,
+            Some(signal.to_string()),
+        )
+        .await?;
+        assert_eq!(hinted.state, Some("deferred"));
+        let registered = ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Register {
+                session: projection.clone(),
+                project: repo.clone(),
+            },
+            None,
+        )
+        .await?;
+        assert_eq!(
+            registered.baseline,
+            Some(0),
+            "a turn ending after the boundary is not the baseline"
+        );
+        let reconciled = ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Reconcile {
+                session: projection,
+                project: repo,
+            },
+            None,
+        )
+        .await?;
+        assert_eq!(
+            reconciled.queued,
+            Some(1),
+            "the post-enablement hinted turn is queued"
+        );
+        assert!(state.pending_hints(&store)?.is_empty());
+        Ok(())
+    }
+
+    /// A one-turn projection whose start/end are exact millisecond instants.
+    fn timed_projection(path: &Path, cwd: &str, turn: u64, start_ms: i64, end_ms: i64) {
+        let document = json!({"schema":1,"header":{
+        "type":"session","version":4,"id":"session-x","createdAt":start_ms,"cwd":cwd,"isSeeded":false},
+        "records":[
+            {"seq":0,"type":"turn/start","time":start_ms,"data":{"turn":turn}},
+            {"seq":1,"type":"user/message","time":start_ms+1,"data":{
+                "id":format!("m{turn}"),"role":"user",
+                "content":[{"type":"text","text":"work"}],"source":{"kind":"user"}}},
+            {"seq":2,"type":"turn/end","time":end_ms,"data":{"turn":turn,"reason":{"kind":"completed"}}},
+        ]});
+        std::fs::write(path, serde_json::to_vec(&document).unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn capture_compares_the_exact_registration_instant() -> anyhow::Result<()> {
+        // The whole-second epoch would admit a turn that ended earlier in the
+        // same second the project was enabled.
+        let (data, dsh) = runtime();
+        let (repo, id) = project(data.path());
+        let root = data.path().join("state");
+        std::fs::create_dir_all(&root)?;
+        let mut state = State::open(&root.join("state.sqlite"))?;
+        let store = ingestion::dsh_store_id(dsh.path())?;
+        let cwd = repo.to_str().unwrap().to_string();
+        let baseline = data.path().join("baseline.json");
+        session(&baseline, &cwd, 0);
+        ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Register {
+                session: baseline,
+                project: repo.clone(),
+            },
+            None,
+        )
+        .await?;
+        let enabled_ms = state
+            .project_epoch_ms(&id)?
+            .expect("registration records the exact instant");
+
+        let before = data.path().join("before.json");
+        timed_projection(&before, &cwd, 1, enabled_ms - 1000, enabled_ms - 1);
+        let after = data.path().join("after.json");
+        timed_projection(&after, &cwd, 2, enabled_ms - 1000, enabled_ms + 1);
+        for turn in [1, 2] {
+            let signal = json!({"kind":"turn-end","session":"session-x","turn":turn,"cwd":cwd});
+            ingestion::dsh(
+                &mut state,
+                &store,
+                &root,
+                &DshOperation::Enqueue,
+                Some(signal.to_string()),
+            )
+            .await?;
+        }
+        let held = ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Capture {
+                session: before,
+                project: repo.clone(),
+                turn: Some(1),
+            },
+            None,
+        )
+        .await?;
+        assert_eq!(held.state, Some("held"));
+        assert_eq!(held.reason.as_deref(), Some("before_enablement"));
+        let ready = ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Capture {
+                session: after,
+                project: repo,
+                turn: Some(2),
+            },
+            None,
+        )
+        .await?;
+        assert_eq!(
+            ready.state,
+            Some("ready"),
+            "a turn ending after the exact instant is captured"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_oversized_turn_is_held_without_publishing_partial_evidence() -> anyhow::Result<()> {
+        let (data, dsh) = runtime();
+        let (repo, _) = project(data.path());
+        let root = data.path().join("state");
+        std::fs::create_dir_all(&root)?;
+        let mut state = State::open(&root.join("state.sqlite"))?;
+        let store = ingestion::dsh_store_id(dsh.path())?;
+        let cwd = repo.to_str().unwrap().to_string();
+        let baseline = data.path().join("baseline.json");
+        session(&baseline, &cwd, 0);
+        ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Register {
+                session: baseline,
+                project: repo.clone(),
+            },
+            None,
+        )
+        .await?;
+        let signal = json!({"kind":"turn-end","session":"session-x","turn":1,"cwd":cwd.clone()});
+        ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Enqueue,
+            Some(signal.to_string()),
+        )
+        .await?;
+        // The evidence item alone exceeds the engine's 8 MiB bundle bound while
+        // the projection stays inside the 16 MiB artifact bound.
+        let huge = "x".repeat(8 * 1024 * 1024 + 1024);
+        let time = (ingestion::now() + 5) * 1000;
+        let projection = data.path().join("huge.json");
+        let document = json!({"schema":1,"header":{
+        "type":"session","version":4,"id":"session-x","createdAt":time,"cwd":cwd,"isSeeded":false},
+        "records":[
+            {"seq":0,"type":"turn/start","time":time,"data":{"turn":1}},
+            {"seq":1,"type":"user/message","time":time+1,"data":{
+                "id":"m1","role":"user","content":[{"type":"text","text":"work"}],
+                "source":{"kind":"user"}}},
+            {"seq":2,"type":"tool/call","time":time+2,"data":{
+                "turn":1,"step":1,"callId":"c1","name":"read","arguments":"{}"}},
+            {"seq":3,"type":"tool/result","time":time+3,"data":{
+                "turn":1,"step":1,"message":{"id":"t1","role":"tool","toolCallId":"c1",
+                "content":[{"type":"text","text":huge}]}}},
+            {"seq":4,"type":"turn/end","time":time+4,"data":{"turn":1,"reason":{"kind":"completed"}}},
+        ]});
+        std::fs::write(&projection, serde_json::to_vec(&document)?)?;
+        let report = ingestion::dsh(
+            &mut state,
+            &store,
+            &root,
+            &DshOperation::Capture {
+                session: projection,
+                project: repo,
+                turn: Some(1),
+            },
+            None,
+        )
+        .await?;
+        assert_eq!(report.state, Some("held"));
+        assert_eq!(report.reason.as_deref(), Some("history_over_limit"));
+        assert!(
+            report.evidence.is_none(),
+            "no partial evidence is published"
         );
         Ok(())
     }

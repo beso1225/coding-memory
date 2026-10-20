@@ -127,8 +127,8 @@ impl Projection {
     /// `session/end-seed` is documented as the fork boundary, but a resumed
     /// process appends it too: observed on `agents.resume` with an untouched
     /// header (`isSeeded: false`). It is therefore a resume marker, not proof
-    /// of an inherited prefix. The inherited prefix, when one exists, is still
-    /// rejected by `inheritedEventCount` (see `inherited_cut`).
+    /// of an inherited prefix. A fork carries `isSeeded` or `parentSession`, and
+    /// the whole session is excluded rather than partially captured.
     pub fn resumed(&self) -> bool {
         self.records.iter().any(|r| r.kind == "session/end-seed")
     }
@@ -203,6 +203,11 @@ struct Header {
     origin: Option<String>,
     #[serde(default)]
     delegation_depth: Option<u64>,
+    /// Lineage of a fork or subagent. The bridge emits it whenever DSH records
+    /// one, so the header must accept it even though exclusion does not depend
+    /// on the value.
+    #[serde(default)]
+    parent_session: Option<String>,
 }
 
 /// Harness bookkeeping the bridge may omit without changing how an owned turn
@@ -558,7 +563,7 @@ pub fn decode_after(
             "type": item_type(record.kind.as_str()),
             "ds_type": record.kind,
             "status": item_status(record.kind.as_str(), data),
-            "data": data,
+            "data": evidence_data(record.kind.as_str(), data),
         });
         bytes += serde_json::to_vec(&item).map_or(usize::MAX, |v| v.len());
         items.push(item);
@@ -596,7 +601,7 @@ pub fn decode_after(
                 log.header.version.unwrap_or_default()
             ),
             "Injected context, job, and approval events are projected away".into(),
-            "Attachment bytes, provider-hidden reasoning, and replaced surface nodes are not captured"
+            "Attachment bytes, provider-hidden reasoning streams, reasoning blocks, and replaced surface nodes are not captured"
                 .into(),
         ],
     })))
@@ -643,12 +648,44 @@ fn item_status(kind: &str, data: &Value) -> Option<&'static str> {
         },
     )
 }
+/// The payload an evidence item keeps for one projected record.
+///
+/// An `assistant/message` carries the exact timed model stream, including
+/// reasoning chunks. The rendered message is the evidence; storing the stream
+/// would put hidden reasoning into extraction prompts and spend the size bound
+/// on bytes the coverage statement says are not captured. Reasoning content
+/// blocks are dropped for the same reason.
+fn evidence_data(kind: &str, data: &Value) -> Value {
+    let mut value = data.clone();
+    if kind == "assistant/message"
+        && let Some(object) = value.as_object_mut()
+    {
+        object.remove("stream");
+    }
+    let content = if kind == "user/message" {
+        value.get_mut("content")
+    } else {
+        value
+            .get_mut("message")
+            .and_then(|message| message.get_mut("content"))
+    };
+    if let Some(Value::Array(blocks)) = content {
+        blocks.retain(|block| block.get("type").and_then(Value::as_str) != Some("reasoning"));
+    }
+    value
+}
+
 fn projected_identity(record: &Record) -> Option<&str> {
     let data = record.data.as_ref()?;
     text(match record.kind.as_str() {
-        "user/message" | "developer/message" => data.get("id"),
+        "user/message" => data.get("id"),
+        // A developer message nests its identity like every other message; an
+        // outer `id` is accepted only as a fallback for older projections.
+        "developer/message" => data
+            .get("message")
+            .and_then(|m| m.get("id"))
+            .or_else(|| data.get("id")),
         "assistant/message" => data.get("message").and_then(|m| m.get("id")),
-        "assistant/attempt" => data.get("attemptId").or_else(|| data.get("id")),
         "tool/result" => data
             .get("message")
             .and_then(|m| m.get("toolCallId"))
@@ -714,6 +751,7 @@ fn exclude_header(header: &Header) -> bool {
     header.is_seeded == Some(true)
         || header.origin.as_deref() == Some("subagent")
         || header.delegation_depth.is_some_and(|d| d > 0)
+        || header.parent_session.is_some()
 }
 fn turn_of(record: &Record) -> Option<u64> {
     record

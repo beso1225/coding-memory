@@ -300,6 +300,8 @@ pub enum DshOperation {
         session: PathBuf,
         project: PathBuf,
     },
+    /// Mark this DSH store as engine-owned, like Codex `own-store`.
+    OwnStore,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -332,6 +334,18 @@ pub async fn dsh(
     event: Option<String>,
 ) -> Result<DshReport> {
     match operation {
+        DshOperation::OwnStore => {
+            state.own_store(store)?;
+            Ok(DshReport {
+                action: "own-store",
+                state: None,
+                run: None,
+                reason: None,
+                evidence: None,
+                queued: None,
+                baseline: None,
+            })
+        }
         DshOperation::Enqueue => {
             let mut bytes = Vec::new();
             if let Some(event) = event {
@@ -403,8 +417,15 @@ pub async fn dsh(
                 epoch,
                 enabled_ms,
             )?;
+            // Only turns that ended at or before the chosen instant are the
+            // baseline. A turn that ends while this scan runs is post-enablement
+            // work with a live hint, and excluding it would discard a valid run.
+            let mut baselined = 0;
             for run in &baseline {
-                state.exclude(&run.turn, "enablement_baseline")?;
+                if run.ended_at <= enabled_ms {
+                    state.exclude(&run.turn, "enablement_baseline")?;
+                    baselined += 1;
+                }
             }
             Ok(DshReport {
                 action: "register",
@@ -413,18 +434,19 @@ pub async fn dsh(
                 reason: None,
                 evidence: None,
                 queued: None,
-                baseline: Some(baseline.len()),
+                baseline: Some(baselined),
             })
         }
         DshOperation::Reconcile { session, project } => {
             let p = project::resolve(project)?;
-            let cwd = session_cwd(&p, session)?;
-            let epoch = state.project_epoch(&p.id)?;
-            let mut queued = 0;
             let projection = dsh::Projection::parse(&evidence::read_bounded(
                 session,
                 evidence::MAX_SOURCE_BYTES,
             )?)?;
+            // Attribution comes from this parsed document, not a second read.
+            let cwd = projection_cwd(&p, &projection)?;
+            let epoch = state.project_epoch(&p.id)?;
+            let mut queued = 0;
             // Only this projection's session: another session's hint must stay
             // pending until its own projection is reconciled, not be resolved
             // against this one.
@@ -544,8 +566,11 @@ pub async fn dsh(
                     });
                 }
             };
+            // Resolve attribution from the document already read and claimed:
+            // re-reading the path could observe a different snapshot (or a file
+            // the bridge just deleted) and turn a valid capture into a hold.
             let (p, cwd) = match project::resolve(project)
-                .and_then(|p| session_cwd(&p, session).map(|cwd| (p, cwd)))
+                .and_then(|p| projection_cwd(&p, &projection).map(|cwd| (p, cwd)))
             {
                 Ok(resolved) => resolved,
                 Err(_) => {
@@ -636,6 +661,19 @@ fn session_cwd(p: &crate::project::Project, session: &Path) -> Result<String> {
     let cwd = document["header"]["cwd"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Projection recorded no cwd"))?;
+    recorded_project(p, cwd)
+}
+
+/// The cwd of an already parsed projection, checked against the project.
+fn projection_cwd(p: &crate::project::Project, projection: &dsh::Projection) -> Result<String> {
+    let cwd = projection
+        .cwd()
+        .ok_or_else(|| anyhow::anyhow!("Projection recorded no cwd"))?;
+    recorded_project(p, cwd)
+}
+
+/// A recorded cwd must resolve to the registered project.
+fn recorded_project(p: &crate::project::Project, cwd: &str) -> Result<String> {
     let recorded = project::resolve(Path::new(cwd))?;
     ensure!(recorded.id == p.id, "project_mismatch");
     Ok(cwd.into())

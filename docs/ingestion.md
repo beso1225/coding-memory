@@ -60,16 +60,56 @@ DSH capture runs through a bridge plugin rather than a history decoder. The
 bridge (`bridge/dsh-capture/index.mjs`, installed as `index.mjs` beside the
 binary) is an out-of-tree Cordis plugin mounted with a `--patch` overlay; it
 reads sessions through DSH's own `sessionQuery` and writes a bounded
-projection, and the engine decides everything else:
+projection, and the engine decides everything else.
+
+Mount the plugin with a DSH overlay. The release archive places `index.mjs` at
+the version-directory root:
+
+```yaml
+# coding-memory-capture.yml
+- insert:
+    - id: coding-memory-capture
+      name: '/absolute/path/to/coding-memory/index.mjs'
+      config:
+        executable: '/absolute/path/to/coding-memory'
+        stateDir: '/absolute/engine-state'
+        dshHome: '/absolute/dsh-home'
+        timeoutMs: 30000
+```
+
+```sh
+dsh <profile> --patch /absolute/coding-memory-capture.yml
+```
+
+All three paths must be absolute; the plugin validates them at startup. An
+installed bridge is
+`$HOME/.local/share/coding-memory/versions/<version>/index.mjs`. Repoint the
+overlay when the version directory changes, or keep a stable symlink to the
+current bridge. The plugin has been verified against DSH `0.2.1-rc.2` (logical
+session format v4). The adapter accepts logical format versions up to 4 and
+holds a newer format as `unsupported_history_version`; revalidate capture after
+a DSH upgrade.
+
+The first turn of an unregistered project is deferred, and the plugin publishes
+`<state-dir>/dsh/projections/<session>.<turn>.json`. Register and reconcile that
+snapshot once; later turns are captured automatically:
 
 ```sh
 coding-memory --state-dir /absolute/engine-state dsh --dsh-home /absolute/dsh-home \
-  register --session /absolute/projection.json --project /absolute/project
+  register --session <state-dir>/dsh/projections/<session>.<turn>.json --project /absolute/project
 coding-memory --state-dir /absolute/engine-state dsh --dsh-home /absolute/dsh-home \
-  reconcile --session /absolute/projection.json --project /absolute/project
+  reconcile --session <state-dir>/dsh/projections/<session>.<turn>.json --project /absolute/project
 coding-memory --state-dir /absolute/engine-state dsh --dsh-home /absolute/dsh-home \
   capture --session /absolute/projection.json --project /absolute/project [--turn N]
+coding-memory --state-dir /absolute/engine-state dsh --dsh-home /absolute/dsh-home \
+  own-store
 ```
+
+`own-store` marks the whole DSH store as engine-owned, exactly like Codex
+`own-store`; use it before an independent generation runtime writes into that
+home. If `reconcile` queues a turn that ended after the enablement boundary but
+before registration committed, drive its capture explicitly with `capture
+--session <that projection> --turn N`.
 
 `enqueue` is what the bridge calls on `turn/end`; it accepts a bounded
 `{"kind":"turn-end","session":...,"turn":N,"cwd":...}` hint from stdin or
@@ -77,9 +117,10 @@ coding-memory --state-dir /absolute/engine-state dsh --dsh-home /absolute/dsh-ho
 hinted (`no_capture_hint` otherwise); it claims only the session its projection
 describes, pinned to the requested turn when `--turn` is given. A hint recorded
 before its project is registered is kept and resolved by `reconcile` against
-that hint's own session; `reconcile` itself never queues a run. Because the
-bridge publishes one projection per turn, a hint absent from the supplied
-projection stays pending for the reconcile of the projection that contains it.
+that hint's own session. `reconcile` queues only turns named by a live hint; it
+never invents a run. Because the bridge publishes one projection per turn, a
+hint absent from the supplied projection stays pending for the reconcile of the
+projection that contains it.
 A projection that never records the turn's end is retried by the bridge with a
 fresh snapshot, not before the engine's deferral has elapsed, up to the engine's
 60-attempt limit; if the harness process ends first, the run stays queued for

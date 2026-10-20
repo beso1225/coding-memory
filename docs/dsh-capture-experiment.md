@@ -94,9 +94,11 @@ directory) is an out-of-tree Cordis plugin:
   read leaves the hinted run queued for `reconcile`. A projection is deleted once
   its capture reaches a terminal result, so a long-running session does not
   accumulate one full copy per turn. A turn whose project is not registered yet
-  still publishes its projection before the bridge returns, because `register`
-  and the following `reconcile` consume that snapshot.
-- It projects only replay-validated logical events, so the engine never parses
+  also publishes its projection (the write is started before the handler
+  returns), because `register` and the following `reconcile` consume that
+  snapshot; if teardown wins the write race, it must be reconciled again.
+- It projects logical events whose shape was replay-validated in this
+  experiment, so the engine never parses
   the zstd JSONL files, follows format migrations, or pins a storage layout. A
   session whose whole log exceeds the projection bound is projected down to one
   contiguous range: the header and the named turn's records only. Earlier turns,
@@ -125,8 +127,9 @@ covered by `tests/dsh.rs`:
   registration refuses it before recording a permanent enablement boundary (a
   later valid registration can still establish the baseline).
 - Excluded: seeded (forked) sessions, `origin: "subagent"`, `delegationDepth > 0`,
-  turns with no human `user/message`, and turns that ended at or before project
-  registration.
+  sessions with a `parentSession`, and turns with no human `user/message`. A turn
+  that ended at or before project registration is held separately as
+  `before_enablement` instead of being called a fork or nonhuman run.
 - Injected user-role messages are dropped from evidence; they are harness framing,
   not the human's run.
 - A type outside the bridge's known vocabulary, or any type the bridge chooses
@@ -148,9 +151,16 @@ covered by `tests/dsh.rs`:
   `hookPrompt`, `other`), a `status` for tool results, and the native type kept
   in `ds_type`. Extraction builds its citation schema from `id` and verifies
   support against those predicates, so unnormalized DSH records would admit only
-  an empty candidate list.
-- Record `time` is committed in milliseconds; the adapter converts it to seconds
-  before comparing it with the enablement epoch.
+  an empty candidate list. The `assistant/message` timed model stream and
+  `reasoning` content blocks are not copied into evidence, so hidden reasoning
+  never reaches extraction prompts or the size bound.
+- A completed DSH tool result is normalized to the shared `commandExecution`
+  vocabulary with its recorded status. DSH does not standardize tool semantics,
+  so this is a generic "tool output" category; extraction treats a completed
+  result as observed tool output, not as proof that a shell command ran.
+- Record `time` is committed in milliseconds. The turn end is compared in
+  milliseconds against the registration instant; only the stored evidence
+  timestamps are seconds.
 - The bridge document declares `schema: 1`, checked independently of DSH's
   logical format version. Registration refuses an unknown projection schema
   before enabling the project, and capture claims the run its header names
@@ -280,13 +290,14 @@ These were found by the measurement and are fixed with regression tests:
 2. **Pre-registration hints were lost.** Hints are now persisted and resolved by
    `reconcile` to their exact turn; a run that ended before enablement is
    excluded exactly like a baseline turn.
-3. **`reconcile` queued runs nobody observed ending.** It now only resolves hints.
+3. **`reconcile` queued runs nobody observed ending.** It now queues only turns
+   named by a live hint.
 4. **Projected logs stopped replaying.** Stripping the provider route from
    `assistant/message` sources makes DSH's own replay fail
    (`message must have model source`), and flattening a user message fails with
    `not losslessly JSON-serializable`. The bridge projects envelope fields and
-   leaves `data` intact, proven by replaying real and projected logs through
-   `Session.create`.
+   leaves `data` intact; this experiment proved that by replaying real and
+   projected logs through `Session.create`.
 5. **A message's turn is not a field.** `user/message` carries no `turn`; it
    belongs to the enclosing `turn/start`. Attribute-scanning made every real
    turn look non-human (`history_missing`).
@@ -314,6 +325,17 @@ These were found by the measurement and are fixed with regression tests:
 - Only one provider route was exercised. Nothing in the adapter depends on the
   route, but a route that changes the event vocabulary would surface as a held
   turn, not silent capture.
+- The verified DSH revision is `0.2.1-rc.2` (logical session format v4). The
+  adapter accepts versions up to 4; revalidate after a DSH upgrade. A turn whose
+  own records exceed the bridge's 16 MiB projection bound is logged and left
+  queued rather than captured partially.
+- A deferred projection written before registration is retained for
+  `register`/`reconcile` and is not removed automatically. Delete consumed
+  snapshots under `<state-dir>/dsh/projections/` when they are no longer needed.
+- `capture-diagnose` remains Codex-only. DSH failures are inspected through
+  `status` held reasons and the projection file named by the bridge.
+- Fork and subagent capture are excluded, and a captured run is never retried
+  automatically after a terminal hold; `retry STORE THREAD TURN` is explicit.
 
 ## Reproduction
 

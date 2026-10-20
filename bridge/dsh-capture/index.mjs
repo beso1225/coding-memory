@@ -80,8 +80,6 @@ export const CAPTURE_ATTEMPTS = 60
  * `no_ready_run`, and used to discard a projection whose run was still queued.
  */
 export const CAPTURE_RETRY_MS = 10000
-/** How long capture waits for a compaction request announced at turn end. */
-export const COMPACTION_SETTLE_MS = 1500
 /** Markers a producer emits when it is about to compact one session. */
 export const COMPACTION_REQUEST_EVENTS = ['coding-memory/compaction-requested']
 /** Largest projection the bridge will write, in bytes. */
@@ -198,20 +196,6 @@ export function projectForCapture(header, events, turn) {
 }
 
 /**
- * Refuse a projection DSH could not replay itself.
- *
- * The engine only ever sees the projection, so it cannot validate replay
- * fidelity. Checking it here keeps a projection change from silently producing
- * an unreadable session: the harness reloads these records on resume.
- * @param header - session header.
- * @param records - projected records.
- * @returns the unchanged pair, or throws with the replay failure.
- */
-export function assertReplayable(Session, SessionId, header, records) {
-  Session.create(SessionId(header.id), records, header, 0, [])
-}
-
-/**
  * Project one session read into the document the engine validates.
  * @param header - replay-validated session header from `sessionQuery`.
  * @param events - the complete raw log.
@@ -260,6 +244,24 @@ export async function publish(path, text) {
 }
 
 /**
+ * The file one turn's projection is published to.
+ *
+ * A session id is an arbitrary harness string, and DSH escapes such ids for
+ * its own storage. Encoding it here keeps an id containing `/` or `..` from
+ * publishing outside the state directory, while leaving ordinary UUIDs
+ * unchanged.
+ * @param stateDir - engine state directory.
+ * @param sessionId - session whose projection is named.
+ * @param turn - the turn the projection is bounded to.
+ * @returns the projection path.
+ */
+export function projectionPath(stateDir, sessionId, turn) {
+  if (!Number.isSafeInteger(turn) || turn < 1) throw new Error('invalid turn number')
+  const name = encodeURIComponent(String(sessionId))
+  return join(stateDir, 'dsh', 'projections', `${name}.${turn}.json`)
+}
+
+/**
  * Read a session and publish one turn's projection.
  *
  * The destination is unique per turn, so an overlapping handler for an older
@@ -277,7 +279,7 @@ export async function publish(path, text) {
 export async function publishTurn(stateDir, sessionId, turn, read) {
   const { session, events } = await Promise.resolve().then(read)
   if (session.cwd === undefined) return null
-  const path = join(stateDir, 'dsh', 'projections', `${sessionId}.${turn}.json`)
+  const path = projectionPath(stateDir, sessionId, turn)
   await publish(path, projectForCapture(session, events, turn))
   return { path, cwd: session.cwd }
 }
@@ -463,9 +465,14 @@ export function apply(ctx, config) {
         }
         if (event.type !== 'turn/end') return
         const header = subject.header
-        if (header.isSeeded === true || header.origin === 'subagent' || (header.delegationDepth ?? 0) > 0) return
+        if (header.isSeeded === true || header.origin === 'subagent'
+          || (header.delegationDepth ?? 0) > 0 || header.parentSession !== undefined) return
         if (header.cwd === undefined) return
         const turn = event.data.turn
+        if (!Number.isSafeInteger(turn) || turn < 1) {
+          warn(`ignoring turn/end with an invalid turn number: ${String(turn)}`)
+          return
+        }
         const signal = JSON.stringify({
           kind: 'turn-end',
           session: session.id,

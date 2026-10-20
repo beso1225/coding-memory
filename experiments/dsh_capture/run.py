@@ -21,6 +21,7 @@ Usage (from the repository root, with a built engine and a built DSH checkout):
 """
 
 import argparse
+import atexit
 import json
 import os
 import shutil
@@ -45,6 +46,12 @@ def git(cwd, *args):
     if result.returncode != 0:
         raise SystemExit(f"git {args} failed: {result.stderr}")
     return result.stdout.strip()
+
+
+def turn_of(path):
+    """The native turn number encoded in `<session>.<turn>.json`."""
+    parts = path.name.rsplit(".", 2)
+    return int(parts[-2]) if len(parts) == 3 and parts[-2].isdigit() else -1
 
 
 def main():
@@ -100,6 +107,9 @@ def main():
     # so a project path with a symlinked ancestor would register a different id
     # than the one the session recorded. /var is a symlink to /private/var.
     root = root.resolve()
+    # A failure must not leave a copied credential document behind; --keep
+    # retains the synthetic root deliberately for inspection.
+    atexit.register(lambda: None if args.keep else shutil.rmtree(root, ignore_errors=True))
     project = root / "project"
     home = root / "dsh-home"
     state = root / "engine-state"
@@ -215,26 +225,48 @@ def main():
     first = headless()
     record["runs"].append({"name": "baseline", "exit": first.returncode, "stream": first.stdout.splitlines()})
     record["first_stderr"] = first.stderr.splitlines()[-20:]
+    if first.returncode != 0:
+        raise SystemExit(f"baseline dsh run failed: {first.stderr[-2000:]}")
     time.sleep(2)
     probe = run([str(engine_binary), "--state-dir", str(state), "status"], project)
     record["status_after_first"] = (probe.stdout or probe.stderr).strip()[:400]
-    time.sleep(3)
-    # Locate the projection of the session this run actually executed: a stale
-    # file from an earlier run would name a different session's turn.
-    first_session = next(
-        (line["sessionId"] for line in map(json.loads, first.stdout.splitlines()) if line.get("type") == "session"),
-        None,
-    )
-    # The bridge publishes one immutable file per captured turn.
-    sessions = sorted((state / "dsh" / "projections").glob(f"{first_session}.*.json")) if first_session else []
+    first_session = None
+    for line in first.stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if event.get("type") == "session":
+            first_session = event.get("sessionId")
+            break
+    if not first_session:
+        raise SystemExit("baseline dsh run reported no session id")
+    # The bridge publishes one file per turn, and the deferred publication is
+    # asynchronous: poll instead of assuming a fixed startup time.
+    deadline = time.time() + 20
+    sessions = []
+    while time.time() < deadline:
+        sessions = sorted(
+            (state / "dsh" / "projections").glob(f"{first_session}.*.json"),
+            key=turn_of,
+        )
+        if sessions:
+            break
+        time.sleep(0.25)
+    if not sessions:
+        raise SystemExit("bridge published no projection for the baseline turn")
     record["projection_names"] = [path.name for path in sessions]
     record["projected_sessions"] = len(sessions)
-    if sessions:
-        reg = run([*engine, "register", "--session", str(sessions[-1]), "--project", str(project)], project)
-        record["register"] = json.loads(reg.stdout) if reg.returncode == 0 else {"error": reg.stderr}
-        # Hints recorded before registration are queued by reconciliation.
-        rec = run([*engine, "reconcile", "--session", str(sessions[-1]), "--project", str(project)], project)
-        record["reconcile"] = json.loads(rec.stdout) if rec.returncode == 0 else {"error": rec.stderr}
+    latest = sessions[-1]
+    reg = run([*engine, "register", "--session", str(latest), "--project", str(project)], project)
+    if reg.returncode != 0:
+        raise SystemExit(f"register failed: {reg.stderr}")
+    record["register"] = json.loads(reg.stdout)
+    # Hints recorded before registration are queued by reconciliation.
+    rec = run([*engine, "reconcile", "--session", str(latest), "--project", str(project)], project)
+    if rec.returncode != 0:
+        raise SystemExit(f"reconcile failed: {rec.stderr}")
+    record["reconcile"] = json.loads(rec.stdout)
 
     # 2. A session after registration is queued by the bridge hint. The bridge
     # can only hint a registered project, so the session must start in a later
@@ -244,6 +276,8 @@ def main():
     second = headless("--session-id", first_session, task="Reply with: resumed") if args.resume and first_session else headless()
     record["runs"].append({"name": "resume" if args.resume else "after", "exit": second.returncode, "stream": second.stdout.splitlines()})
     record["second_stderr"] = second.stderr.splitlines()[-20:]
+    if second.returncode != 0:
+        raise SystemExit(f"second dsh run failed: {second.stderr[-2000:]}")
     time.sleep(3)
     probe = run([str(engine_binary), "--state-dir", str(state), "status"], project)
     record["status_after_second"] = (probe.stdout or probe.stderr).strip()[:400]
@@ -254,7 +288,7 @@ def main():
     status = run([str(engine_binary), "--state-dir", str(state), "status"], project)
     record["status"] = json.loads(status.stdout) if status.returncode == 0 else status.stderr
 
-    projections = sorted((state / "dsh" / "projections").glob("*.json"))
+    projections = sorted((state / "dsh" / "projections").glob("*.json"), key=turn_of)
     record["latest_projection"] = None
     if projections:
         document = json.loads(projections[-1].read_text())

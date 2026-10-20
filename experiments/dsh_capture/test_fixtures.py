@@ -53,7 +53,19 @@ class DshFixture(unittest.TestCase):
             call_seq = [r["seq"] for r in self.document["records"]
                         if r["type"] == "tool/call"
                         and r["data"]["callId"] == result["data"]["message"]["toolCallId"]][0]
-            self.assertIn(call_seq, result["data"]["sourceEventSeqs"])
+            self.assertIn(call_seq, result["sourceEventSeqs"], "locators are envelope fields")
+
+    def test_message_shapes_match_the_harness(self):
+        # `user/message` has no turn or step: ownership comes from the enclosing
+        # `turn/start`. A tool call's arguments stay the raw model string.
+        for record in self.document["records"]:
+            if record["type"] == "user/message":
+                self.assertNotIn("turn", record["data"])
+                self.assertNotIn("step", record["data"])
+            if record["type"] == "tool/call":
+                self.assertIsInstance(record["data"]["arguments"], str)
+            if record["type"] == "assistant/message":
+                self.assertIn("stream", record["data"])
 
     def test_projection_keeps_message_payloads_replayable(self):
         # A projected record keeps DSH's envelope and its `data` unchanged; only
@@ -255,9 +267,35 @@ class DshFixture(unittest.TestCase):
 
     def test_bridge_exports_compaction_wait(self):
         source = BRIDGE.read_text()
-        self.assertIn("COMPACTION_SETTLE_MS", source)
         self.assertIn("waitForCompaction", source)
         self.assertIn("coding-memory/compaction-requested", source)
+
+    def test_bridge_keeps_session_ids_inside_the_projection_directory(self):
+        # A DSH session id is an arbitrary string. An unencoded id containing
+        # path separators would publish outside the state directory.
+        import json as jsonlib
+        import subprocess
+        script = (
+            "const m = await import(process.argv[1]);"
+            "const path = await import('node:path');"
+            "const hostile = m.projectionPath('/state', '../../tmp/evil', 2);"
+            "const nested = m.projectionPath('/state', 'a/b', 3);"
+            "let rejected = false;"
+            "try { m.projectionPath('/state', 's', '4'); } catch { rejected = true; }"
+            "console.log(JSON.stringify({"
+            " hostileDir: path.dirname(hostile), hostileName: path.basename(hostile),"
+            " nestedDir: path.dirname(nested), nestedName: path.basename(nested), rejected }));"
+        )
+        output = subprocess.run(
+            ["node", "--input-type=module", "-e", script, str(BRIDGE)],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        result = jsonlib.loads(output)
+        self.assertEqual(result["hostileDir"], "/state/dsh/projections")
+        self.assertEqual(result["nestedDir"], "/state/dsh/projections")
+        self.assertNotIn("/", result["hostileName"])
+        self.assertNotIn("/", result["nestedName"])
+        self.assertTrue(result["rejected"], "a non-integer turn cannot name a file")
 
     def test_bridge_projects_header_and_engine_vocabulary(self):
         self.assertTrue(BRIDGE.is_file())

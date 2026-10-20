@@ -295,7 +295,8 @@ Acceptance criteria:
 
 Dependencies: #1, #3, #6, and #51.
 
-Progress: completed on 2026-10-20 (Asia/Tokyo). The
+Progress: implemented in PR #57 on 2026-10-20 (Asia/Tokyo); the issue closes on
+merge. The
 [capture experiment](dsh-capture-experiment.md) records the verified turn
 boundaries, the bridge plugin, the engine-side exclusions and held reasons, and
 the credentialed measurements: plain and tool-using turns, compaction, and

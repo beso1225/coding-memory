@@ -45,6 +45,34 @@ Keep the whole version directory, including licenses, `release-notices/`, and
 each included file at the archive root, so a release install mounts
 `$HOME/.local/share/coding-memory/versions/$version/index.mjs`. A copy that omits
 it cannot capture DSH runs.
+
+To enable DSH capture, mount the bridge with an overlay (DSH `0.2.1-rc.2` is the
+verified revision):
+
+```yaml
+# coding-memory-capture.yml
+- insert:
+    - id: coding-memory-capture
+      name: '/Users/you/.local/share/coding-memory/versions/0.1.2/index.mjs'
+      config:
+        executable: '/Users/you/.local/bin/coding-memory'
+        stateDir: '/absolute/engine-state'
+        dshHome: '/absolute/dsh-home'
+        timeoutMs: 30000
+```
+
+```sh
+dsh <profile> --patch /absolute/coding-memory-capture.yml
+```
+
+Use absolute paths; the plugin refuses relative ones at startup. The first turn
+of an unregistered project is deferred, so register and reconcile the published
+projection once as described in
+[durable ingestion](https://github.com/beso1225/coding-memory/blob/main/docs/ingestion.md#deepseek-harness).
+The overlay names a version-specific file: after an upgrade, repoint `name` at
+the new version directory (or a stable symlink to the current `index.mjs`)
+before restarting DSH.
+
 Add `$HOME/.local/bin` to your shell PATH if needed. Checksums detect corruption;
 they are not an independent publisher signature. Initial builds have no Apple
 Developer ID signature or notarization. Honor macOS security prompts and inspect
@@ -84,7 +112,11 @@ permission. Activate the LaunchAgent explicitly after reviewing its configuratio
 5. Check `coding-memory --version`, then run `worker-status` and
    `runtime-check-status` with your explicit `--state-dir`. Revalidate the installed
    Codex with `runtime-verify --binary /absolute/path/to/codex` as needed.
-6. Reload the existing LaunchAgent with `launchctl bootstrap "gui/$(id -u)"`
+6. If DSH capture is mounted, repoint the overlay's `name` at the new version
+   directory (or its stable bridge symlink) and restart DSH. An overlay left on
+   the previous version runs the old bridge against the new engine, and removing
+   that version breaks plugin loading entirely.
+7. Reload the existing LaunchAgent with `launchctl bootstrap "gui/$(id -u)"`
    followed by its plist path. Check `launchctl print` and `worker-status`, then
    restart MCP clients and confirm memory search works.
 
