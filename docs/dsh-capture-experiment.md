@@ -87,13 +87,14 @@ directory) is an out-of-tree Cordis plugin:
   engine re-reads the session and decides.
 - On each `turn/end` it reads the session through `ctx.sessionQuery.readSession`,
   writes an atomically published per-turn projection, and runs
-  `coding-memory dsh capture --turn N`. A run the engine reports as
-  `history_pending`—or as `no_ready_run` while the engine's own ten-second
-  deferral is still open—is retried with a fresh snapshot, because nothing else
-  drives a DSH run. The retry delay is not shorter than that deferral; a failed
-  read is retried with a fresh snapshot. A projection is deleted once
-  its capture reaches a terminal result, so a long-running session does not
-  accumulate one full copy per turn. A turn whose project is not registered yet
+  `coding-memory dsh capture --turn N --thread <session>`. A run the engine
+  reports as `history_pending`—or as `no_ready_run` while the engine's own
+  ten-second deferral is still open—is retried with a fresh snapshot, because
+  nothing else drives a DSH run. The retry delay is not shorter than that
+  deferral; a failed read is retried with a fresh snapshot. A projection is
+  deleted after evidence is published, so a long-running session does not
+  accumulate one full copy per turn; a held run keeps its projection for an
+  explicit retry. A turn whose project is not registered yet
   also publishes its projection (the write is started before the handler
   returns), because `register` and the following `reconcile` consume that
   snapshot; if teardown wins the write race, it must be reconciled again.
@@ -160,7 +161,9 @@ covered by `tests/dsh.rs`:
   result as observed tool output, not as proof that a shell command ran.
 - Record `time` is committed in milliseconds. The turn end is compared in
   milliseconds against the registration instant, and the start/end ordering is
-  checked before truncation; only the stored evidence timestamps are seconds.
+  checked before truncation; an end before its start is
+  `invalid_turn_interval`, while an absent start is `missing_turn_start`. Only the
+  stored evidence timestamps are seconds.
 - The bridge document declares `schema: 1`, checked independently of DSH's
   logical format version. Registration refuses an unknown projection schema
   before enabling the project, and capture claims the run its header names
@@ -187,6 +190,12 @@ covered by `tests/dsh.rs`:
   fall back to the whole-second epoch.
 - Evidence reuses the existing envelope and `items`/`coverage` shape, so
   extraction, consolidation, review, and MCP retrieval need no DSH branch.
+  `runtime_version` is `dsh-log-v<n>` because DSH exposes its logical log format
+  rather than an application version; `capture_runtime` remains unset because
+  the bridge and harness revisions are not audited reader binaries.
+- The session header tolerates additional metadata fields. The bridge document
+  revision (`schema`) is the compatibility boundary, so a future bridge can add
+  header metadata without forcing an engine release.
 
 ## Compaction measurement
 
@@ -331,23 +340,24 @@ These were found by the measurement and are fixed with regression tests:
   own records exceed the bridge's 16 MiB projection bound is a permanent
   over-limit outcome: the bridge asks the engine to hold the run as
   `history_over_limit` rather than retrying the read or capturing partially.
-- A deferred projection written before registration is retained for
-  `register`/`reconcile` and is not removed automatically. Delete consumed
-  snapshots under `<state-dir>/dsh/projections/` when they are no longer needed.
+- A deferred projection written before registration and a held run's projection
+  are retained for `register`/`reconcile` or an explicit retry and are not removed
+  automatically. Delete consumed snapshots under
+  `<state-dir>/dsh/projections/` when they are no longer needed.
 - The bridge retries a failed enqueue and a failed deferred publication with
   the same bounded transient budget. Duplicate enqueue is idempotent.
 - The bridge retries its own queued run, but `reconcile` does not drive an
   already-queued run: it only processes pending hints. If the harness is killed
   before a retry reaches a terminal state, capture that run explicitly from a
-  fresh projection with `capture --turn N`.
+  fresh projection with `capture --thread <session> --turn N`.
 - `capture-diagnose` remains Codex-only. DSH failures are inspected through
   `status` held reasons and the projection file named by the bridge.
 - Fork and subagent capture are excluded, and a captured run is never retried
   automatically after a terminal hold. `retry STORE THREAD TURN` requeues the
-  run, but it does not create a driver or a projection: follow it with
-  `capture --session <projection containing the turn> --project <dir>` without
-  `--turn`. The bridge removes a projection after a terminal result, so an old
-  per-turn projection that is already gone cannot be used to drive that retry.
+  run, and the bridge keeps the held turn's projection: follow it with
+  `capture --session <retained projection> --thread <session> --turn N` (or omit
+  `--turn` to select the session's next queued run). A projection that was
+  manually deleted cannot drive that retry.
 
 ## Reproduction
 

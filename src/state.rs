@@ -284,6 +284,14 @@ impl State {
         )?;
         Ok(())
     }
+    /// Drop hints captured before `before`, so a turn that never appears in a
+    /// projection cannot accumulate forever.
+    pub fn expire_pending_hints(&mut self, store: &str, before: i64) -> Result<usize> {
+        Ok(self.db.execute(
+            "DELETE FROM pending_hints WHERE store=?1 AND at < ?2",
+            params![store, before],
+        )?)
+    }
     /// Whether a live runtime observed this exact turn end.
     pub fn hinted(&self, key: &RunKey) -> Result<bool> {
         Ok(self.db.query_row(
@@ -432,6 +440,22 @@ impl State {
     }
     pub fn hold(&mut self, c: &Claim, reason: &str, now: i64) -> Result<()> {
         self.transition(c, "held", Some(reason), None, None, now, now)
+    }
+    /// Hold a run without claiming it, even while its retry window is open.
+    ///
+    /// The over-limit bridge request is a terminal decision about a turn whose
+    /// projection cannot be transported. Waiting for `available_at` (a pending
+    /// capture deferred the same run) would leave it queued with no driver. A
+    /// live lease is still respected so another process's transition is not
+    /// stolen.
+    pub fn hold_run(&mut self, key: &RunKey, reason: &str, now: i64) -> Result<bool> {
+        Ok(self.db.execute(
+            "UPDATE runs SET state='held',reason=?4,evidence=NULL,outcome=NULL,
+                lease_until=NULL,available_at=?5
+             WHERE store=?1 AND thread=?2 AND turn=?3
+               AND (state='queued' OR (state='capturing' AND lease_until<=?5))",
+            params![key.store, key.thread, key.turn, reason, now],
+        )? == 1)
     }
     #[allow(clippy::too_many_arguments)]
     fn transition(

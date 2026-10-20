@@ -100,7 +100,7 @@ coding-memory --state-dir /absolute/engine-state dsh --dsh-home /absolute/dsh-ho
 coding-memory --state-dir /absolute/engine-state dsh --dsh-home /absolute/dsh-home \
   reconcile --session <state-dir>/dsh/projections/<session>.<turn>.json --project /absolute/project
 coding-memory --state-dir /absolute/engine-state dsh --dsh-home /absolute/dsh-home \
-  capture --session /absolute/projection.json --project /absolute/project [--turn N]
+  capture --session /absolute/projection.json --project /absolute/project [--turn N] [--thread SESSION]
 coding-memory --state-dir /absolute/engine-state dsh --dsh-home /absolute/dsh-home \
   own-store
 ```
@@ -128,22 +128,27 @@ projection that contains it; a turn that is present but has no direct human
 message is resolved as `excluded_inherited_or_nonhuman`.
 A projection that never records the turn's end is retried by the bridge with a
 fresh snapshot, not before the engine's deferral has elapsed, up to the engine's
-60-attempt limit. A failed session read, stale oversized snapshot, or transient
-engine invocation failure is retried with a separate small budget, so it cannot
-consume one of those 60 claims; the retry timers are referenced so a short-lived
-harness does not drop an already-queued run. A report that no run was ready
+60-attempt limit. DSH capture uses a 60-second lease, and a failed capture
+invocation is retried at the ten-second no-ready interval with the same
+eight-attempt budget (about 80 seconds), so a process that dies after claiming is
+reclaimable inside the bridge's retry window. A failed session read, stale
+oversized snapshot, or transient invocation failure uses a separate small budget
+and cannot consume one of those 60 claims; the retry timers are referenced so a
+short-lived harness does not drop an already-queued run. A report that no run was ready
 (`no_ready_run`) is not an engine claim, so it consumes only the transient
 budget. A turn whose own records exceed the 16 MiB projection bound is a
 permanent over-limit outcome: the bridge asks the engine to hold that run as
 `history_over_limit` instead of retrying the read. The engine holds a pending
 run as `history_readiness_exhausted` on attempt 60,
 as it does for Codex. If the process is killed before either happens, capture
-the run explicitly from a fresh projection (`capture --turn N`); `reconcile`
-only processes pending hints. `retry STORE THREAD TURN` requeues a held DSH
-run, but the bridge is the only capture driver and it removes a projection after
-a terminal result. To drive the retry, supply a projection that still contains
-that turn and run `capture --session <file> --project <dir>` without `--turn`, so
-the engine claims the requeued run.
+the run explicitly from a fresh projection (`capture --thread <session> --turn N`); `reconcile`
+only processes pending hints. `retry STORE THREAD TURN` requeues a held DSH run;
+the bridge keeps that turn's projection instead of deleting it, so drive the
+retry with `capture --session <retained file> --thread <session> --turn N` (omit
+`--turn` to select the session's next queued run). Delete retained held snapshots
+under `<state-dir>/dsh/projections/` once inspected. Pending hints older than 30
+days are dropped when `reconcile` runs, so a turn that never appears in a
+projection cannot accumulate forever.
 Re-running `register` for a registered
 project reports `already_registered` and baselines nothing. `/compact` and its
 durable bracket are harness bookkeeping and do not reach evidence. `--dsh-home`
@@ -227,8 +232,10 @@ there is no command that resets this durable database. Unknown schema versions f
 | `recorded` | Failed/interrupted Run retained with evidence, ineligible for automatic extraction |
 | `held` | Missing/unsupported/over-limit/ambiguous history, exclusion, or reader failure |
 
-Claims are scoped to the selected runtime store. Their lease is one hour; an expired
-claim can be reclaimed after restart, and stale workers cannot finalize it. Pending
+Claims are scoped to the selected runtime store. Codex capture leases are one hour;
+DSH capture uses 60 seconds so a crashed attempt becomes claimable again within the
+bridge's retry window. An expired claim can be reclaimed after restart, and stale
+workers cannot finalize it. Pending
 history is rescheduled after ten seconds; after 60 attempts it is held as
 `history_readiness_exhausted`. These are operational defaults, not measured latency
 or throughput guarantees. `retry STORE THREAD TURN` deliberately retries a held run

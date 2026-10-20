@@ -100,7 +100,7 @@ fn completed_turn_becomes_evidence_scoped_to_its_turn() {
         panic!("expected a ready capture");
     };
     assert_eq!(bundle.outcome, "completed");
-    assert_eq!(bundle.runtime_version, "4");
+    assert_eq!(bundle.runtime_version, "dsh-log-v4");
     assert_eq!(bundle.cwd.as_deref(), Some("/repo"));
     let types: Vec<_> = bundle
         .items
@@ -283,7 +283,7 @@ fn an_end_before_its_start_is_rejected_within_one_second() {
     }
     assert!(matches!(
         decode(&value, 1),
-        Capture::Unsupported(Reason::StartedAt)
+        Capture::Unsupported(Reason::TurnInterval)
     ));
 }
 
@@ -998,6 +998,50 @@ fn broken_sequences_identities_and_ownership_are_rejected() {
 }
 
 #[test]
+fn header_metadata_outside_the_schema_is_ignored() {
+    // The bridge document revision, not a closed header vocabulary, decides
+    // whether the engine can interpret the session. A future bridge may add
+    // metadata without forcing an engine release.
+    let mut value = two_turn_log();
+    value["header"]["futureMetadata"] = json!({"build":"next"});
+    let Capture::Ready(bundle) = decode(&value, 1) else {
+        panic!("additional header metadata does not make the session unreadable");
+    };
+    assert_eq!(bundle.items.len(), 3);
+}
+
+#[test]
+fn a_tool_result_without_a_message_has_no_status() {
+    // Identity can come from a top-level `toolCallId`; without a recorded
+    // message there is no status to assert, and extraction must not treat it
+    // as observed support.
+    let value = log(vec![
+        turn_start(3, 1),
+        human(4, 1, 1),
+        record(
+            5,
+            "tool/call",
+            json!({"turn":1,"step":1,"callId":"c1","name":"read","arguments":{}}),
+        ),
+        record(
+            6,
+            "tool/result",
+            json!({"turn":1,"step":1,"toolCallId":"c1","content":[]}),
+        ),
+        turn_end(7, 1, json!({"kind": "completed"})),
+    ]);
+    let Capture::Ready(bundle) = decode(&value, 1) else {
+        panic!("a payload-less result still produces an item");
+    };
+    let result = bundle
+        .items
+        .iter()
+        .find(|item| item["ds_type"] == json!("tool/result"))
+        .expect("the result is an item");
+    assert_eq!(result["status"], json!(null));
+}
+
+#[test]
 fn bookkeeping_records_inside_a_turn_need_no_payload() {
     // Bookkeeping may be omitted from a projection entirely, so its presence
     // without `data` must not hold a turn that is otherwise complete. Requiring
@@ -1289,10 +1333,20 @@ mod ingestion {
         }
 
         fn capture(&mut self, session: &Path, turn: Option<u64>) -> anyhow::Result<DshReport> {
+            self.capture_with_thread(session, turn, None)
+        }
+
+        fn capture_with_thread(
+            &mut self,
+            session: &Path,
+            turn: Option<u64>,
+            thread: Option<&str>,
+        ) -> anyhow::Result<DshReport> {
             self.run(DshOperation::Capture {
                 session: session.to_path_buf(),
                 project: self.repo.clone(),
                 turn,
+                thread: thread.map(str::to_owned),
             })
         }
 
@@ -2122,8 +2176,10 @@ mod ingestion {
         rt.register(&baseline)?;
         let hint3 = rt.key("session-x", 3);
         let hint4 = rt.key("session-x", 4);
-        rt.state.save_pending_hint(&hint3, &rt.cwd, 0)?;
-        rt.state.save_pending_hint(&hint4, &rt.cwd, 0)?;
+        rt.state
+            .save_pending_hint(&hint3, &rt.cwd, ingestion::now())?;
+        rt.state
+            .save_pending_hint(&hint4, &rt.cwd, ingestion::now())?;
 
         let time = (ingestion::now() + 5) * 1000;
         let projection = rt.path("turn3.json");
@@ -2171,7 +2227,8 @@ mod ingestion {
         session(&baseline, &rt.cwd, 0);
         rt.register(&baseline)?;
         let hint = rt.key("session-x", 1);
-        rt.state.save_pending_hint(&hint, &rt.cwd, 0)?;
+        rt.state
+            .save_pending_hint(&hint, &rt.cwd, ingestion::now())?;
         let time = (ingestion::now() + 5) * 1000;
         let projection = rt.path("nonhuman.json");
         write_document(
@@ -2198,6 +2255,165 @@ mod ingestion {
             "the nonhuman turn is terminally excluded"
         );
         Ok(())
+    }
+
+    #[test]
+    fn capture_with_thread_holds_an_unreadable_projection() -> anyhow::Result<()> {
+        // The bridge names the session on every invocation. Claiming before the
+        // read means a missing or malformed document becomes a held run instead
+        // of an error with no state change.
+        let mut rt = Runtime::new()?;
+        let baseline = rt.path("baseline.json");
+        session(&baseline, &rt.cwd, 0);
+        rt.register(&baseline)?;
+        rt.enqueue("session-x", 1)?;
+        let projection = rt.path("unreadable.json");
+        std::fs::write(&projection, b"not json")?;
+        let report = rt.capture_with_thread(&projection, Some(1), Some("session-x"))?;
+        assert_eq!(report.state, Some("held"));
+        assert_eq!(report.reason.as_deref(), Some("reader_failure"));
+        assert_eq!(
+            rt.state.status()?[0].state,
+            "held",
+            "the claimed run is terminal, not left queued"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn capture_with_thread_rejects_another_sessions_projection() -> anyhow::Result<()> {
+        // `--thread` locates the run; the document must still describe that
+        // session, or the engine would publish another session's evidence.
+        let mut rt = Runtime::new()?;
+        let baseline = rt.path("baseline.json");
+        session(&baseline, &rt.cwd, 0);
+        rt.register(&baseline)?;
+        rt.enqueue("session-a", 1)?;
+        let projection = rt.path("b.json");
+        projection_for(
+            &projection,
+            &rt.cwd,
+            "session-b",
+            (ingestion::now() + 5) * 1000,
+        );
+        let report = rt.capture_with_thread(&projection, Some(1), Some("session-a"))?;
+        assert_eq!(report.state, Some("held"));
+        assert_eq!(
+            report.reason.as_deref(),
+            Some("projection_session_mismatch")
+        );
+        assert!(report.evidence.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn over_limit_hold_ignores_a_deferred_retry_window() -> anyhow::Result<()> {
+        // The bridge cannot transport an oversized turn and asks for a hold
+        // immediately. A prior `history_pending` deferral must not make that
+        // request a no-op, or the run stays queued with no driver.
+        let mut rt = Runtime::new()?;
+        let baseline = rt.path("baseline.json");
+        session(&baseline, &rt.cwd, 0);
+        rt.register(&baseline)?;
+        rt.enqueue("session-x", 1)?;
+        let db = rusqlite::Connection::open(rt.root.join("state.sqlite"))?;
+        db.execute(
+            "UPDATE runs SET available_at=?1 WHERE thread='session-x'",
+            [ingestion::now() + 3600],
+        )?;
+        drop(db);
+        let report = rt.hold_over_limit("session-x", 1)?;
+        assert_eq!(report.state, Some("held"));
+        assert_eq!(
+            rt.status_of("session-x", 1)?.map(|(state, _)| state),
+            Some("held".into())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_retried_held_run_can_be_captured_from_its_projection() -> anyhow::Result<()> {
+        // The bridge keeps a held run's projection. After `retry`, an explicit
+        // capture with the same file and `--thread`/`--turn` must publish it.
+        let mut rt = Runtime::new()?;
+        let baseline = rt.path("baseline.json");
+        session(&baseline, &rt.cwd, 0);
+        rt.register(&baseline)?;
+        rt.enqueue("session-x", 2)?;
+        let projection = rt.path("turn2.json");
+        session(&projection, &rt.cwd, 1);
+        let held = rt.capture_with_thread(&projection, Some(2), Some("session-x"))?;
+        assert_eq!(held.state, Some("held"));
+        assert_eq!(held.reason.as_deref(), Some("history_missing"));
+
+        two_turn_projection(
+            &projection,
+            &rt.cwd,
+            "session-x",
+            (ingestion::now() + 5) * 1000,
+        );
+        rt.state.retry(&rt.key("session-x", 2), ingestion::now())?;
+        let ready = rt.capture_with_thread(&projection, Some(2), Some("session-x"))?;
+        assert_eq!(ready.state, Some("ready"), "{ready:?}");
+        assert_eq!(ready.run.as_ref().map(|run| run.turn.as_str()), Some("2"));
+        Ok(())
+    }
+
+    #[test]
+    fn reconcile_expires_stale_hints() -> anyhow::Result<()> {
+        let mut rt = Runtime::new()?;
+        let baseline = rt.path("baseline.json");
+        session(&baseline, &rt.cwd, 0);
+        rt.register(&baseline)?;
+        let stale = rt.key("session-x", 9);
+        rt.state.save_pending_hint(&stale, &rt.cwd, 0)?;
+        let projection = rt.path("turn1.json");
+        projection_for(
+            &projection,
+            &rt.cwd,
+            "session-x",
+            (ingestion::now() + 5) * 1000,
+        );
+        rt.reconcile(&projection)?;
+        assert!(
+            rt.state.pending_hints(&rt.store)?.is_empty(),
+            "a hint older than the TTL is dropped before matching"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stale_pending_hints_are_expired() -> anyhow::Result<()> {
+        // A hint whose turn never appears in a reconciled projection must not
+        // accumulate forever.
+        let mut rt = Runtime::new()?;
+        let hint = rt.key("session-x", 1);
+        rt.state.save_pending_hint(&hint, &rt.cwd, 0)?;
+        assert_eq!(rt.state.pending_hints(&rt.store)?.len(), 1);
+        assert_eq!(rt.state.expire_pending_hints(&rt.store, 1)?, 1);
+        assert!(rt.state.pending_hints(&rt.store)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn the_bridge_retry_contract_matches_the_engine() {
+        // The bridge is the only driver of a DSH run, so its retry budget and
+        // reason strings must match the engine's.
+        let source = include_str!("../bridge/dsh-capture/index.mjs");
+        let attempts = format!(
+            "export const CAPTURE_ATTEMPTS = {}",
+            coding_memory::ingestion::DSH_PENDING_ATTEMPT_LIMIT
+        );
+        assert!(
+            source.contains(&attempts),
+            "bridge CAPTURE_ATTEMPTS drifted from the engine"
+        );
+        for reason in coding_memory::ingestion::DSH_RETRYABLE_REASONS {
+            assert!(
+                source.contains(*reason),
+                "bridge retryable() is missing engine reason {reason}"
+            );
+        }
     }
 
     #[test]

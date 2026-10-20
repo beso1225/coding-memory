@@ -292,6 +292,11 @@ pub enum DshOperation {
         session: PathBuf,
         project: PathBuf,
         turn: Option<u64>,
+        /// Session identity from the bridge, trusted only to locate the run.
+        ///
+        /// It lets capture claim and hold a run even when the projection is
+        /// unreadable; the parsed projection is still checked against it.
+        thread: Option<String>,
     },
     Reconcile {
         session: PathBuf,
@@ -323,6 +328,7 @@ enum Reason {
     UnsupportedProjectionSchema,
     ReaderFailure,
     ProjectMismatch,
+    ProjectionSessionMismatch,
     NoCaptureHint,
     InvalidTurnIdentity,
     HistoryPending,
@@ -342,6 +348,7 @@ impl Reason {
             Self::UnsupportedProjectionSchema => "unsupported_projection_schema",
             Self::ReaderFailure => "reader_failure",
             Self::ProjectMismatch => "project_mismatch",
+            Self::ProjectionSessionMismatch => "projection_session_mismatch",
             Self::NoCaptureHint => "no_capture_hint",
             Self::InvalidTurnIdentity => "invalid_turn_identity",
             Self::HistoryPending => "history_pending",
@@ -356,11 +363,19 @@ impl Reason {
 
 /// Attempts one capture may defer before the run becomes inspectable.
 ///
-/// The bridge's retry budget must reach this value; it documents the matching
-/// constant in `bridge/dsh-capture/index.mjs`.
-const MAX_PENDING_ATTEMPTS: i64 = 60;
-/// Lease held by one capture attempt. A crashed capture expires in an hour.
-const CAPTURE_LEASE: i64 = 3600;
+/// The bridge's `CAPTURE_ATTEMPTS` must equal this value; a cross-language test
+/// compares them, because the bridge is the only driver of a DSH run.
+pub const DSH_PENDING_ATTEMPT_LIMIT: i64 = 60;
+/// Report reasons after which the bridge can retry without a new hint.
+pub const DSH_RETRYABLE_REASONS: &[&str] = &["history_pending", "no_ready_run"];
+/// Lease held by one capture attempt.
+///
+/// It is deliberately short: a crashed capture must become claimable again
+/// within the bridge's `no_ready_run` retry window (it retries every ten
+/// seconds, so this leaves several attempts to recover the run).
+const CAPTURE_LEASE: i64 = 60;
+/// Pending hints older than this are dropped during reconciliation.
+const PENDING_HINT_TTL: i64 = 30 * 24 * 60 * 60;
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -449,7 +464,16 @@ pub fn dsh(
             session,
             project,
             turn,
-        } => dsh_capture_turn(state, store, root, &session, &project, turn),
+            thread,
+        } => dsh_capture_turn(
+            state,
+            store,
+            root,
+            &session,
+            &project,
+            turn,
+            thread.as_deref(),
+        ),
     }
 }
 
@@ -459,18 +483,18 @@ fn dsh_hold_over_limit(
     thread: &str,
     turn: u64,
 ) -> Result<DshReport> {
-    let turn = turn.to_string();
-    let Some(claim) = state.claim_session_turn(
-        Some(store),
-        thread,
-        Some(&turn),
-        clock::now(),
-        CAPTURE_LEASE,
-    )?
-    else {
-        return Ok(DshReport::new("hold").reason(Reason::NoReadyRun));
+    let key = RunKey {
+        store: store.into(),
+        thread: thread.into(),
+        turn: turn.to_string(),
     };
-    hold(state, &claim, "hold", Reason::HistoryOverLimit)
+    if !state.hold_run(&key, Reason::HistoryOverLimit.as_str(), clock::now())? {
+        return Ok(DshReport::new("hold").reason(Reason::NoReadyRun));
+    }
+    Ok(DshReport::new("hold")
+        .state("held")
+        .run(key)
+        .reason(Reason::HistoryOverLimit))
 }
 
 fn dsh_enqueue(state: &mut State, store: &str, signal: Option<String>) -> Result<DshReport> {
@@ -558,6 +582,7 @@ fn dsh_reconcile(
     project: &Path,
 ) -> Result<DshReport> {
     let p = project::resolve(project)?;
+    state.expire_pending_hints(store, clock::now() - PENDING_HINT_TTL)?;
     let projection = dsh::Projection::parse(&evidence::read_bounded(
         session,
         evidence::MAX_SOURCE_BYTES,
@@ -620,36 +645,57 @@ fn dsh_capture_turn(
     session: &Path,
     project: &Path,
     turn: Option<u64>,
+    thread: Option<&str>,
 ) -> Result<DshReport> {
-    let bytes = evidence::read_bounded(session, evidence::MAX_SOURCE_BYTES)?;
-    let document: Value = serde_json::from_slice(&bytes)?;
-    // Claim first, so a run that cannot be captured is held with a reason
-    // instead of staying queued and being selected forever. The header identity
-    // is read before the bridge schema is trusted: a document with a missing or
-    // future schema must still hold the run it names, not fail before any state
-    // change.
-    let session_id = document
-        .pointer("/header/id")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("Missing session identity"))?;
     let requested = turn.map(|turn| turn.to_string());
-    let Some(claim) = state.claim_session_turn(
-        Some(store),
-        session_id,
-        requested.as_deref(),
-        clock::now(),
-        CAPTURE_LEASE,
-    )?
-    else {
-        return Ok(DshReport::new("capture").reason(Reason::NoReadyRun));
+    // The bridge names the session, so claim before reading its projection. A
+    // missing or malformed document then becomes a held run instead of an error
+    // that leaves the already-enqueued run queued forever. Without `--thread`
+    // (manual use), the document must name the session first.
+    let (claim, document) = if let Some(thread) = thread {
+        let Some(claim) = state.claim_session_turn(
+            Some(store),
+            thread,
+            requested.as_deref(),
+            clock::now(),
+            CAPTURE_LEASE,
+        )?
+        else {
+            return Ok(DshReport::new("capture").reason(Reason::NoReadyRun));
+        };
+        if !state.hinted(&claim.key)? {
+            return hold(state, &claim, "capture", Reason::NoCaptureHint);
+        }
+        let document = match read_document(session) {
+            Ok(document) => document,
+            Err(_) => return hold(state, &claim, "capture", Reason::ReaderFailure),
+        };
+        (claim, document)
+    } else {
+        let document = read_document(session)?;
+        let session_id = document
+            .pointer("/header/id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("Missing session identity"))?;
+        let Some(claim) = state.claim_session_turn(
+            Some(store),
+            session_id,
+            requested.as_deref(),
+            clock::now(),
+            CAPTURE_LEASE,
+        )?
+        else {
+            return Ok(DshReport::new("capture").reason(Reason::NoReadyRun));
+        };
+        if !state.hinted(&claim.key)? {
+            // Only a hint can name the turn this process saw end. Without one,
+            // the projection belongs to a different process or turn and must
+            // not be published as this run's evidence.
+            return hold(state, &claim, "capture", Reason::NoCaptureHint);
+        }
+        (claim, document)
     };
-    if !state.hinted(&claim.key)? {
-        // Only a hint can name the turn this process saw end. Without one, the
-        // projection belongs to a different process or turn and must not be
-        // published as this run's evidence.
-        return hold(state, &claim, "capture", Reason::NoCaptureHint);
-    }
     if dsh::projection_schema(&document) != Some(dsh::PROJECTION_SCHEMA) {
         return hold(
             state,
@@ -661,9 +707,17 @@ fn dsh_capture_turn(
     let projection = match dsh::Projection::from_value(document) {
         Ok(projection) => projection,
         // The schema is supported but the document cannot be read: hold the
-        // claimed run instead of leasing it for an hour.
+        // claimed run instead of leasing it.
         Err(_) => return hold(state, &claim, "capture", Reason::ReaderFailure),
     };
+    let Some(session) = projection.session() else {
+        return hold_raw(state, &claim, "capture", dsh::Reason::Header.reason());
+    };
+    if session != claim.key.thread {
+        // `--thread` located the run, but the document describes another
+        // session. Publishing it would attach the wrong evidence.
+        return hold(state, &claim, "capture", Reason::ProjectionSessionMismatch);
+    }
     let Ok(turn_number) = claim.key.turn.parse::<u64>() else {
         return hold(state, &claim, "capture", Reason::InvalidTurnIdentity);
     };
@@ -683,6 +737,14 @@ fn dsh_capture_turn(
     let boundary = project_boundary(state, &claim.project)?;
     let outcome = dsh::decode_after(&projection, store, &cwd, turn_number, boundary)?;
     dsh_capture(state, root, &claim, outcome)
+}
+
+/// Read and decode one bounded bridge document.
+fn read_document(path: &Path) -> Result<Value> {
+    Ok(serde_json::from_slice(&evidence::read_bounded(
+        path,
+        evidence::MAX_SOURCE_BYTES,
+    )?)?)
 }
 
 /// The cwd a projection recorded, which must belong to the registered project:
@@ -755,7 +817,7 @@ fn dsh_capture(
                 .run(claim.key.clone())
                 .evidence(digest))
         }
-        Capture::Pending if claim.attempts >= MAX_PENDING_ATTEMPTS => {
+        Capture::Pending if claim.attempts >= DSH_PENDING_ATTEMPT_LIMIT => {
             // The same bounded exhaustion the Codex reader applies: a projection
             // that never records the turn's end becomes inspectable instead of
             // retrying forever.

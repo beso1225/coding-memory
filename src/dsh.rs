@@ -53,6 +53,7 @@ pub enum Reason {
     ItemIdentity,
     DuplicateIdentity,
     StartedAt,
+    TurnInterval,
     UnknownEventType,
 }
 impl Reason {
@@ -67,6 +68,7 @@ impl Reason {
             Self::ItemIdentity => "invalid_item_identity",
             Self::DuplicateIdentity => "duplicate_item_identity",
             Self::StartedAt => "missing_turn_start",
+            Self::TurnInterval => "invalid_turn_interval",
             Self::UnknownEventType => "unknown_session_event_type",
         }
     }
@@ -189,7 +191,7 @@ pub struct Discovered {
 
 /// A projected session header.
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct Header {
     #[serde(rename = "type")]
     kind: Option<String>,
@@ -396,7 +398,7 @@ pub fn decode_after(
     // Compare the recorded instants, not their truncated seconds: an end before
     // its start inside one second would otherwise look ordered.
     if ended_ms < started_ms {
-        return Ok(Capture::Unsupported(Reason::StartedAt));
+        return Ok(Capture::Unsupported(Reason::TurnInterval));
     }
     let started_at = started_ms / 1000;
     let Some(reason) = end_reason(end) else {
@@ -415,7 +417,7 @@ pub fn decode_after(
     let mut items = Vec::new();
     // The bound covers every projected record of the turn, including attempts
     // that never become items: the projection's own size is the cost paid.
-    let mut bytes = 0;
+    let mut bytes: usize = 0;
     let mut human = false;
     // The turn opened by the nearest preceding `turn/start`. DSH records no
     // `turn` on `user/message`, so ownership comes from this walk rather than
@@ -484,7 +486,7 @@ pub fn decode_after(
             // A settled attempt keeps its exact compact stream, which is never
             // rendered. The committed message that carries it is evidence, so an
             // attempt only contributes to the size bound.
-            bytes += serde_json::to_vec(data).map_or(usize::MAX, |v| v.len());
+            bytes = bytes.saturating_add(serde_json::to_vec(data).map_or(usize::MAX, |v| v.len()));
             if bytes > MAX_BYTES {
                 return Ok(Capture::OverLimit);
             }
@@ -524,14 +526,14 @@ pub fn decode_after(
             "status": item_status(record.kind.as_str(), data),
             "data": evidence_data(record.kind.as_str(), data),
         });
-        bytes += serde_json::to_vec(&item).map_or(usize::MAX, |v| v.len());
+        bytes = bytes.saturating_add(serde_json::to_vec(&item).map_or(usize::MAX, |v| v.len()));
         items.push(item);
+        if bytes > MAX_BYTES {
+            return Ok(Capture::OverLimit);
+        }
     }
     if !human {
         return Ok(Capture::Excluded);
-    }
-    if bytes > MAX_BYTES {
-        return Ok(Capture::OverLimit);
     }
     Ok(Capture::Ready(Box::new(Evidence {
         schema_version: 1,
@@ -541,9 +543,9 @@ pub fn decode_after(
             turn: turn.to_string(),
         },
         project: String::new(),
-        // DSH exposes its logical log format, not an application version, so
-        // this is the most precise runtime identity the projection carries.
-        runtime_version: version.to_string(),
+        // DSH exposes its logical log format, not an application version. The
+        // prefix keeps this value distinguishable from a Codex runtime version.
+        runtime_version: format!("dsh-log-v{version}"),
         capture_runtime: None,
         outcome: reason.into(),
         completed_at: ended_at,
@@ -749,16 +751,13 @@ fn item_status(kind: &str, data: &Value) -> Option<&'static str> {
     if kind != "tool/result" {
         return None;
     }
-    Some(
-        match data
-            .get("message")
-            .and_then(|m| m.get("isError"))
-            .and_then(Value::as_bool)
-        {
-            Some(true) => "failed",
-            _ => "completed",
-        },
-    )
+    // A result without its recorded message is not observed support; identity
+    // may still come from a top-level `toolCallId`.
+    let message = data.get("message")?;
+    Some(match message.get("isError").and_then(Value::as_bool) {
+        Some(true) => "failed",
+        _ => "completed",
+    })
 }
 /// The payload an evidence item keeps for one projected record.
 ///

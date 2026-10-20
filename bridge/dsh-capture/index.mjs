@@ -75,8 +75,12 @@ export const CAPTURE_ATTEMPTS = 60
 /**
  * How many transient failures (session read, projection publication, engine
  * invocation) are retried without consuming one of the 60 engine claims.
+ *
+ * The `no_ready_run` path retries at CAPTURE_RETRY_MS; with this many attempts
+ * it covers the engine's 60-second capture lease, after which a process that
+ * died while claiming becomes reclaimable.
  */
-export const CAPTURE_ERRORS = 5
+export const CAPTURE_ERRORS = 8
 /**
  * Delay between capture retries, in milliseconds.
  *
@@ -142,13 +146,51 @@ export function retryable(reason) {
 }
 
 /**
+ * Engine argv for one enqueue hint, after `dsh --dsh-home <home>`.
+ * @param signal - bounded turn-end signal.
+ * @returns the subcommand and its arguments.
+ */
+export function enqueueArgs(signal) {
+  return ['enqueue', '--event', signal]
+}
+
+/**
+ * Engine argv for one capture, after `dsh --dsh-home <home>`.
+ *
+ * `--thread` lets the engine claim the run before reading the projection, so an
+ * unreadable document becomes a held run instead of an error with no claim.
+ * @param path - published projection.
+ * @param cwd - session working directory.
+ * @param turn - exact turn.
+ * @param sessionId - session identity the run belongs to.
+ * @returns the subcommand and its arguments.
+ */
+export function captureArgs(path, cwd, turn, sessionId) {
+  return [
+    'capture', '--session', path, '--project', cwd,
+    '--turn', String(turn), '--thread', String(sessionId),
+  ]
+}
+
+/**
+ * Engine argv for holding a turn whose projection exceeded the bridge bound.
+ * @param sessionId - session identity.
+ * @param turn - exact turn.
+ * @returns the subcommand and its arguments.
+ */
+export function holdArgs(sessionId, turn) {
+  return ['hold-over-limit', '--thread', String(sessionId), '--turn', String(turn)]
+}
+
+/**
  * Remove a projection whose capture finished.
  *
  * Each capture writes a fresh immutable projection, and before the bounded
  * fallback activates it holds the whole growing session. Keeping those files
  * would grow quadratically and retain raw system and injected records after the
- * filtered evidence is published, so a terminal result deletes its file. A
- * pending capture keeps it for the retry or an explicit fresh capture.
+ * filtered evidence is published, so a non-held terminal result deletes its
+ * file. A pending capture and a held run keep it: the latter is retryable, and
+ * the file is the only input an explicit capture has.
  * @param path - projection file.
  */
 export async function removeProjection(path) {
@@ -502,16 +544,16 @@ export function apply(ctx, config) {
       .then(async (published) => {
         if (published === null) return
         const { path, cwd } = published
-        const result = await engine(
-          ['capture', '--session', path, '--project', cwd, '--turn', String(turn)],
-        )
+        const result = await engine(captureArgs(path, cwd, turn, sessionId))
         if (result.code !== 0) {
           // The run is already queued and nothing else drives it. A timeout,
           // locked state database, or spawn failure is worth retrying, but it
-          // must not consume one of the 60 engine claims.
+          // must not consume one of the 60 engine claims. Retry at the
+          // no-ready interval: a timed-out engine may have claimed the run and
+          // left it leased, and only a retry after that lease expires can finish.
           warn(`capture invocation failed for turn ${turn}: ${result.output.slice(0, 500)}`)
           if (errorsLeft > 1) {
-            retryLater(CAPTURE_ERROR_RETRY_MS, sessionId, turn, attemptsLeft, errorsLeft - 1)
+            retryLater(CAPTURE_RETRY_MS, sessionId, turn, attemptsLeft, errorsLeft - 1)
           } else {
             warn(`capture invocation retries exhausted for turn ${turn}`)
           }
@@ -548,7 +590,13 @@ export function apply(ctx, config) {
           }
           return
         }
-        // Every other result is terminal: evidence, a hold, or an exclusion.
+        if (report.state === 'held') {
+          // A held run is the one terminal result an operator can retry, and an
+          // explicit capture needs this projection. Keep it (the retained file
+          // is documented) instead of deleting the only input.
+          return
+        }
+        // Evidence and terminal exclusions do not need the raw snapshot.
         await removeProjection(path)
       })
       .catch(async (error) => {
@@ -556,9 +604,7 @@ export function apply(ctx, config) {
           // The turn itself is over the transport bound. Re-reading and
           // reserializing it cannot change that outcome, and the run would
           // otherwise stay queued with no driver: ask the engine to hold it.
-          const held = await engine(
-            ['hold-over-limit', '--thread', String(sessionId), '--turn', String(turn)],
-          )
+          const held = await engine(holdArgs(sessionId, turn))
           if (held.code !== 0) {
             warn(`cannot hold oversized turn ${turn}: ${held.output.slice(0, 500)}`)
           } else if (parseReport(held.output).state !== 'held') {
@@ -662,7 +708,7 @@ export function apply(ctx, config) {
           }
         }
         const enqueueTurn = (errorsLeft = CAPTURE_ERRORS) => {
-          engine(['enqueue', '--event', signal])
+          engine(enqueueArgs(signal))
             .then((queued) => {
               if (queued.code !== 0) {
                 warn(`enqueue failed for turn ${turn}: ${queued.output.slice(0, 500)}`)

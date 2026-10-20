@@ -83,10 +83,30 @@ class DshFixture(unittest.TestCase):
             self.assertEqual(message["data"]["message"]["source"]["kind"], "model")
             self.assertIn("provider", message["data"]["message"]["source"])
 
-    def test_bridge_exports_payload_preserving_projection(self):
-        source = BRIDGE.read_text()
-        self.assertIn("export function projectRecord", source)
-        self.assertIn("records: events.map(projectRecord)", source)
+    def test_bridge_project_record_preserves_payload(self):
+        # Only the envelope fields are selected; `data` must survive unchanged,
+        # and an absent key must stay absent rather than become `undefined`.
+        import json as jsonlib
+        import subprocess
+        script = (
+            "const m = await import(process.argv[1]);"
+            "console.log(JSON.stringify(m.projectRecord({ seq: 1, type: 'user/message',"
+            " time: 2, surfaceOp: 'append', data: { id: 'm', content: [] }, extra: 'drop' })));"
+        )
+        output = subprocess.run(
+            ["node", "--input-type=module", "-e", script, str(BRIDGE)],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        self.assertEqual(
+            jsonlib.loads(output),
+            {
+                "seq": 1,
+                "type": "user/message",
+                "time": 2,
+                "surfaceOp": "append",
+                "data": {"id": "m", "content": []},
+            },
+        )
 
     def test_bridge_config_requires_absolute_paths(self):
         import json as jsonlib
@@ -132,11 +152,6 @@ class DshFixture(unittest.TestCase):
         # complete member of the input set: never a torn or mixed document.
         self.assertIn(result["text"], {"A", "B", "C"}, "concurrent publishes never tear")
         self.assertEqual(result["left"], 0, "a concurrent publish leaves no temporary file")
-        source = BRIDGE.read_text()
-        self.assertIn("randomUUID()}.tmp", source)
-        # A bracket that never closes must not block capture forever.
-        self.assertIn("did not finish within", source)
-        self.assertIn("compacting.delete(id)", source)
 
     def test_bridge_bounds_a_long_session_projection(self):
         import json as jsonlib
@@ -205,13 +220,6 @@ class DshFixture(unittest.TestCase):
         self.assertEqual(result["schema"], 1)
         self.assertEqual(result["count"], 3)
         self.assertEqual(result["last"]["type"], "turn/end")
-        source = BRIDGE.read_text()
-        self.assertIn("hint.state === 'deferred'", source)
-        self.assertIn(
-            "publishDeferred(session.id, turn, read)",
-            source,
-            "the deferred bootstrap publishes the snapshot register consumes",
-        )
 
     def test_bridge_retries_pending_captures_and_retires_projections(self):
         import json as jsonlib
@@ -235,6 +243,7 @@ class DshFixture(unittest.TestCase):
             " retryTerminal: m.retryable('history_missing'),"
             " retryDelay: m.CAPTURE_RETRY_MS,"
             " attempts: m.CAPTURE_ATTEMPTS,"
+            " errors: m.CAPTURE_ERRORS,"
             " left: (await fs.readdir(dir)).length }));"
             "await fs.rm(dir, { recursive: true });"
         )
@@ -260,15 +269,11 @@ class DshFixture(unittest.TestCase):
             result["attempts"], 60,
             "the bridge must drive the engine's pending-attempt limit",
         )
+        self.assertGreaterEqual(
+            result["errors"] * result["retryDelay"], 60000,
+            "no-ready retries must cover the engine's 60-second DSH lease",
+        )
         self.assertEqual(result["left"], 0, "a retired projection is deleted")
-        source = BRIDGE.read_text()
-        self.assertIn("CAPTURE_ATTEMPTS", source)
-        self.assertIn("attemptsLeft - 1", source)
-
-    def test_bridge_exports_compaction_wait(self):
-        source = BRIDGE.read_text()
-        self.assertIn("waitForCompaction", source)
-        self.assertIn("coding-memory/compaction-requested", source)
 
     def test_bridge_retries_a_stale_oversized_snapshot(self):
         # A read that predates the hinted turn must not publish an over-limit
@@ -304,8 +309,6 @@ class DshFixture(unittest.TestCase):
         self.assertTrue(result["stale"], "an oversized stale snapshot is retryable")
         self.assertTrue(result["staleSmall"], "a small stale snapshot is retryable too")
         self.assertEqual(result["bytes"], 0, "nothing over the bound is published")
-        source = BRIDGE.read_text()
-        self.assertIn("hint.state === 'held'", source)
 
     def test_bridge_classifies_an_oversized_turn_as_permanent(self):
         # A turn that itself exceeds the transport bound cannot become smaller
@@ -338,16 +341,6 @@ class DshFixture(unittest.TestCase):
         self.assertEqual(result["attempts"], 60)
         self.assertGreater(result["errors"], 0, "transient failures have a separate budget")
         self.assertLess(result["errorDelay"], 10000)
-        source = BRIDGE.read_text()
-        self.assertIn("hold-over-limit", source)
-        self.assertIn("report.reason === 'history_pending'", source)
-        self.assertIn("enqueueTurn", source)
-        self.assertIn(
-            "['enqueue', '--event', signal]",
-            source,
-            "the enqueue subcommand must receive --event after the subcommand",
-        )
-        self.assertIn("publishDeferred", source)
 
     def test_publish_removes_a_failed_temporary(self):
         # A failed rename must not leave a raw-session .tmp file behind.
@@ -402,16 +395,126 @@ class DshFixture(unittest.TestCase):
         self.assertNotIn("/", result["nestedName"])
         self.assertTrue(result["rejected"], "a non-integer turn cannot name a file")
 
-    def test_bridge_projects_header_and_engine_vocabulary(self):
-        self.assertTrue(BRIDGE.is_file())
-        source = BRIDGE.read_text()
-        for name in ("project", "engineOwned", "apply"):
-            self.assertIn(f"export function {name}", source)
-        for constant in ("MAX_PROJECTION_BYTES", "MAX_SIGNAL_BYTES", "ENGINE_SESSION"):
-            self.assertIn(f"export const {constant}", source)
-        self.assertIn("readSession", source)
-        self.assertIn("turn/end", source)
-        self.assertIn("agent/created", source)
+    def test_bridge_builds_engine_argv(self):
+        # The CLI contract is asserted on the builder's output, not on source
+        # fragments, so a refactor can rename internals without breaking this.
+        import json as jsonlib
+        import subprocess
+        script = (
+            "const m = await import(process.argv[1]);"
+            "console.log(JSON.stringify({"
+            " enqueue: m.enqueueArgs('signal'),"
+            " capture: m.captureArgs('/projection', '/project', 3, 'session-x'),"
+            " hold: m.holdArgs('session-x', 3),"
+            " markers: m.COMPACTION_REQUEST_EVENTS }));"
+        )
+        output = subprocess.run(
+            ["node", "--input-type=module", "-e", script, str(BRIDGE)],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        result = jsonlib.loads(output)
+        self.assertEqual(result["enqueue"], ["enqueue", "--event", "signal"])
+        self.assertEqual(
+            result["capture"],
+            ["capture", "--session", "/projection", "--project", "/project",
+             "--turn", "3", "--thread", "session-x"],
+        )
+        self.assertEqual(
+            result["hold"], ["hold-over-limit", "--thread", "session-x", "--turn", "3"]
+        )
+        self.assertIn("coding-memory/compaction-requested", result["markers"])
+
+    def _run_apply_probe(self, mode):
+        # Mounts the real plugin with a fake Cordis context and a stub engine.
+        import json as jsonlib
+        import os
+        import shutil
+        import subprocess
+        import tempfile
+        from pathlib import Path
+        root = Path(tempfile.mkdtemp(prefix="bridge-apply-"))
+        try:
+            stub = root / "stub.mjs"
+            stub.write_text(
+                "#!/usr/bin/env node\n"
+                "import { appendFileSync, existsSync } from 'node:fs'\n"
+                "const args = process.argv.slice(2)\n"
+                "const mode = process.env.BRIDGE_PROBE_MODE ?? 'ready'\n"
+                "const at = args.indexOf('--session')\n"
+                "const session = at >= 0 ? args[at + 1] : null\n"
+                "appendFileSync(process.env.BRIDGE_PROBE_LOG, JSON.stringify({"
+                " args, sessionExists: session ? existsSync(session) : null }) + '\\n')\n"
+                "if (args.includes('enqueue')) console.log(JSON.stringify({"
+                " action: 'enqueue', state: mode === 'deferred' ? 'deferred' : 'queued' }))\n"
+                "else if (args.includes('capture')) console.log(JSON.stringify("
+                "{ action: 'capture', state: mode === 'held' ? 'held' : 'ready',"
+                " evidence: 'digest' }))\n"
+                "else console.log('{}')\n"
+            )
+            stub.chmod(0o755)
+            state = root / "state"
+            state.mkdir()
+            log = root / "calls.jsonl"
+            probe = Path(__file__).with_name("apply_probe.mjs")
+            completed = subprocess.run(
+                ["node", str(probe), str(BRIDGE), str(stub), str(state), str(log), mode],
+                capture_output=True, text=True, timeout=20,
+                env={
+                    **os.environ,
+                    "BRIDGE_PROBE_LOG": str(log),
+                    "BRIDGE_PROBE_MODE": mode,
+                },
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            return jsonlib.loads(completed.stdout)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_bridge_apply_enqueues_then_captures(self):
+        # This exercises agent/created, turn/end, the projection publication,
+        # the hint-then-capture order, `--thread`, and terminal cleanup.
+        result = self._run_apply_probe("ready")
+        self.assertTrue(result["complete"])
+        self.assertFalse(result["projection"], "a finished capture removes its projection")
+        calls = result["lines"]
+        self.assertEqual(len(calls), 2, "one enqueue and one capture")
+        first, second = calls[0]["args"], calls[1]["args"]
+        self.assertIn("enqueue", first)
+        self.assertLess(first.index("enqueue"), first.index("--event"))
+        self.assertIn("capture", second)
+        self.assertEqual(second[second.index("--thread") + 1], "session-x")
+        self.assertEqual(second[second.index("--turn") + 1], "1")
+        self.assertTrue(calls[1]["sessionExists"], "capture reads the published projection")
+
+    def test_bridge_apply_waits_for_compaction(self):
+        # The hint goes out immediately; the capture waits for the bracket so
+        # the projection reflects the finished surface.
+        result = self._run_apply_probe("compact")
+        self.assertTrue(result["hintSent"])
+        self.assertTrue(
+            result["waitingWhileCompacting"],
+            "capture must not run while compaction/start is open",
+        )
+        self.assertTrue(result["complete"])
+        self.assertFalse(result["projection"])
+        self.assertEqual(len(result["lines"]), 2)
+
+    def test_bridge_apply_retains_a_held_projection(self):
+        # A held run is explicitly retryable; deleting its projection would
+        # leave `retry` with no input to drive.
+        result = self._run_apply_probe("held")
+        self.assertEqual(len(result["lines"]), 2)
+        self.assertTrue(result["projection"], "a held projection is retained")
+
+    def test_bridge_apply_publishes_a_deferred_projection(self):
+        # An unregistered project keeps the hint and publishes the snapshot that
+        # register/reconcile consume; no capture is attempted.
+        result = self._run_apply_probe("deferred")
+        self.assertTrue(result["published"], "the bootstrap snapshot is published")
+        self.assertTrue(result["projection"], "it is retained for reconcile")
+        calls = result["lines"]
+        self.assertEqual(len(calls), 1, "no capture is attempted for a deferred project")
+        self.assertIn("enqueue", calls[0]["args"])
 
 
 if __name__ == "__main__":

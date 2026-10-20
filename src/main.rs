@@ -303,6 +303,11 @@ enum DshAction {
         /// Exact turn number to capture; defaults to the next ready run.
         #[arg(long)]
         turn: Option<u64>,
+        /// Session identity, used to claim the run before reading the
+        /// projection. The bridge always passes it; the document is still
+        /// checked against it.
+        #[arg(long)]
+        thread: Option<String>,
     },
     /// Queue completed human turns of a session for capture.
     Reconcile {
@@ -337,10 +342,12 @@ impl DshAction {
                 session,
                 project,
                 turn,
+                thread,
             } => DshOperation::Capture {
                 session,
                 project,
                 turn,
+                thread,
             },
             Self::Reconcile { session, project } => DshOperation::Reconcile { session, project },
             Self::Register { session, project } => DshOperation::Register { session, project },
