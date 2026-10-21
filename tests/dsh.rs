@@ -50,6 +50,63 @@ fn turn_start(seq: u64, turn: u64) -> Value {
 fn turn_end(seq: u64, turn: u64, reason: Value) -> Value {
     record(seq, "turn/end", json!({"turn": turn, "reason": reason}))
 }
+/// A log-only workspace announcement: the changed-file summary stays on the Host.
+fn workspace_changes(seq: u64, turn: u64) -> Value {
+    record(seq, "workspace/changes", json!({"turn": turn}))
+}
+/// The first half of a provider retry pair, recorded inside the turn and step.
+fn retry_scheduled(seq: u64, turn: u64, step: u64) -> Value {
+    record(
+        seq,
+        "llm/retry",
+        json!({
+            "turn": turn, "step": step,
+            "retryId": "retry-1",
+            "provider": "provider-a",
+            "mode": "normal",
+            "policyKey": "policy-1",
+            "retry": 1,
+            "maxRetries": 2,
+            "delayMs": 250,
+            "failure": {
+                "message": "provider asked to slow down",
+                "code": "RATE_LIMIT",
+                "status": 429
+            }
+        }),
+    )
+}
+/// The second half of a provider retry pair.
+fn retry_started(seq: u64, turn: u64, step: u64) -> Value {
+    record(
+        seq,
+        "llm/retry-started",
+        json!({"turn": turn, "step": step, "retryId": "retry-1", "retry": 1}),
+    )
+}
+/// A whole-list todo snapshot; DSH records no turn or step on it.
+fn todo_write(seq: u64) -> Value {
+    record(
+        seq,
+        "todo/write",
+        json!({"todos": [{"content": "inspect the worker", "status": "in_progress"}]}),
+    )
+}
+fn assistant(seq: u64, turn: u64, step: u64) -> Value {
+    record(
+        seq,
+        "assistant/message",
+        json!({
+            "turn": turn, "step": step,
+            "message": {
+                "id": "assistant-1",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "the worker is idle"}],
+                "source": {"kind": "model", "provider": "provider-a", "model": "model-a"}
+            }
+        }),
+    )
+}
 fn log(turns: Vec<Value>) -> Value {
     let mut records = vec![
         record(0, "permission/preset", json!({"preset": "default"})),
@@ -937,6 +994,174 @@ fn unknown_event_types_and_foreign_formats_are_held() {
     assert!(matches!(
         decode(&foreign, 1),
         Capture::Unsupported(Reason::HistoryVersion)
+    ));
+}
+
+#[test]
+fn workspace_retry_and_todo_events_are_bookkeeping_inside_a_turn() {
+    // DSH appends each of these inside a completed turn. Their payloads are
+    // log-only status snapshots, not facts about what the human asked, so a
+    // turn containing them must stay capturable and gain no evidence item.
+    let cases = [
+        ("workspace/changes", workspace_changes(5, 1)),
+        ("llm/retry", retry_scheduled(5, 1, 1)),
+        ("llm/retry-started", retry_started(5, 1, 1)),
+        ("todo/write", todo_write(5)),
+    ];
+    let mut held = Vec::new();
+    for (kind, event) in cases {
+        let value = log(vec![
+            turn_start(3, 1),
+            human(4, 1, 1),
+            event,
+            turn_end(6, 1, json!({"kind": "completed"})),
+        ]);
+        match decode(&value, 1) {
+            Capture::Ready(bundle) => {
+                assert_eq!(
+                    bundle.items.len(),
+                    1,
+                    "{kind} must not become an evidence item"
+                );
+                assert_eq!(bundle.items[0]["type"], json!("userMessage"));
+            }
+            other => held.push(format!("{kind}: {other:?}")),
+        }
+    }
+    assert!(
+        held.is_empty(),
+        "these events must be bookkeeping, not held: {held:?}"
+    );
+}
+
+#[test]
+fn a_turn_with_a_retry_pair_and_workspace_changes_decodes() {
+    let value = log(vec![
+        turn_start(3, 1),
+        human(4, 1, 1),
+        retry_scheduled(5, 1, 1),
+        retry_started(6, 1, 1),
+        assistant(7, 1, 1),
+        workspace_changes(8, 1),
+        turn_end(9, 1, json!({"kind": "completed"})),
+    ]);
+    let Capture::Ready(bundle) = decode(&value, 1) else {
+        panic!("a completed turn with retry and workspace records is capturable");
+    };
+    let seqs: Vec<_> = bundle
+        .items
+        .iter()
+        .map(|item| item["seq"].as_u64().unwrap())
+        .collect();
+    assert_eq!(
+        seqs,
+        vec![4, 7],
+        "only the ask and the committed answer are evidence"
+    );
+    assert_eq!(bundle.outcome, "completed");
+}
+
+#[test]
+fn new_event_types_still_require_turn_attribution() {
+    // Each of these events carries its turn, so a mismatched window is still a
+    // misattributed projection rather than a skipped record.
+    let cases = [
+        ("workspace/changes", workspace_changes(5, 2)),
+        ("llm/retry", retry_scheduled(5, 2, 1)),
+        ("llm/retry-started", retry_started(5, 2, 1)),
+    ];
+    for (kind, event) in cases {
+        let value = log(vec![
+            turn_start(3, 1),
+            human(4, 1, 1),
+            event,
+            turn_end(6, 1, json!({"kind": "completed"})),
+        ]);
+        assert!(
+            matches!(
+                decode(&value, 1),
+                Capture::Unsupported(Reason::TurnAttribution)
+            ),
+            "{kind} must preserve turn attribution"
+        );
+    }
+}
+
+#[test]
+fn new_bookkeeping_events_do_not_bypass_sequence_or_identity_checks() {
+    // A gap at one of the new records is still a broken projection.
+    let mut gap = log(vec![
+        turn_start(3, 1),
+        human(4, 1, 1),
+        todo_write(5),
+        turn_end(6, 1, json!({"kind": "completed"})),
+    ]);
+    gap["records"][5].as_object_mut().unwrap().remove("seq");
+    assert!(matches!(
+        decode(&gap, 1),
+        Capture::Unsupported(Reason::Sequence)
+    ));
+
+    // An identity collision still holds with bookkeeping between the records.
+    let duplicated = log(vec![
+        turn_start(3, 1),
+        human(4, 1, 1),
+        assistant(5, 1, 1),
+        workspace_changes(6, 1),
+        assistant(7, 1, 1),
+        turn_end(8, 1, json!({"kind": "completed"})),
+    ]);
+    assert!(matches!(
+        decode(&duplicated, 1),
+        Capture::Unsupported(Reason::DuplicateIdentity)
+    ));
+}
+
+#[test]
+fn new_bookkeeping_events_do_not_bypass_the_size_bound() {
+    let big = "x".repeat(dsh::MAX_BYTES);
+    let value = log(vec![
+        turn_start(3, 1),
+        human(4, 1, 1),
+        retry_scheduled(5, 1, 1),
+        retry_started(6, 1, 1),
+        workspace_changes(7, 1),
+        todo_write(8),
+        record(
+            9,
+            "tool/call",
+            json!({"turn":1,"step":1,"callId":"c1","name":"read","arguments":{}}),
+        ),
+        record(
+            10,
+            "tool/result",
+            json!({"turn":1,"step":1,"message":{"id":"t1","role":"tool","toolCallId":"c1","content":[{"type":"text","text":big}]},"sourceEventSeqs":[9]}),
+        ),
+        turn_end(11, 1, json!({"kind": "completed"})),
+    ]);
+    assert!(matches!(decode(&value, 1), Capture::OverLimit));
+}
+
+#[test]
+fn unsupported_events_outside_the_selected_turn_window_do_not_hold_it() {
+    let value = log(vec![
+        record(3, "future/plugin-event", json!({"turn": 1})),
+        turn_start(4, 1),
+        human(5, 1, 1),
+        turn_end(6, 1, json!({"kind": "completed"})),
+        record(7, "future/plugin-event", json!({"turn": 1})),
+        turn_start(8, 2),
+        record(9, "future/plugin-event", json!({"turn": 2})),
+        turn_end(10, 2, json!({"kind": "completed"})),
+    ]);
+    let Capture::Ready(bundle) = decode(&value, 1) else {
+        panic!("a record outside the selected window is not read");
+    };
+    assert_eq!(bundle.items.len(), 1);
+    // The same type inside a selected window still holds that turn.
+    assert!(matches!(
+        decode(&value, 2),
+        Capture::Unsupported(Reason::UnknownEventType)
     ));
 }
 
