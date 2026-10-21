@@ -50,7 +50,8 @@ For a cited DSH execution result (`ds_type: "tool/result"`, normalized to
 `commandExecution`), the Engine also includes the request that records the executed
 command and arguments (`ds_type: "tool/call"`, normalized to `toolCall`). The match
 uses the native call identity: the request's `data.callId` equals the result's
-`data.message.toolCallId`, or its `data.toolCallId` fallback. Pairing is strictly
+`data.message.toolCallId`, then `data.toolCallId`, then `data.id`, matching the
+capture adapter's accepted result-identity fallbacks. Pairing is strictly
 within one immutable bundle and applies to candidate and retrieved-note references
 alike. Explicit requests, requests shared by several selections, and repeated
 candidate/note references are not duplicated; expanded items remain in their original

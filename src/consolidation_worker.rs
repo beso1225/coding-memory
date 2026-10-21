@@ -75,6 +75,9 @@ fn dsh_result_call(item: &Value) -> Option<&str> {
     data.get("message")
         .and_then(|message| message.get("toolCallId"))
         .or_else(|| data.get("toolCallId"))
+        // The capture adapter accepts `data.id` as its final result-identity
+        // fallback, so pairing must recognize the same shape.
+        .or_else(|| data.get("id"))
         .and_then(Value::as_str)
         .filter(|call| !call.is_empty())
 }
@@ -870,6 +873,50 @@ mod tests {
             serde_json::to_value(&original)?,
             "projection never mutates the immutable source bundle"
         );
+        Ok(())
+    }
+    #[test]
+    fn every_accepted_dsh_result_identity_shape_finds_its_request() -> Result<()> {
+        // `src/dsh.rs` accepts message.toolCallId, data.toolCallId, then data.id
+        // when it derives a result's native call identity. Pairing must not drift
+        // from that accepted set.
+        let shapes = [
+            (
+                "message",
+                json!({"message":{"id":"result-message","role":"tool",
+                                  "toolCallId":"call-fallback",
+                                  "content":[{"type":"text","text":"synthetic output"}]}}),
+            ),
+            (
+                "tool-call-id",
+                json!({"toolCallId":"call-fallback",
+                       "content":[{"type":"text","text":"synthetic output"}]}),
+            ),
+            (
+                "data-id",
+                json!({"id":"call-fallback",
+                       "content":[{"type":"text","text":"synthetic output"}]}),
+            ),
+        ];
+        for (label, identity) in shapes {
+            let d = tempdir()?;
+            let result_id = format!("result-{label}@2");
+            let mut result = dsh_result(&result_id, None, 2);
+            result["data"] = identity;
+            result["data"]["turn"] = json!(1);
+            result["data"]["step"] = json!(1);
+            let original = dsh_bundle(vec![
+                dsh_request("call-fallback@1", "call-fallback", 1),
+                result,
+            ]);
+            let digest = evidence::save(d.path(), &original)?;
+            let projected = load_projection(d.path(), &digest, &[result_id.clone()].into())?;
+            assert_eq!(
+                projected_ids(&projected),
+                vec!["call-fallback@1", result_id.as_str()],
+                "{label} identity fallback must find the request"
+            );
+        }
         Ok(())
     }
     #[test]
