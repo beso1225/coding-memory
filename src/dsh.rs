@@ -262,6 +262,21 @@ const BOOKKEEPING: &[&str] = &[
     "compaction/summary",
     "compaction/prune",
     "compaction/end",
+    // The workspace-changes announcement names only the turn it belongs to.
+    // The changed-file summary stays on the Host, is keyed by the event's seq,
+    // and is never model-visible, so the log record itself carries no fact
+    // about the ask.
+    "workspace/changes",
+    // A provider retry pair is transient transport bookkeeping inside one turn
+    // and step. The attempt that settled the step is already
+    // `assistant/message`, and a terminal failure is recorded on `turn/end`.
+    "llm/retry",
+    "llm/retry-started",
+    // The todo list is a model-written, whole-list last-write-wins snapshot
+    // with no native identity. It is the model's plan, not the human's ask,
+    // and capturing it would add items the extraction vocabulary cannot cite
+    // or tell apart across snapshots.
+    "todo/write",
 ];
 /// Event types that become immutable evidence for the owning turn.
 const RELEVANT_FOR_EVIDENCE: &[&str] = &[

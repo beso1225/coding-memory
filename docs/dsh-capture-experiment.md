@@ -71,7 +71,7 @@ silently holding production runs.
 | Is the persisted log complete when the process exits? | Yes. The headless runner awaits `sessions.flush(agent.session)` before exiting, so a reader started afterwards sees the whole turn. |
 | Is the persisted log complete *at* `turn/end`? | Not guaranteed: `session/event` is fire-and-forget and `turn/end` does not wait for persistence. The bridge nevertheless reads there, because the harness may deactivate its services as soon as the run ends. It starts `sessionQuery.readSession` one microtask after the commit (before the hint subprocess runs), publishes a per-turn projection, and calls `capture`; a failed read is retried with a fresh snapshot, and the retry timer keeps a short-lived harness alive until the run is terminal. |
 | What does a user-role event look like? | `user/message` events carry `source.kind`. One headless turn produced four user-role events: one `user` and three harness-injected context messages. A long interactive session showed the same pattern (`time-context`, `agent-instructions`, `runtime-context`, `skill-catalog`). A human run is identified by `source.kind === "user"`, never by role or count. |
-| What event vocabulary appears? | `permission/preset`, `sandbox/mode`, `approval/policy`, `agent/inbox/spliced`, `turn/start`, `step/start`, `system/message`, `user/message`, `request/header`, `request/context`, `session/title`, `session/title-llm-request`, `assistant/attempt`, `step/end`, `turn/end`, plus `tool/call` and `tool/result` in tool-using sessions. |
+| What event vocabulary appears? | `permission/preset`, `sandbox/mode`, `approval/policy`, `agent/inbox/spliced`, `turn/start`, `step/start`, `system/message`, `user/message`, `request/header`, `request/context`, `session/title`, `session/title-llm-request`, `assistant/attempt`, `step/end`, `turn/end`, plus `tool/call` and `tool/result` in tool-using sessions. The contract also defines `workspace/changes`, `llm/retry`, `llm/retry-started`, and `todo/write` for plugins and tools that are not always composed. |
 | Are records contiguous? | Yes in every observed session: `seq` starts at 0 and increases by one per record. The adapter still verifies this instead of assuming it. |
 | What is the record envelope? | `{"seq", "type", "time", "data"}` for every event; message-producing events add `surfaceOp`, and `tool/result` adds `sourceEventSeqs`. |
 
@@ -133,10 +133,26 @@ covered by `tests/dsh.rs`:
   `before_enablement` instead of being called a fork or nonhuman run.
 - Injected user-role messages are dropped from evidence; they are harness framing,
   not the human's run.
-- A type outside the bridge's known vocabulary, or any type the bridge chooses
-  not to project, is held as `unknown_session_event_type`; the turn is
-  inspectable instead of silently narrowed. Every type observed in this
-  experiment is now either evidence or bookkeeping.
+- The adapter's vocabulary is explicit; a projected type it does not know is
+  held as `unknown_session_event_type`, so the turn is inspectable instead of
+  silently narrowed. An event outside the selected turn's own window is never
+  read, so an unsupported record in another turn cannot hold this one. The
+  types the adapter supports divide into:
+  - Evidence: `user/message`, `assistant/message`, `tool/call`, `tool/result`,
+    and `developer/message`; `assistant/attempt` contributes only its projected
+    bytes to the size bound.
+  - Bookkeeping: turn, step, request, approval, sandbox, job, title, command,
+    and compaction brackets, plus `workspace/changes`, `llm/retry`,
+    `llm/retry-started`, and `todo/write`. `workspace/changes` names only its
+    turn; the changed-file summary stays on the Host, is keyed by the event's
+    `seq`, and is never model-visible. `llm/retry` and `llm/retry-started` are
+    log-only pairs for one provider retry inside a turn and step: the attempt
+    that settled the step is already `assistant/message`, and a terminal
+    failure is recorded on `turn/end`. `todo/write` is a log-only, whole-list
+    last-write-wins snapshot with no native identity, so it is the model's plan
+    rather than the human's ask and cannot become a distinct evidence item.
+  Other contract types, such as plugin hooks, goals, schedules, teams, and
+  subagent descriptors, stay held until their omission is shown safe.
 - Outcomes map `completed → completed`, `error → failed`,
   `aborted`/`interrupted → interrupted`; `blocked`, `max-tokens`, `forked`, and
   plugin-defined kinds are held as `unsupported_turn_end_reason` instead of
@@ -353,11 +369,16 @@ These were found by the measurement and are fixed with regression tests:
 - `capture-diagnose` remains Codex-only. DSH failures are inspected through
   `status` held reasons and the projection file named by the bridge.
 - Fork and subagent capture are excluded, and a captured run is never retried
-  automatically after a terminal hold. `retry STORE THREAD TURN` requeues the
-  run, and the bridge keeps the held turn's projection: follow it with
-  `capture --session <retained projection> --thread <session> --turn N` (or omit
-  `--turn` to select the session's next queued run). A projection that was
-  manually deleted cannot drive that retry.
+  automatically after a terminal hold, including `unknown_session_event_type`.
+  Recovery is deliberate and keyed to one run: after installing a decoder that
+  accepts the recorded type, requeue that specific held key with
+  `retry STORE THREAD TURN`, then drive its DSH capture from the retained
+  projection with
+  `capture --session <projection> --project <cwd> --thread <session> --turn N`
+  under `coding-memory dsh --dsh-home <home>` (omit `--turn` to select the
+  session's next queued run). Do not bulk-retry held work: every retry of a key
+  whose vocabulary the decoder still lacks returns to the same hold. A
+  projection that was manually deleted cannot drive that retry.
 
 ## Reproduction
 

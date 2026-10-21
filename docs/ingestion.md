@@ -142,13 +142,17 @@ permanent over-limit outcome: the bridge asks the engine to hold that run as
 run as `history_readiness_exhausted` on attempt 60,
 as it does for Codex. If the process is killed before either happens, capture
 the run explicitly from a fresh projection (`capture --thread <session> --turn N`); `reconcile`
-only processes pending hints. `retry STORE THREAD TURN` requeues a held DSH run;
-the bridge keeps that turn's projection instead of deleting it, so drive the
-retry with `capture --session <retained file> --thread <session> --turn N` (omit
-`--turn` to select the session's next queued run). Delete retained held snapshots
-under `<state-dir>/dsh/projections/` once inspected. Pending hints older than 30
-days are dropped when `reconcile` runs, so a turn that never appears in a
-projection cannot accumulate forever.
+only processes pending hints. `retry STORE THREAD TURN` requeues one held DSH
+run; the bridge keeps that turn's projection instead of deleting it, so after
+installing a decoder that accepts the recorded event vocabulary, drive that
+retry with
+`capture --session <projection> --project <cwd> --thread <session> --turn N`
+(omit `--turn` to select the session's next queued run). Requeue only the
+specific held key: a bulk retry returns every key whose vocabulary the decoder
+still lacks to the same `unknown_session_event_type` hold. Delete retained held
+snapshots under `<state-dir>/dsh/projections/` once inspected. Pending hints
+older than 30 days are dropped when `reconcile` runs, so a turn that never
+appears in a projection cannot accumulate forever.
 Re-running `register` for a registered
 project reports `already_registered` and baselines nothing. `/compact` and its
 durable bracket are harness bookkeeping and do not reach evidence. `--dsh-home`
