@@ -64,6 +64,30 @@ fn projections(bundles: &HashMap<String, Evidence>) -> BTreeMap<&str, EvidencePr
         .map(|(digest, evidence)| (digest.as_str(), projection(digest, evidence)))
         .collect()
 }
+/// The native call a projected DSH execution result answers.
+fn dsh_result_call(item: &Value) -> Option<&str> {
+    if item["type"].as_str() != Some("commandExecution")
+        || item["ds_type"].as_str() != Some("tool/result")
+    {
+        return None;
+    }
+    let data = item.get("data")?;
+    data.get("message")
+        .and_then(|message| message.get("toolCallId"))
+        .or_else(|| data.get("toolCallId"))
+        .and_then(Value::as_str)
+        .filter(|call| !call.is_empty())
+}
+/// The native call a projected DSH request records.
+fn dsh_request_call(item: &Value) -> Option<&str> {
+    if item["type"].as_str() != Some("toolCall") || item["ds_type"].as_str() != Some("tool/call") {
+        return None;
+    }
+    item.get("data")?
+        .get("callId")?
+        .as_str()
+        .filter(|call| !call.is_empty())
+}
 fn load_projection(root: &Path, digest: &str, requested: &BTreeSet<String>) -> Result<Evidence> {
     ensure!(
         digest.len() == 64
@@ -82,15 +106,56 @@ fn load_projection(root: &Path, digest: &str, requested: &BTreeSet<String>) -> R
         source.schema_version == 1 && source.outcome == "completed",
         "Unsupported evidence"
     );
+    let mut selected = requested.clone();
+    // A cited DSH execution result is incomplete on its own: the matching request
+    // carries the executed command and arguments. Add it only when the same
+    // bundle records exactly one well-formed request for that native call and the
+    // request has a unique item id. Missing, ambiguous, or malformed links leave
+    // the explicit selection unchanged; the engine never guesses from another
+    // item or bundle.
+    {
+        let mut requests: HashMap<&str, Vec<&Value>> = HashMap::new();
+        for item in &source.items {
+            if let Some(call) = dsh_request_call(item) {
+                requests.entry(call).or_default().push(item);
+            }
+        }
+        let mut ids: HashMap<&str, usize> = HashMap::new();
+        for item in &source.items {
+            if let Some(id) = item["id"].as_str() {
+                *ids.entry(id).or_default() += 1;
+            }
+        }
+        for item in &source.items {
+            let Some(id) = item["id"].as_str() else {
+                continue;
+            };
+            if !requested.contains(id) {
+                continue;
+            }
+            let Some(call) = dsh_result_call(item) else {
+                continue;
+            };
+            let Some([request]) = requests.get(call).map(Vec::as_slice) else {
+                continue;
+            };
+            let Some(request_id) = request["id"].as_str().filter(|id| !id.is_empty()) else {
+                continue;
+            };
+            if ids.get(request_id) == Some(&1) {
+                selected.insert(request_id.to_owned());
+            }
+        }
+    }
     let mut found = BTreeSet::new();
     let mut items = Vec::new();
     for item in source.items {
-        if let Some(id) = item["id"].as_str().filter(|id| requested.contains(*id)) {
+        if let Some(id) = item["id"].as_str().filter(|id| selected.contains(*id)) {
             ensure!(found.insert(id.to_owned()), "Ambiguous evidence locator");
             items.push(item);
         }
     }
-    ensure!(found == *requested, "Missing evidence locator");
+    ensure!(selected == found, "Missing evidence locator");
     source.items = items;
     Ok(source)
 }
@@ -739,6 +804,420 @@ mod tests {
             ]
         }))
         .unwrap()
+    }
+    /// Synthetic DSH evidence with a non-adjacent request and execution result.
+    fn dsh_source() -> Evidence {
+        dsh_bundle(vec![
+            dsh_request("call-1@10", "call-1", 10),
+            json!({"id":"msg-1@11","seq":11,"type":"userMessage","ds_type":"user/message","status":null,
+                   "data":{"id":"msg-1","role":"user",
+                           "content":[{"type":"text","text":"unrelated context"}]}}),
+            dsh_result("call-1@12", Some("call-1"), 12),
+        ])
+    }
+    fn dsh_bundle(items: Vec<Value>) -> Evidence {
+        serde_json::from_value(json!({
+            "schema_version":1,
+            "run":{"store":"dsh-fixture-store","thread":"session-synthetic-1","turn":"7"},
+            "project":"alpha","runtime_version":"dsh-log-v4","outcome":"completed",
+            "started_at":1,"completed_at":2,"cwd":"/repo","terminal_error":null,
+            "coverage":["synthetic DSH sessionQuery projection"],"items":items
+        }))
+        .unwrap()
+    }
+    fn dsh_request(id: &str, call: &str, seq: u64) -> Value {
+        json!({"id":id,"seq":seq,"type":"toolCall","ds_type":"tool/call","status":null,
+               "data":{"turn":1,"step":1,"callId":call,"name":"read",
+                       "arguments":{"path":"synthetic.txt"}}})
+    }
+    fn dsh_result(id: &str, call: Option<&str>, seq: u64) -> Value {
+        let mut message = json!({"id":format!("result-{id}"),"role":"tool",
+                                 "content":[{"type":"text","text":"synthetic output"}]});
+        if let Some(call) = call {
+            message["toolCallId"] = json!(call);
+        }
+        json!({"id":id,"seq":seq,"type":"commandExecution","ds_type":"tool/result",
+               "status":"completed","data":{"turn":1,"step":1,"message":message,
+               "sourceEventSeqs":[seq.saturating_sub(1)]}})
+    }
+    fn projected_ids(evidence: &Evidence) -> Vec<&str> {
+        evidence
+            .items
+            .iter()
+            .map(|item| item["id"].as_str().unwrap())
+            .collect()
+    }
+    #[test]
+    fn a_cited_dsh_result_includes_its_matching_request() -> Result<()> {
+        // The result establishes the outcome, but the request is what explains
+        // the executed command and arguments. A candidate can cite the result
+        // alone, so consolidation must project the uniquely matching request.
+        let d = tempdir()?;
+        let original = dsh_source();
+        let digest = evidence::save(d.path(), &original)?;
+        let projected = load_projection(d.path(), &digest, &["call-1@12".into()].into())?;
+        assert_eq!(projected_ids(&projected), vec!["call-1@10", "call-1@12"]);
+        assert_eq!(
+            projected.items[0], original.items[0],
+            "the request keeps its full original payload and stable id"
+        );
+        assert_eq!(
+            projected.items[1], original.items[2],
+            "the cited result keeps its full original payload and stable id"
+        );
+        assert_eq!(
+            serde_json::to_value(evidence::load(d.path(), &digest)?)?,
+            serde_json::to_value(&original)?,
+            "projection never mutates the immutable source bundle"
+        );
+        Ok(())
+    }
+    #[test]
+    fn explicit_dsh_requests_are_not_duplicated_in_source_order() -> Result<()> {
+        // Requests may appear before or after other calls, and a candidate may
+        // already cite the request explicitly. The projection keeps source order
+        // and never repeats an item.
+        let d = tempdir()?;
+        let original = dsh_bundle(vec![
+            dsh_request("call-a@1", "call-a", 1),
+            dsh_request("call-b@2", "call-b", 2),
+            dsh_result("call-a@3", Some("call-a"), 3),
+            dsh_result("call-b@4", Some("call-b"), 4),
+        ]);
+        let digest = evidence::save(d.path(), &original)?;
+        let requested = [
+            "call-a@1".to_owned(),
+            "call-a@3".to_owned(),
+            "call-b@4".to_owned(),
+        ]
+        .into();
+        let projected = load_projection(d.path(), &digest, &requested)?;
+        assert_eq!(
+            projected_ids(&projected),
+            vec!["call-a@1", "call-b@2", "call-a@3", "call-b@4"],
+            "explicit and automatically added requests are deduplicated in source order"
+        );
+        for (projected, original) in projected
+            .items
+            .iter()
+            .zip([0, 1, 2, 3].map(|i| &original.items[i]))
+        {
+            assert_eq!(projected, original, "projected items keep their payloads");
+        }
+        Ok(())
+    }
+    #[test]
+    fn a_request_shared_by_selected_results_is_included_once() -> Result<()> {
+        // Capture rejects duplicate results for one call, but a foreign or
+        // malformed bundle must still never duplicate the shared request.
+        let d = tempdir()?;
+        let original = dsh_bundle(vec![
+            dsh_request("call-shared@1", "shared", 1),
+            dsh_result("result-shared-1@2", Some("shared"), 2),
+            dsh_result("result-shared-2@3", Some("shared"), 3),
+        ]);
+        let digest = evidence::save(d.path(), &original)?;
+        let requested = [
+            "result-shared-1@2".to_owned(),
+            "result-shared-2@3".to_owned(),
+        ]
+        .into();
+        let projected = load_projection(d.path(), &digest, &requested)?;
+        assert_eq!(
+            projected_ids(&projected),
+            vec!["call-shared@1", "result-shared-1@2", "result-shared-2@3"]
+        );
+        Ok(())
+    }
+    #[test]
+    fn missing_or_ambiguous_dsh_requests_are_not_guessed() -> Result<()> {
+        let d = tempdir()?;
+        let original = dsh_bundle(vec![
+            dsh_result("res-missing@1", None, 1),
+            dsh_result("res-ambiguous@2", Some("dup"), 2),
+            dsh_request("req-dup-1@3", "dup", 3),
+            dsh_request("req-dup-2@4", "dup", 4),
+        ]);
+        let digest = evidence::save(d.path(), &original)?;
+        for result in ["res-missing@1", "res-ambiguous@2"] {
+            let projected = load_projection(d.path(), &digest, &[result.into()].into())?;
+            assert_eq!(
+                projected_ids(&projected),
+                vec![result],
+                "an unresolvable relationship leaves only the explicit result"
+            );
+        }
+        Ok(())
+    }
+    #[test]
+    fn malformed_or_mismatched_dsh_relationships_are_not_guessed() -> Result<()> {
+        let mut non_string = dsh_result("res-non-string@1", Some("call"), 1);
+        non_string["data"]["message"]["toolCallId"] = json!(42);
+        let mut wrong_type = dsh_request("req-wrong-type@5", "call-w", 5);
+        wrong_type["type"] = json!("userMessage");
+        let d = tempdir()?;
+        let original = dsh_bundle(vec![
+            non_string,
+            dsh_result("res-mismatch@2", Some("call-z"), 2),
+            dsh_request("req-other@3", "call-other", 3),
+            wrong_type,
+            dsh_result("res-wrong-type@6", Some("call-w"), 6),
+            dsh_request("dup-id@7", "call-dup-a", 7),
+            dsh_request("dup-id@7", "call-dup-b", 8),
+            dsh_result("res-dup-id@9", Some("call-dup-a"), 9),
+        ]);
+        let digest = evidence::save(d.path(), &original)?;
+        for result in [
+            "res-non-string@1",
+            "res-mismatch@2",
+            "res-wrong-type@6",
+            "res-dup-id@9",
+        ] {
+            let projected = load_projection(d.path(), &digest, &[result.into()].into())?;
+            assert_eq!(
+                projected_ids(&projected),
+                vec![result],
+                "a malformed relationship never selects an unrelated request"
+            );
+        }
+        Ok(())
+    }
+    fn dsh_batch(candidate: Value) -> Batch {
+        serde_json::from_value(json!({
+            "id":1,"project":"alpha","candidates":[{
+                "id":"candidate","state":"ready","created_at":1,"candidate":candidate
+            }]
+        }))
+        .unwrap()
+    }
+    #[test]
+    fn candidate_context_includes_the_matching_request_and_counts_its_bytes() -> Result<()> {
+        let d = tempdir()?;
+        let vault = d.path().join("vault");
+        fs::create_dir(&vault)?;
+        let mut state = State::open(&d.path().join("state.sqlite"))?;
+        state.register_project("alpha", "/repo", 1)?;
+        let digest = evidence::save(d.path(), &dsh_source())?;
+        let batch = dsh_batch(json!({
+            "kind":"procedure",
+            "title":"Read synthetic input",
+            "claim":"Read synthetic.txt with the read tool.",
+            "scope":{"kind":"project","project_id":"alpha"},
+            "conditions":[],
+            "verification":"observed",
+            "evidence":[{"bundle":digest,"item":"call-1@12"}]
+        }));
+        let search = Search::new(d.path(), &vault)?;
+        search.rebuild()?;
+        let attempt = prepare_context(&state, d.path(), &search, &batch, false)?;
+        let context = attempt.context.expect("expanded context fits");
+        let projected = context.bundles.get(&digest).expect("expanded bundle");
+        assert_eq!(projected_ids(projected), vec!["call-1@10", "call-1@12"]);
+        // The measured input must use the same expanded projection, not the
+        // explicit result-only selection.
+        let schema = consolidation::proposal_schema(&batch, &[]);
+        let expected: HashMap<_, _> = [(digest, projected.clone())].into();
+        let input = json!({"batch":batch,"existing":[],"evidence":projections(&expected)});
+        let budget = input_budget(&input, &schema)?;
+        assert_eq!(
+            serde_json::to_value(attempt.diagnostic.budget.as_ref().unwrap())?,
+            serde_json::to_value(&budget)?,
+            "preflight bytes include the automatically added request"
+        );
+        assert_eq!(context.input, input);
+        Ok(())
+    }
+    #[test]
+    fn a_large_paired_request_is_included_in_the_size_decision() -> Result<()> {
+        let d = tempdir()?;
+        let vault = d.path().join("vault");
+        fs::create_dir(&vault)?;
+        let mut state = State::open(&d.path().join("state.sqlite"))?;
+        state.register_project("alpha", "/repo", 1)?;
+        let mut request = dsh_request("call-large@10", "call-large", 10);
+        request["data"]["arguments"] = json!("x".repeat(extraction::MAX_INPUT));
+        let digest = evidence::save(
+            d.path(),
+            &dsh_bundle(vec![
+                request,
+                dsh_result("call-large@12", Some("call-large"), 12),
+            ]),
+        )?;
+        let batch = dsh_batch(json!({
+            "kind":"procedure","title":"Read synthetic input",
+            "claim":"Read synthetic.txt with the read tool.",
+            "scope":{"kind":"project","project_id":"alpha"},"conditions":[],
+            "verification":"observed",
+            "evidence":[{"bundle":digest,"item":"call-large@12"}]
+        }));
+        let search = Search::new(d.path(), &vault)?;
+        search.rebuild()?;
+        let attempt = prepare_context(&state, d.path(), &search, &batch, false)?;
+        assert!(
+            attempt.context.is_none(),
+            "the paired request pushes the context over the cap"
+        );
+        assert_eq!(attempt.diagnostic.reason, Some(Reason::TooLarge));
+        Ok(())
+    }
+    #[test]
+    fn an_existing_note_result_reference_also_gets_its_request() -> Result<()> {
+        let d = tempdir()?;
+        let vault = d.path().join("vault");
+        fs::create_dir(&vault)?;
+        let mut state = State::open(&d.path().join("state.sqlite"))?;
+        state.register_project("alpha", "/repo", 1)?;
+        let dsh_digest = evidence::save(d.path(), &dsh_source())?;
+        let mut candidate_source = source();
+        candidate_source.run.thread = "session-candidate".into();
+        let candidate_digest = evidence::save(d.path(), &candidate_source)?;
+        let note = notes::Note {
+            metadata: notes::Metadata {
+                schema_version: 1,
+                id: "synthetic-read".into(),
+                title: "Read synthetic input".into(),
+                summary: "Read synthetic.txt with the read tool.".into(),
+                scope: notes::MemoryScope::Project {
+                    project_id: "alpha".into(),
+                },
+                status: notes::Status::Active,
+                successor: None,
+                conditions: vec![],
+                verification: notes::Verification::Observed,
+                evidence: vec![notes::Reference {
+                    bundle: dsh_digest.clone(),
+                    item: "call-1@12".into(),
+                }],
+                review: notes::Review {
+                    decision: "accepted".into(),
+                    backend: "fixture".into(),
+                    model: "synthetic".into(),
+                    prompt_version: "fixture-v1".into(),
+                    reviewed_at: 10,
+                },
+                related: vec![],
+                created_at: 10,
+                updated_at: 10,
+            },
+            body: "Read `synthetic.txt` with the `read` tool and inspect the arguments.".into(),
+        };
+        fs::write(vault.join("synthetic-read.md"), notes::render(&note)?)?;
+        let batch = dsh_batch(json!({
+            "kind":"procedure",
+            "title":"Read synthetic input",
+            "claim":"Read synthetic.txt with the read tool.",
+            "scope":{"kind":"project","project_id":"alpha"},
+            "conditions":[],
+            "verification":"observed",
+            "evidence":[{"bundle":candidate_digest,"item":"U"}]
+        }));
+        let search = Search::new(d.path(), &vault)?;
+        search.rebuild()?;
+        let attempt = prepare_context(&state, d.path(), &search, &batch, false)?;
+        let context = attempt.context.expect("context fits");
+        assert!(
+            context
+                .existing
+                .iter()
+                .any(|note| note.id == "synthetic-read"),
+            "the note is retrieved"
+        );
+        let projected = context.bundles.get(&dsh_digest).expect("note bundle");
+        assert_eq!(
+            projected_ids(projected),
+            vec!["call-1@10", "call-1@12"],
+            "a durable result reference re-expands to its request"
+        );
+        Ok(())
+    }
+    fn dsh_proposal(evidence: Value, verification: &str) -> Proposal {
+        serde_json::from_value(json!({
+            "schema_version":1,"role":"consolidation","operations":[{
+                "id":"op1","action":"create","candidates":["candidate"],"target":null,
+                "draft":{
+                    "title":"Read synthetic input","summary":"Read synthetic.txt.",
+                    "scope":{"kind":"project","project_id":"alpha"},
+                    "conditions":[],"verification":verification,"evidence":evidence,
+                    "related":[],"body":"Read synthetic.txt with the read tool."
+                },
+                "dependencies":[],"rationale":"Synthetic support"
+            }]
+        }))
+        .unwrap()
+    }
+    #[test]
+    fn a_draft_may_cite_the_request_added_to_its_result() -> Result<()> {
+        let d = tempdir()?;
+        let digest = evidence::save(d.path(), &dsh_source())?;
+        let projected = load_projection(d.path(), &digest, &["call-1@12".into()].into())?;
+        let batch = dsh_batch(json!({
+            "kind":"procedure","title":"Read synthetic input",
+            "claim":"Read synthetic.txt with the read tool.",
+            "scope":{"kind":"project","project_id":"alpha"},"conditions":[],
+            "verification":"observed",
+            "evidence":[{"bundle":digest,"item":"call-1@12"}]
+        }));
+        let bundles: HashMap<_, _> = [(digest.clone(), projected)].into();
+        let proposal = dsh_proposal(
+            json!([
+                {"bundle":digest,"item":"call-1@10"},
+                {"bundle":digest,"item":"call-1@12"}
+            ]),
+            "observed",
+        );
+        consolidation::validate(&proposal, &batch, &[], &bundles)?;
+        let decisions: Decisions = serde_json::from_value(json!({
+            "schema_version":1,"role":"review","decisions":[{
+                "operation":"op1","decision":"accept","rationale":"synthetic support"
+            }]
+        }))?;
+        let review = Review {
+            decision: "accepted".into(),
+            backend: "fixture".into(),
+            model: "synthetic".into(),
+            prompt_version: "review-v2".into(),
+            reviewed_at: 10,
+        };
+        let (changes, _) = consolidation::plan(&proposal, &decisions, &batch, &[], &review, 11)?;
+        let note = notes::parse(&changes[0].content)?;
+        let expected = [
+            notes::Reference {
+                bundle: digest.clone(),
+                item: "call-1@10".into(),
+            },
+            notes::Reference {
+                bundle: digest,
+                item: "call-1@12".into(),
+            },
+        ];
+        assert_eq!(
+            note.metadata.evidence, expected,
+            "a cited automatically added request remains durable"
+        );
+        Ok(())
+    }
+    #[test]
+    fn a_request_does_not_upgrade_verification() -> Result<()> {
+        let d = tempdir()?;
+        let digest = evidence::save(d.path(), &dsh_source())?;
+        let projected = load_projection(d.path(), &digest, &["call-1@10".into()].into())?;
+        let batch = dsh_batch(json!({
+            "kind":"procedure","title":"Read synthetic input",
+            "claim":"Read synthetic.txt with the read tool.",
+            "scope":{"kind":"project","project_id":"alpha"},"conditions":[],
+            "verification":"observed",
+            "evidence":[{"bundle":digest,"item":"call-1@10"}]
+        }));
+        let bundles: HashMap<_, _> = [(digest.clone(), projected)].into();
+        let proposal = dsh_proposal(json!([{"bundle":digest,"item":"call-1@10"}]), "observed");
+        let error = consolidation::validate(&proposal, &batch, &[], &bundles).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Insufficient verification support"),
+            "a tool request is not observed support"
+        );
+        Ok(())
     }
     #[test]
     fn projection_retains_exact_items_metadata_and_original_order() -> Result<()> {

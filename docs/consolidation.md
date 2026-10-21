@@ -35,10 +35,10 @@ per call — the complete prompt plus the serialized response schema, the same
 budget extraction uses — and output at 64 KiB. Oversized/unavailable context
 stays held.
 
-## Referenced evidence projections (Issue #20, first increment)
+## Referenced evidence projections (Issues #20 and #60)
 
 Consolidation verifies the hash, schema and completed outcome of each immutable
-original source before selecting items. The transient model context contains only
+original source before selecting items. The transient model context starts from the
 items referenced by the selected candidates or retrieved existing notes, deduplicated
 by original bundle hash and native item ID. Selected items retain their full JSON
 and original order; source metadata is preserved. Missing or ambiguous referenced
@@ -46,11 +46,40 @@ IDs fail closed. Both proposer and reviewer receive the same projection. Engine
 validation rejects citations to omitted items, even if those items exist in the
 original file.
 
+For a cited DSH execution result (`ds_type: "tool/result"`, normalized to
+`commandExecution`), the Engine also includes the request that records the executed
+command and arguments (`ds_type: "tool/call"`, normalized to `toolCall`). The match
+uses the native call identity: the request's `data.callId` equals the result's
+`data.message.toolCallId`, or its `data.toolCallId` fallback. Pairing is strictly
+within one immutable bundle and applies to candidate and retrieved-note references
+alike. Explicit requests, requests shared by several selections, and repeated
+candidate/note references are not duplicated; expanded items remain in their original
+source order. If the call identity is missing or malformed, more than one
+well-formed request in the bundle claims it, or the matching request does not have a
+unique item ID, only the explicitly selected items are projected: the Engine never
+guesses a request from another item, turn, run, or bundle. Non-DSH evidence is
+unchanged.
+
+Automatically included requests are supplied evidence and may be cited in a draft
+like any other projected item. They do not upgrade verification: `observed` still
+requires a completed execution item, and a `toolCall` request alone is not observed
+support. If a draft cites an automatically included request, the rendered note
+retains that reference. A note that stores only the result still re-expands to the
+request when it is selected later, because the source bundle is immutable and the
+relationship is deterministic. Preflight, partitioning, generation and independent
+review all measure the expanded projection, including the added request bytes. The
+selected-context diagnostic continues to report explicit referenced-item and bundle
+counts, not a count of automatically added support. Extraction citation guidance is
+separate: a candidate may cite the result alone or both items, and this projection
+supplies the matching request either way.
+
 Each model evidence entry carries `projection_schema_version: 1` and
 `source_bundle`, the hash of the immutable original. The projection is not a new
 evidence artifact and is never saved over the original. References in published
 notes continue to use the original bundle hash and native item ID. Consolidation
-and review prompts use version 2 for this input contract.
+and review keep their existing prompt contracts (`consolidation-v3` and
+`review-v2`): automatically added requests are ordinary supplied evidence under
+the existing citation rule.
 
 Local source reads have a separate 16 MiB per-file cap, allowing captured items
 (up to 8 MiB) plus their JSON envelope to be verified without treating them as
@@ -116,7 +145,13 @@ Missing/invalid evidence remains `held_context_unavailable`; this change does no
 silently treat it as an oversized valid source. The final hard-cap guard also
 retains that reason if it detects an unexpected prompt-size failure.
 Extraction input budgeting and resident-memory improvements remain separate
-work. Existing held batches are not automatically retried or discarded.
+work. Existing held batches are not automatically retried or discarded. After
+installing the paired-request projection, inspect a held batch with
+`consolidation-preflight`, then deliberately retry only the batch whose command
+evidence is now supplied with `consolidation-retry BATCH`. The expansion happens
+when context is prepared again, so a retry sees the request without rewriting
+stored candidates, notes, or immutable evidence. Do not bulk-retry or rewrite
+held candidates.
 
 ## Held-batch preflight (Issue #20, final increment)
 
