@@ -25,9 +25,11 @@ Existing bundles without this optional field remain readable. The audit describe
 reader compatibility at capture time; it does not certify knowledge correctness or
 all creation versions, and later checks do not rewrite immutable evidence.
 
-Generation uses a separate exact gate (`0.162.1` and `0.162.0-alpha.17.2`). A capture
-fixture does not validate generation's tool-denial isolation, so newer reader
-admission alone does not admit a new extraction/consolidation executable.
+Generation uses a separate SemVer minimum of `0.162.1`, admitting later versions
+such as `0.162.2` and `0.163.0`. Versions below that minimum, including
+`0.162.0-alpha.17.2`, and malformed versions are rejected. Build metadata does not
+affect precedence. A capture fixture does not validate generation's tool-denial
+isolation; generation retains its own admission and execution checks.
 
 ## Worker and Actions verification
 

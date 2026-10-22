@@ -147,7 +147,10 @@ the latest attempted chunk; output fields are cleared before another call.
 Final output is capped at 64 KiB per call, exec stdout at 1 MiB, and exec stderr
 at 256 KiB. Timeout is configurable from one to 600 seconds. Timeout
 or bounded-I/O failure kills the process group owned by that invocation. Supported
-generation versions remain exactly gated to `0.162.1` and `0.162.0-alpha.17.2`.
+generation versions use a SemVer minimum of `0.162.1`, allowing newer patch and
+minor versions such as `0.162.2` and `0.163.0`. Older versions, including
+`0.162.0-alpha.17.2`, and malformed versions are rejected; build metadata does not
+affect precedence.
 Capture admission and its periodic fixture do not validate tool-denial isolation
 for newer generation runtimes.
 The version probe separately caps stdout at 4 KiB and stderr at 16 KiB. Invalid
