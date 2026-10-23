@@ -1,5 +1,35 @@
 use coding_memory::codex;
 #[test]
+fn generation_versions_use_a_semantic_minimum() {
+    for version in [
+        "0.162.1",
+        "0.162.1+build.1",
+        "0.162.2",
+        "0.163.0",
+        "0.163.0-alpha.1",
+        "1.0.0",
+    ] {
+        assert!(codex::generation_supported(version), "{version}");
+    }
+    for version in [
+        "0.161.9",
+        "0.162.0",
+        "0.162.0-alpha.17.2",
+        "0.162.1-alpha.1",
+        "0.163",
+        "invalid",
+        "",
+        "0.162.1\n",
+    ] {
+        assert!(!codex::generation_supported(version), "{version}");
+    }
+    assert!(!codex::generation_supported(&format!(
+        "0.162.1+{}",
+        "a".repeat(128)
+    )));
+}
+
+#[test]
 fn provisional_versions_use_semantic_minimums_not_an_exact_allowlist() {
     for v in ["0.162.0-alpha.17.2", "0.162.1", "0.163.0", "1.0.0"] {
         assert!(codex::supported(v), "{v}");

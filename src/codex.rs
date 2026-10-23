@@ -442,6 +442,7 @@ pub enum Capture {
 
 pub const MIN_READER_VERSION: &str = "0.162.0-alpha.17.2";
 pub const MIN_HISTORY_VERSION: &str = "0.162.0-alpha.2";
+pub const MIN_GENERATION_VERSION: &str = "0.162.1";
 fn admitted(version: &str, minimum: &str) -> bool {
     version.len() <= 128
         && semver::Version::parse(version).is_ok_and(|v| {
@@ -455,9 +456,9 @@ pub fn supported(version: &str) -> bool {
 pub fn history_supported(version: &str) -> bool {
     admitted(version, MIN_HISTORY_VERSION)
 }
-// Capture compatibility does not certify generation's deny-hook/isolation contract.
+// Generation admission is independent of capture compatibility checks.
 pub fn generation_supported(version: &str) -> bool {
-    matches!(version, "0.162.1" | "0.162.0-alpha.17.2")
+    admitted(version, MIN_GENERATION_VERSION)
 }
 /// Read only turn_context identity/cwd from the bounded local source artifact.
 /// An absent context is never attributed from a thread's current cwd.
