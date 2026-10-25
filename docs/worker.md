@@ -28,7 +28,7 @@ Save a private `worker.json` outside Git, adapting this example:
   }],
   "generation_binary": "/absolute/path/to/codex",
   "models": {
-    "extraction": "gpt-6.1-sol",
+    "extraction": "gpt-6-luna",
     "consolidation": "gpt-6.1-sol",
     "review": "gpt-6.1-sol"
   },
