@@ -17,11 +17,15 @@ CODEX_HOME=/path/to/state/generation/codex-home \
   codex -c 'cli_auth_credentials_store="file"' login
 coding-memory --state-dir /path/to/state external-policy --project-id PROJECT allow
 coding-memory --state-dir /path/to/state extract --project-id PROJECT \
-  --codex-binary /absolute/path/to/codex --model gpt-6.1-sol --timeout-seconds 300
+  --codex-binary /absolute/path/to/codex --model gpt-6-luna --timeout-seconds 300
 coding-memory --state-dir /path/to/state extraction-status --project-id PROJECT
 coding-memory --state-dir /path/to/state candidates --project-id PROJECT
 coding-memory --state-dir /path/to/state external-policy --project-id PROJECT deny
 ```
+
+The extraction model defaults to `gpt-6-luna`. Use `--model` to override it.
+Background workers use `models.extraction` in their private `worker.json`;
+update that field and restart the worker to change an existing installation.
 
 Setup creates an Engine-owned home, installs its deny hook, and marks the store
 excluded before generation starts. Login is an explicit human operation. The

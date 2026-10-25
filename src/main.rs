@@ -34,6 +34,29 @@ mod tests {
     use super::Cli;
     use clap::CommandFactory;
     #[test]
+    fn extraction_defaults_to_luna_and_allows_model_override() {
+        use clap::Parser;
+        for (options, expected) in [
+            (vec![], "gpt-6-luna"),
+            (vec!["--model", "custom-model"], "custom-model"),
+        ] {
+            let mut args = vec![
+                "coding-memory",
+                "--state-dir",
+                "/unused",
+                "extract",
+                "--project-id",
+                "alpha",
+            ];
+            args.extend(options);
+            let cli = Cli::try_parse_from(args).unwrap();
+            let super::Commands::Extract { model, .. } = cli.command else {
+                panic!("expected extraction command");
+            };
+            assert_eq!(model, expected);
+        }
+    }
+    #[test]
     fn command_definition_is_valid() {
         Cli::command().debug_assert();
     }
@@ -182,7 +205,7 @@ enum Commands {
         project_id: String,
         #[arg(long, default_value = "codex")]
         codex_binary: PathBuf,
-        #[arg(long, default_value = "gpt-6.1-sol")]
+        #[arg(long, default_value = "gpt-6-luna")]
         model: String,
         #[arg(long, default_value_t = 300, value_parser=clap::value_parser!(u64).range(1..=600))]
         timeout_seconds: u64,
