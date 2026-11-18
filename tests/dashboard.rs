@@ -125,6 +125,61 @@ fn attention_reasons_separate_extraction_and_consolidation_holds() -> Result<()>
 }
 
 #[test]
+fn deferred_capture_hints_for_unregistered_projects_are_surfaced() -> Result<()> {
+    let dir = tempdir()?;
+    let path = dir.path().join("state.sqlite");
+    let mut state = State::open(&path)?;
+    state.register_project("alpha", "/repo", 1)?;
+    // Without deferred hints the worker section reports the empty state
+    // explicitly instead of omitting the check.
+    assert!(render(dir.path())?.contains("No capture hints are deferred"));
+    let park = |state: &mut State, thread: &str, turn: &str, cwd: &str, at: i64| {
+        state.save_pending_hint(
+            &coding_memory::domain::RunKey {
+                store: "s".into(),
+                thread: thread.into(),
+                turn: turn.into(),
+            },
+            cwd,
+            at,
+        )
+    };
+    park(&mut state, "t1", "1", "/unregistered<script>", 1)?;
+    park(&mut state, "t1", "2", "/unregistered<script>", 2)?;
+    let html = render(dir.path())?;
+    for label in [
+        "2 capture hints deferred for a project awaiting registration or reconciliation",
+        "/unregistered&lt;script&gt;",
+        "Register the project, then reconcile its DSH projection",
+        "turns that ended before registration stay excluded as the enablement baseline",
+    ] {
+        assert!(html.contains(label), "Missing {label}");
+    }
+    assert!(!html.contains("/unregistered<script>"));
+
+    // Past the twenty-directory listing bound, the unlisted remainder is
+    // reported instead of silently hidden.
+    for i in 0..21 {
+        park(
+            &mut state,
+            &format!("extra-{i}"),
+            "1",
+            &format!("/dir-{i}"),
+            3 + i,
+        )?;
+    }
+    let html = render(dir.path())?;
+    assert!(
+        html.contains("2 more directories with deferred capture hints are not listed"),
+        "the truncated directories are counted: {}",
+        html.lines()
+            .find(|line| line.contains("more directories"))
+            .unwrap_or("(no line)")
+    );
+    Ok(())
+}
+
+#[test]
 fn missing_section_is_unavailable_while_empty_sections_are_zero() -> Result<()> {
     let dir = tempdir()?;
     let path = dir.path().join("state.sqlite");

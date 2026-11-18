@@ -1034,6 +1034,139 @@ fn workspace_retry_and_todo_events_are_bookkeeping_inside_a_turn() {
     );
 }
 
+/// The route a session or turn's requests are served on. A session records it
+/// before its first turn, and a mid-session switch appends another record
+/// inside the then-open turn; the payload names the provider and model, never
+/// the ask.
+fn model_selection(seq: u64) -> Value {
+    record(
+        seq,
+        "model/selection",
+        json!({"provider": "provider-a", "model": "model-a", "reasoningEffort": "high"}),
+    )
+}
+/// The agent preset a session was composed with, recorded before its first
+/// turn.
+fn agent_preset(seq: u64) -> Value {
+    record(
+        seq,
+        "agent-preset/selected",
+        json!({"agentPreset": "cordis"}),
+    )
+}
+/// A subagent launch descriptor: the child a turn delegates to. The paired
+/// call's `description` argument repeats its label, the recorded result
+/// reports the child, and the child session is excluded by its header and
+/// never captured through the parent.
+fn subagent_catalog(seq: u64) -> Value {
+    record(
+        seq,
+        "subagent/catalog",
+        json!({
+            "version": 0,
+            "childId": "child-1",
+            "childCreatedAt": 1234,
+            "mode": "continuable",
+            "label": "Review the worker"
+        }),
+    )
+}
+
+#[test]
+fn routing_preset_and_subagent_catalog_events_are_bookkeeping_inside_a_turn() {
+    // A route switch or a delegation can append these inside a completed turn.
+    // They describe routing, composition and delegation configuration, not
+    // facts about what the human asked, so a turn containing them must stay
+    // capturable and gain no evidence item.
+    let cases = [
+        ("model/selection", model_selection(5)),
+        ("agent-preset/selected", agent_preset(5)),
+        ("subagent/catalog", subagent_catalog(5)),
+    ];
+    let mut held = Vec::new();
+    for (kind, event) in cases {
+        let value = log(vec![
+            turn_start(3, 1),
+            human(4, 1, 1),
+            event,
+            turn_end(6, 1, json!({"kind": "completed"})),
+        ]);
+        match decode(&value, 1) {
+            Capture::Ready(bundle) => {
+                assert_eq!(
+                    bundle.items.len(),
+                    1,
+                    "{kind} must not become an evidence item"
+                );
+                assert_eq!(bundle.items[0]["type"], json!("userMessage"));
+            }
+            other => held.push(format!("{kind}: {other:?}")),
+        }
+    }
+    assert!(
+        held.is_empty(),
+        "these events must be bookkeeping, not held: {held:?}"
+    );
+}
+
+#[test]
+fn a_turn_with_a_model_switch_and_a_subagent_delegation_decodes() {
+    // The vocabulary of the production runs held as
+    // unknown_session_event_type, in the arrangement observed in DSH
+    // 0.2.2-rc.3 projections: a mid-turn route switch, and a catalog between
+    // the `subagent_fork` call whose `description` argument repeats the
+    // catalog label and the result that reports the child.
+    let value = log(vec![
+        turn_start(3, 1),
+        human(4, 1, 1),
+        model_selection(5),
+        record(
+            6,
+            "tool/call",
+            json!({"turn":1,"step":1,"callId":"c1","name":"subagent_fork",
+                "arguments":"{\"description\":\"Review the worker\",\"prompt\":\"Review the worker pipeline.\"}"}),
+        ),
+        subagent_catalog(7),
+        record(
+            8,
+            "tool/result",
+            json!({"turn":1,"step":1,"message":{"id":"t1","role":"tool","toolCallId":"c1","content":[{"type":"text","text":"child-1 continued"}]},"sourceEventSeqs":[6]}),
+        ),
+        assistant(9, 1, 1),
+        turn_end(10, 1, json!({"kind": "completed"})),
+    ]);
+    let Capture::Ready(bundle) = decode(&value, 1) else {
+        panic!("a turn with a model switch and a delegation is capturable");
+    };
+    let seqs: Vec<_> = bundle
+        .items
+        .iter()
+        .map(|item| item["seq"].as_u64().unwrap())
+        .collect();
+    assert_eq!(
+        seqs,
+        vec![4, 6, 8, 9],
+        "the ask, the delegation and the answer are evidence"
+    );
+    // Omitting the catalog is safe because its label and child id are already
+    // in the paired call and result the turn records as evidence.
+    let call = &bundle.items[1];
+    assert_eq!(call["type"], json!("toolCall"));
+    assert!(
+        call["data"]["arguments"]
+            .as_str()
+            .is_some_and(|arguments| arguments.contains("Review the worker")),
+        "the catalog label is duplicated in the call's description argument"
+    );
+    assert!(
+        bundle.items[2]["data"]["message"]["content"]
+            .to_string()
+            .contains("child-1"),
+        "the recorded result reports the child the catalog named"
+    );
+    assert_eq!(bundle.outcome, "completed");
+}
+
 #[test]
 fn a_turn_with_a_retry_pair_and_workspace_changes_decodes() {
     let value = log(vec![

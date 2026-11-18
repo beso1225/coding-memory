@@ -281,6 +281,13 @@ pub struct Report {
     pub consolidation_batches: usize,
     #[serde(default)]
     pub interrupted: bool,
+    /// Turn-end hints waiting for a project registration this cycle ended with.
+    ///
+    /// A deferred hint is not a stage failure: the run was never queued. It is
+    /// counted so a capture halt that no pipeline stage touches is visible in
+    /// cycle logs and the status view instead of passing silently.
+    #[serde(default)]
+    pub deferred_hints: usize,
     pub failures: Vec<Failure>,
 }
 #[derive(Debug, Serialize, Deserialize)]
@@ -440,6 +447,7 @@ pub async fn cycle(
         .await;
     }
     state.db.execute("DELETE FROM worker_claims WHERE (stage='capture' AND NOT EXISTS(SELECT 1 FROM runs r WHERE r.store=worker_claims.store AND r.thread=worker_claims.thread AND r.turn=worker_claims.turn AND r.state='capturing' AND r.token=worker_claims.token)) OR (stage='extraction' AND NOT EXISTS(SELECT 1 FROM extraction_jobs r WHERE r.store=worker_claims.store AND r.thread=worker_claims.thread AND r.turn=worker_claims.turn AND r.state='running' AND r.token=worker_claims.token)) OR (stage='consolidation' AND NOT EXISTS(SELECT 1 FROM consolidation_jobs j WHERE j.id=worker_claims.batch AND j.state='generating'))",[])?;
+    report.deferred_hints = usize::try_from(state.deferred_hint_total()?).unwrap_or(usize::MAX);
     report.completed_at = Some(ingestion::now());
     state.save_worker_report(&report)?;
     Ok(report)
@@ -491,6 +499,18 @@ impl State {
             let rows=q.query_map([],|r|Ok(json!({"state":r.get::<_,String>(0)?,"reason":r.get::<_,String>(1)?,"count":r.get::<_,i64>(2)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
             problems.insert(table.into(), json!(rows));
         }
+        // Deferred hints are not a run reason: the runs were never queued. They
+        // are reported separately so an unregistered project cannot stop
+        // capture while every grouped reason list stays empty. The directory
+        // count is the untruncated total; the groups are bounded to 20.
+        let deferred: Vec<_> = self
+            .deferred_hints()?
+            .into_iter()
+            .map(|group| {
+                json!({"cwd": group.cwd, "hints": group.hints, "oldest": group.oldest, "newest": group.newest})
+            })
+            .collect();
+        let deferred_directories = self.deferred_hint_directories()?;
         let active = if let Some(dbpath) = self.db.path() {
             ownership_active(
                 Path::new(dbpath)
@@ -501,7 +521,7 @@ impl State {
             false
         };
         Ok(
-            json!({"active":active,"last_cycle":last.map(|s|serde_json::from_str::<Report>(&s)).transpose()?,"counts":counts,"problems":problems,"runtime_checks":self.runtime_check_status()?}),
+            json!({"active":active,"last_cycle":last.map(|s|serde_json::from_str::<Report>(&s)).transpose()?,"counts":counts,"problems":problems,"deferred_hint_groups":deferred,"deferred_hint_directories":deferred_directories,"runtime_checks":self.runtime_check_status()?}),
         )
     }
     pub fn recoverable_batches(&self) -> Result<Vec<(i64, String)>> {
@@ -565,13 +585,23 @@ async fn run_owned(
     }
 }
 impl State {
-    fn interrupt_worker_report(&mut self) -> Result<()> {
+    /// Mark the uncompleted cycle report as interrupted and complete it.
+    ///
+    /// Called when the worker's shutdown signal wins against a running cycle;
+    /// the refreshed deferred-hint count keeps the persisted report honest
+    /// about hints that existed while the cycle ran.
+    pub fn interrupt_worker_report(&mut self) -> Result<()> {
         let value = self.worker_status()?;
         if !value["last_cycle"].is_null() {
             let mut report: Report = serde_json::from_value(value["last_cycle"].clone())?;
             if report.completed_at.is_none() {
                 report.interrupted = true;
                 report.completed_at = Some(ingestion::now());
+                // The opening report of a cycle records no deferred count; an
+                // interrupt persists that report, so refresh the count here
+                // instead of reporting zero hints for a cycle that had them.
+                report.deferred_hints =
+                    usize::try_from(self.deferred_hint_total()?).unwrap_or(usize::MAX);
                 self.save_worker_report(&report)?;
             }
         }

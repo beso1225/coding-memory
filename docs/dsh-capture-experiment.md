@@ -151,8 +151,23 @@ covered by `tests/dsh.rs`:
     failure is recorded on `turn/end`. `todo/write` is a log-only, whole-list
     last-write-wins snapshot with no native identity, so it is the model's plan
     rather than the human's ask and cannot become a distinct evidence item.
-  Other contract types, such as plugin hooks, goals, schedules, teams, and
-  subagent descriptors, stay held until their omission is shown safe.
+    DSH builds after `0.2.1-rc.2` (observed through `0.2.2-rc.3`) additionally
+    emit `model/selection` (the provider, model and reasoning effort a session
+    starts with, and again inside a turn when the route switches mid-session),
+    `agent-preset/selected` (the harness composition a session runs under), and
+    `subagent/catalog` (the launch descriptor of a child a turn delegates to).
+    All three are routing, composition or delegation configuration. The answer
+    keeps its provider and model in evidence through each assistant message's
+    recorded source — the reasoning effort is routing configuration, dropped
+    with the record — and the delegation is the turn's own tool call and
+    result: in observed `0.2.2-rc.3` projections the descriptor's label equals
+    the paired call's `description` argument, and the child id appears in the
+    recorded result. The child session is excluded by its header. Production
+    projections held runs as `unknown_session_event_type` until these were
+    admitted, so each addition is regression-tested against the observed
+    vocabulary and the observed call/catalog/result arrangement.
+  Other contract types, such as plugin hooks, goals, schedules and teams, stay
+  held until their omission is shown safe.
 - Outcomes map `completed → completed`, `error → failed`,
   `aborted`/`interrupted → interrupted`; `blocked`, `max-tokens`, `forked`, and
   plugin-defined kinds are held as `unsupported_turn_end_reason` instead of
@@ -352,9 +367,15 @@ These were found by the measurement and are fixed with regression tests:
   route, but a route that changes the event vocabulary would surface as a held
   turn, not silent capture.
 - The verified DSH revision is `0.2.1-rc.2` (logical session format v4). The
-  adapter accepts versions up to 4; revalidate after a DSH upgrade. A turn whose
+  adapter accepts versions up to 4; revalidate after a DSH upgrade. Production
+  projections from builds through `0.2.2-rc.3` (schema 1, format v4) were
+  inspected after the `model/selection`, `agent-preset/selected` and
+  `subagent/catalog` additions above: the recorded windows of the runs held as
+  `unknown_session_event_type` contain only known types plus these three, and
+  `tests/dsh.rs` covers that observed vocabulary and the observed
+  call/catalog/result arrangement. A turn whose
   own records exceed the bridge's 16 MiB projection bound is a permanent
-  over-limit outcome: the bridge asks the engine to hold the run as
+  over-limit outcome: the bridge asks the engine to hold that run as
   `history_over_limit` rather than retrying the read or capturing partially.
 - A deferred projection written before registration and a held run's projection
   are retained for `register`/`reconcile` or an explicit retry and are not removed

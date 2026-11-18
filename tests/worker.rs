@@ -267,6 +267,137 @@ async fn reader_failure_is_persisted_without_disabling_status_or_retrieval() -> 
     assert!(state.worker_status()?["last_cycle"]["completed_at"].is_number());
     Ok(())
 }
+#[test]
+fn deferred_hints_are_grouped_counted_and_reported() -> Result<()> {
+    let d = tempdir()?;
+    let mut state = State::open(&d.path().join("state.sqlite"))?;
+    assert_eq!(state.deferred_hint_total()?, 0);
+    assert!(state.deferred_hints()?.is_empty());
+    assert_eq!(state.deferred_hint_directories()?, 0);
+
+    // Two hints park for one unregistered directory, one for another.
+    state.save_pending_hint(&key("older-1"), "/unregistered-a", 10)?;
+    state.save_pending_hint(&key("older-2"), "/unregistered-a", 20)?;
+    state.save_pending_hint(&key("newer"), "/unregistered-b", 30)?;
+    assert_eq!(state.deferred_hint_total()?, 3);
+    assert_eq!(state.deferred_hint_directories()?, 2);
+    let groups = state.deferred_hints()?;
+    assert_eq!(groups.len(), 2);
+    assert_eq!(
+        (
+            groups[0].cwd.as_str(),
+            groups[0].hints,
+            groups[0].oldest,
+            groups[0].newest
+        ),
+        ("/unregistered-a", 2, 10, 20),
+        "the group waiting longest for registration is reported first"
+    );
+    assert_eq!(
+        (
+            groups[1].cwd.as_str(),
+            groups[1].hints,
+            groups[1].oldest,
+            groups[1].newest
+        ),
+        ("/unregistered-b", 1, 30, 30)
+    );
+
+    // Status exposes the same groups, and the cycle report carries the total,
+    // so a silent capture halt is visible outside the reason lists.
+    let status = state.worker_status()?;
+    assert_eq!(
+        status["deferred_hint_groups"][0]["cwd"],
+        json!("/unregistered-a")
+    );
+    assert_eq!(status["deferred_hint_groups"][0]["hints"], json!(2));
+    assert_eq!(
+        status["deferred_hint_groups"][1]["cwd"],
+        json!("/unregistered-b")
+    );
+    assert_eq!(status["deferred_hint_directories"], json!(2));
+    state.save_worker_report(&coding_memory::worker::Report {
+        started_at: 1,
+        completed_at: Some(2),
+        deferred_hints: 3,
+        ..Default::default()
+    })?;
+    let last = state.worker_status()?["last_cycle"].clone();
+    assert_eq!(last["deferred_hints"], json!(3));
+
+    // Past the group bound the listing truncates, but the directory count
+    // keeps the full extent visible instead of hiding part of the halt.
+    for i in 0..22 {
+        state.save_pending_hint(
+            &key(&format!("dir-{i}")),
+            &format!("/unregistered-{i}"),
+            40 + i,
+        )?;
+    }
+    assert_eq!(state.deferred_hint_directories()?, 24);
+    assert_eq!(state.deferred_hints()?.len(), 20);
+    let status = state.worker_status()?;
+    assert_eq!(status["deferred_hint_directories"], json!(24));
+    assert_eq!(
+        status["deferred_hint_groups"].as_array().map(Vec::len),
+        Some(20)
+    );
+
+    // Reports persisted before the field existed still decode.
+    let legacy = r#"{"started_at":1,"completed_at":2,"recovered":0,"capture_attempts":0,"extraction_attempts":0,"consolidation_batches":0,"interrupted":false,"failures":[]}"#;
+    let legacy: coding_memory::worker::Report = serde_json::from_str(legacy)?;
+    assert_eq!(legacy.deferred_hints, 0);
+    Ok(())
+}
+#[test]
+fn an_interrupted_cycle_still_reports_the_deferred_hint_count() -> Result<()> {
+    let d = tempdir()?;
+    let mut state = State::open(&d.path().join("state.sqlite"))?;
+    // The report a cycle saves while it is still running carries no count yet;
+    // an interrupt must refresh it rather than persist zero.
+    state.save_worker_report(&coding_memory::worker::Report {
+        started_at: 1,
+        ..Default::default()
+    })?;
+    state.save_pending_hint(&key("parked"), "/unregistered", 10)?;
+    state.interrupt_worker_report()?;
+    let last = state.worker_status()?["last_cycle"].clone();
+    assert_eq!(last["interrupted"], json!(true));
+    assert_eq!(
+        last["deferred_hints"],
+        json!(1),
+        "an interrupted cycle keeps its deferred-hint count"
+    );
+    Ok(())
+}
+#[tokio::test]
+async fn a_cycle_counts_hints_deferred_for_unregistered_projects() -> Result<()> {
+    let d = tempdir()?;
+    let (mut state, config) = configured(d.path())?;
+    // A live run ended in a directory no project registered: the hint parks,
+    // no run is queued, and no stage failure names it.
+    state.save_pending_hint(&key("parked"), "/unregistered", 1)?;
+    let report = coding_memory::worker::cycle(
+        &mut state,
+        d.path(),
+        &config,
+        Path::new(env!("CARGO_BIN_EXE_coding-memory")),
+    )
+    .await?;
+    assert_eq!(report.deferred_hints, 1);
+    assert!(
+        report
+            .failures
+            .iter()
+            .all(|failure| failure.stage != "project_unregistered"),
+        "a deferred hint is an observation, not a stage failure"
+    );
+    assert_eq!(
+        state.worker_status()?["deferred_hint_groups"][0]["cwd"],
+        json!("/unregistered")
+    );
+    Ok(())
+}
 #[cfg(target_os = "macos")]
 #[test]
 fn launchd_argv_and_xml_work_with_spaces_and_metacharacters() -> Result<()> {
