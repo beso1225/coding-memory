@@ -188,19 +188,31 @@ fn worker(html: &mut String, state: &State) {
                 );
             }
         }
+        // A hint parks before registration and stays parked until its
+        // reconcile resolves it, so the attention line names both actions.
         let deferred = state.deferred_hints()?;
         if deferred.is_empty() {
-            out.push_str("<p>No capture hints are deferred for unregistered projects.</p>");
+            out.push_str(
+                "<p>No capture hints are deferred for projects awaiting registration.</p>",
+            );
         } else {
-            for group in deferred {
+            for group in &deferred {
                 let _ = write!(
                     out,
-                    "<p class=attention>{} capture hint{} deferred for an unregistered project at <code>{}</code> (oldest {}, newest {}). Register the project, then reconcile its DSH projection; turns that ended before registration stay excluded as the enablement baseline.</p>",
+                    "<p class=attention>{} capture hint{} deferred for a project awaiting registration or reconciliation at <code>{}</code> (oldest {}, newest {}). Register the project, then reconcile its DSH projection; turns that ended before registration stay excluded as the enablement baseline.</p>",
                     group.hints,
                     if group.hints == 1 { "" } else { "s" },
                     escape(&group.cwd),
                     timestamp(group.oldest),
                     timestamp(group.newest)
+                );
+            }
+            let directories = state.deferred_hint_directories()?;
+            if directories > deferred.len() as i64 {
+                let _ = write!(
+                    out,
+                    "<p class=attention>{} more directories with deferred capture hints are not listed.</p>",
+                    directories - deferred.len() as i64
                 );
             }
         }

@@ -120,10 +120,13 @@ instantaneous lock observation and can change after generation.
 The view includes actual worker lock ownership, the last cycle report, stage and
 state counts by project, grouped attention reasons, recent successful extraction
 outcomes (including `succeeded_empty`), and applied note IDs. Capture hints
-deferred for unregistered projects are listed with their recorded directory and
-hint ages: a deferred hint means a live run ended in a project the Engine has
-never registered, so no run was queued and no stage reason names it. The worker
-counts them in every cycle report. Register the project as described in
+deferred for projects that are not registered — or registered but not yet
+reconciled with their projection — are listed with their recorded directory and
+the oldest and newest hint timestamps (UTC): a deferred hint means a live run
+ended while no registration covered it, so no run was queued and no stage reason
+names it. Up to 20 directories are listed, and a further-directories line
+reports the unlisted remainder. The worker counts deferred hints in every cycle
+report. Register the project as described in
 [ingestion](ingestion.md), then reconcile its retained DSH projection; turns
 that ended before registration stay excluded as the enablement baseline, and
 capture resumes for turns that end afterwards. Consolidation,
@@ -157,16 +160,22 @@ reuses `worker-status` semantics and does not start a worker or change its lock
 file. Captured content, candidate claims, prompts, provenance, file contents,
 credentials, raw reason strings and model stderr are omitted. Known reason codes
 are translated to static guidance; unknown reasons are withheld. HTML metadata
-is escaped and the document loads no external resources. Keep the generated
-file private: project names and memory IDs are operational metadata, and shell
+is escaped and the document loads no external resources. Beyond the state
+directory path, deferred-hint attention lines also show the recorded working
+directory of the project they name, because that directory is the datum an
+operator needs in order to register it. Keep the generated
+file private: project names, memory IDs and those directories are operational
+metadata, and shell
 redirection creates the file with your shell's permissions.
 
 `worker-status` returns actual lock activity, the last cycle report, grouped
 counts for runs/extraction jobs/candidates/consolidation jobs, bounded grouped
-failure reasons, `deferred_hints` groups for capture hints parked by
-unregistered projects, and `runtime_checks` metadata. The cycle report counts
+failure reasons, `deferred_hint_groups` for capture hints parked by
+unregistered projects with the untruncated `deferred_hint_directories` count,
+and `runtime_checks` metadata. The cycle report counts
 deferred hints so a capture halt that no stage failure names is visible in
-cycle logs. Cycle counters count attempts, not successful memories. Use
+cycle logs, including a cycle interrupted before its completion count. Cycle
+counters count attempts, not successful memories. Use
 `status`, `extraction-status --project-id PROJECT`, `candidates --project-id PROJECT`
 and `consolidation-status` to inspect individual records.
 New consolidation records include bounded sizing diagnostics. Use

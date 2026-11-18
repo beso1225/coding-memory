@@ -32,11 +32,13 @@ pub struct RunStatus {
     pub reason: Option<String>,
     pub evidence: Option<String>,
 }
-/// Turn-end hints parked for one directory whose project is not registered.
+/// Turn-end hints parked for one recorded directory.
 ///
-/// A deferred hint means a live process observed a run end that capture could
-/// not queue: the engine stays silent about it unless this group is reported,
-/// because no pipeline stage ever touches an unregistered project.
+/// A hint parks when its project is not registered, and stays parked until a
+/// `reconcile` of its session's projection resolves it — including the window
+/// after registration but before that reconcile. No pipeline stage touches a
+/// parked hint's run, so the engine stays silent about it unless this group is
+/// reported.
 #[derive(Debug, Serialize)]
 pub struct DeferredHints {
     pub cwd: String,
@@ -305,7 +307,9 @@ impl State {
         )?)
     }
     /// Deferred hints grouped by their recorded working directory, the group
-    /// waiting longest for registration first.
+    /// waiting longest for registration first. At most 20 groups are listed;
+    /// `deferred_hint_directories` reports the untruncated total so the bound
+    /// stays visible.
     pub fn deferred_hints(&self) -> Result<Vec<DeferredHints>> {
         let mut stmt = self.db.prepare(
             "SELECT cwd,count(*),min(at),max(at) FROM pending_hints GROUP BY cwd ORDER BY min(at),cwd LIMIT 20",
@@ -319,6 +323,15 @@ impl State {
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+    /// Distinct directories with deferred hints, including those past the
+    /// group bound.
+    pub fn deferred_hint_directories(&self) -> Result<i64> {
+        Ok(self
+            .db
+            .query_row("SELECT count(DISTINCT cwd) FROM pending_hints", [], |r| {
+                r.get(0)
+            })?)
     }
     /// Total turn-end hints waiting for project registration.
     pub fn deferred_hint_total(&self) -> Result<i64> {

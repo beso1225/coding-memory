@@ -133,27 +133,22 @@ fn deferred_capture_hints_for_unregistered_projects_are_surfaced() -> Result<()>
     // Without deferred hints the worker section reports the empty state
     // explicitly instead of omitting the check.
     assert!(render(dir.path())?.contains("No capture hints are deferred"));
-    state.save_pending_hint(
-        &coding_memory::domain::RunKey {
-            store: "s".into(),
-            thread: "t1".into(),
-            turn: "1".into(),
-        },
-        "/unregistered<script>",
-        1,
-    )?;
-    state.save_pending_hint(
-        &coding_memory::domain::RunKey {
-            store: "s".into(),
-            thread: "t1".into(),
-            turn: "2".into(),
-        },
-        "/unregistered<script>",
-        2,
-    )?;
+    let park = |state: &mut State, thread: &str, turn: &str, cwd: &str, at: i64| {
+        state.save_pending_hint(
+            &coding_memory::domain::RunKey {
+                store: "s".into(),
+                thread: thread.into(),
+                turn: turn.into(),
+            },
+            cwd,
+            at,
+        )
+    };
+    park(&mut state, "t1", "1", "/unregistered<script>", 1)?;
+    park(&mut state, "t1", "2", "/unregistered<script>", 2)?;
     let html = render(dir.path())?;
     for label in [
-        "2 capture hints deferred for an unregistered project",
+        "2 capture hints deferred for a project awaiting registration or reconciliation",
         "/unregistered&lt;script&gt;",
         "Register the project, then reconcile its DSH projection",
         "turns that ended before registration stay excluded as the enablement baseline",
@@ -161,6 +156,26 @@ fn deferred_capture_hints_for_unregistered_projects_are_surfaced() -> Result<()>
         assert!(html.contains(label), "Missing {label}");
     }
     assert!(!html.contains("/unregistered<script>"));
+
+    // Past the twenty-directory listing bound, the unlisted remainder is
+    // reported instead of silently hidden.
+    for i in 0..21 {
+        park(
+            &mut state,
+            &format!("extra-{i}"),
+            "1",
+            &format!("/dir-{i}"),
+            3 + i,
+        )?;
+    }
+    let html = render(dir.path())?;
+    assert!(
+        html.contains("2 more directories with deferred capture hints are not listed"),
+        "the truncated directories are counted: {}",
+        html.lines()
+            .find(|line| line.contains("more directories"))
+            .unwrap_or("(no line)")
+    );
     Ok(())
 }
 
