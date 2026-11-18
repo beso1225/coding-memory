@@ -151,8 +151,19 @@ covered by `tests/dsh.rs`:
     failure is recorded on `turn/end`. `todo/write` is a log-only, whole-list
     last-write-wins snapshot with no native identity, so it is the model's plan
     rather than the human's ask and cannot become a distinct evidence item.
-  Other contract types, such as plugin hooks, goals, schedules, teams, and
-  subagent descriptors, stay held until their omission is shown safe.
+    DSH builds after `0.2.1-rc.2` (observed through `0.2.2-rc.3`) additionally
+    emit `model/selection` (the provider, model and reasoning effort a session
+    starts with, and again inside a turn when the route switches mid-session),
+    `agent-preset/selected` (the harness composition a session runs under), and
+    `subagent/catalog` (the launch descriptor of a child a turn delegates to).
+    All three are routing, composition or delegation configuration: the ask and
+    the answer are already evidence, the delegation is the turn's own tool call
+    and result, and the child session is excluded by its header. Production
+    projections held runs as `unknown_session_event_type` until these were
+    admitted, so each addition is replay-tested against the recorded record
+    sequence.
+  Other contract types, such as plugin hooks, goals, schedules and teams, stay
+  held until their omission is shown safe.
 - Outcomes map `completed → completed`, `error → failed`,
   `aborted`/`interrupted → interrupted`; `blocked`, `max-tokens`, `forked`, and
   plugin-defined kinds are held as `unsupported_turn_end_reason` instead of
@@ -352,7 +363,12 @@ These were found by the measurement and are fixed with regression tests:
   route, but a route that changes the event vocabulary would surface as a held
   turn, not silent capture.
 - The verified DSH revision is `0.2.1-rc.2` (logical session format v4). The
-  adapter accepts versions up to 4; revalidate after a DSH upgrade. A turn whose
+  adapter accepts versions up to 4; revalidate after a DSH upgrade. Production
+  projections from builds through `0.2.2-rc.3` (schema 1, format v4) were
+  inspected after the `model/selection`, `agent-preset/selected` and
+  `subagent/catalog` additions above: the recorded windows of the runs held as
+  `unknown_session_event_type` contain only known types plus these three, and
+  `tests/dsh.rs` replays their record sequences. A turn whose
   own records exceed the bridge's 16 MiB projection bound is a permanent
   over-limit outcome: the bridge asks the engine to hold the run as
   `history_over_limit` rather than retrying the read or capturing partially.

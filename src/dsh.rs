@@ -277,6 +277,22 @@ const BOOKKEEPING: &[&str] = &[
     // and capturing it would add items the extraction vocabulary cannot cite
     // or tell apart across snapshots.
     "todo/write",
+    // The route a turn's requests are served on (provider, model, reasoning
+    // effort) is harness routing state, like the permission preset or sandbox
+    // mode: it records how requests are served, not what the human asked. A
+    // session records its route at start, and a mid-session switch appends
+    // another record inside the then-open turn; the committed answer that the
+    // route produced is already evidence.
+    "model/selection",
+    // The agent preset names the harness composition a session runs under, not
+    // anything the human asked for.
+    "agent-preset/selected",
+    // A subagent launch descriptor records the child a turn delegates to: its
+    // identity, mode and label. The delegation itself is evidence as the
+    // turn's own tool call and result, the descriptor is the child's
+    // configuration, and the child session is excluded by its own header, so
+    // this record adds nothing the turn's reader needs.
+    "subagent/catalog",
 ];
 /// Event types that become immutable evidence for the owning turn.
 const RELEVANT_FOR_EVIDENCE: &[&str] = &[
