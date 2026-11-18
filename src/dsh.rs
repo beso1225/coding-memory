@@ -281,17 +281,20 @@ const BOOKKEEPING: &[&str] = &[
     // effort) is harness routing state, like the permission preset or sandbox
     // mode: it records how requests are served, not what the human asked. A
     // session records its route at start, and a mid-session switch appends
-    // another record inside the then-open turn; the committed answer that the
-    // route produced is already evidence.
+    // another record inside the then-open turn. The provider and model stay in
+    // the evidence through every assistant message's recorded source; the
+    // reasoning effort is routing configuration and is dropped with the record.
     "model/selection",
     // The agent preset names the harness composition a session runs under, not
     // anything the human asked for.
     "agent-preset/selected",
     // A subagent launch descriptor records the child a turn delegates to: its
-    // identity, mode and label. The delegation itself is evidence as the
-    // turn's own tool call and result, the descriptor is the child's
-    // configuration, and the child session is excluded by its own header, so
-    // this record adds nothing the turn's reader needs.
+    // identity, mode and label. The delegation is evidence as the turn's own
+    // tool call and result — in observed 0.2.2-rc.3 projections the
+    // descriptor's label equals the paired call's `description` argument and
+    // the child id appears in the recorded result — and the child session is
+    // excluded by its own header, so this record adds nothing the turn's
+    // reader needs.
     "subagent/catalog",
 ];
 /// Event types that become immutable evidence for the owning turn.
@@ -446,8 +449,9 @@ pub fn decode_after(
     let mut calls = HashSet::new();
     let mut results = HashSet::new();
     let mut items = Vec::new();
-    // The bound covers every projected record of the turn, including attempts
-    // that never become items: the projection's own size is the cost paid.
+    // The bound covers every record that becomes an item, and every settled
+    // attempt. Bookkeeping is skipped before its payload is counted; the
+    // projection's own read remains the cost paid for it.
     let mut bytes: usize = 0;
     let mut human = false;
     // The turn opened by the nearest preceding `turn/start`. DSH records no
