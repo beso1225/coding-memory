@@ -188,6 +188,22 @@ fn worker(html: &mut String, state: &State) {
                 );
             }
         }
+        let deferred = state.deferred_hints()?;
+        if deferred.is_empty() {
+            out.push_str("<p>No capture hints are deferred for unregistered projects.</p>");
+        } else {
+            for group in deferred {
+                let _ = write!(
+                    out,
+                    "<p class=attention>{} capture hint{} deferred for an unregistered project at <code>{}</code> (oldest {}, newest {}). Register the project, then reconcile its DSH projection; turns that ended before registration stay excluded as the enablement baseline.</p>",
+                    group.hints,
+                    if group.hints == 1 { "" } else { "s" },
+                    escape(&group.cwd),
+                    timestamp(group.oldest),
+                    timestamp(group.newest)
+                );
+            }
+        }
         out.push_str("<p>Times are UTC. A completed cycle can include failures or held work. Attempts are not published-memory counts.</p>");
         Ok(out)
     })();

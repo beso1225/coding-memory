@@ -281,6 +281,13 @@ pub struct Report {
     pub consolidation_batches: usize,
     #[serde(default)]
     pub interrupted: bool,
+    /// Turn-end hints waiting for a project registration this cycle ended with.
+    ///
+    /// A deferred hint is not a stage failure: the run was never queued. It is
+    /// counted so a capture halt that no pipeline stage touches is visible in
+    /// cycle logs and the status view instead of passing silently.
+    #[serde(default)]
+    pub deferred_hints: usize,
     pub failures: Vec<Failure>,
 }
 #[derive(Debug, Serialize, Deserialize)]
@@ -440,6 +447,7 @@ pub async fn cycle(
         .await;
     }
     state.db.execute("DELETE FROM worker_claims WHERE (stage='capture' AND NOT EXISTS(SELECT 1 FROM runs r WHERE r.store=worker_claims.store AND r.thread=worker_claims.thread AND r.turn=worker_claims.turn AND r.state='capturing' AND r.token=worker_claims.token)) OR (stage='extraction' AND NOT EXISTS(SELECT 1 FROM extraction_jobs r WHERE r.store=worker_claims.store AND r.thread=worker_claims.thread AND r.turn=worker_claims.turn AND r.state='running' AND r.token=worker_claims.token)) OR (stage='consolidation' AND NOT EXISTS(SELECT 1 FROM consolidation_jobs j WHERE j.id=worker_claims.batch AND j.state='generating'))",[])?;
+    report.deferred_hints = usize::try_from(state.deferred_hint_total()?).unwrap_or(usize::MAX);
     report.completed_at = Some(ingestion::now());
     state.save_worker_report(&report)?;
     Ok(report)
@@ -491,6 +499,16 @@ impl State {
             let rows=q.query_map([],|r|Ok(json!({"state":r.get::<_,String>(0)?,"reason":r.get::<_,String>(1)?,"count":r.get::<_,i64>(2)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
             problems.insert(table.into(), json!(rows));
         }
+        // Deferred hints are not a run reason: the runs were never queued. They
+        // are reported separately so an unregistered project cannot stop
+        // capture while every grouped reason list stays empty.
+        let deferred: Vec<_> = self
+            .deferred_hints()?
+            .into_iter()
+            .map(|group| {
+                json!({"cwd": group.cwd, "hints": group.hints, "oldest": group.oldest, "newest": group.newest})
+            })
+            .collect();
         let active = if let Some(dbpath) = self.db.path() {
             ownership_active(
                 Path::new(dbpath)
@@ -501,7 +519,7 @@ impl State {
             false
         };
         Ok(
-            json!({"active":active,"last_cycle":last.map(|s|serde_json::from_str::<Report>(&s)).transpose()?,"counts":counts,"problems":problems,"runtime_checks":self.runtime_check_status()?}),
+            json!({"active":active,"last_cycle":last.map(|s|serde_json::from_str::<Report>(&s)).transpose()?,"counts":counts,"problems":problems,"deferred_hints":deferred,"runtime_checks":self.runtime_check_status()?}),
         )
     }
     pub fn recoverable_batches(&self) -> Result<Vec<(i64, String)>> {

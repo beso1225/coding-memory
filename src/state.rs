@@ -32,6 +32,18 @@ pub struct RunStatus {
     pub reason: Option<String>,
     pub evidence: Option<String>,
 }
+/// Turn-end hints parked for one directory whose project is not registered.
+///
+/// A deferred hint means a live process observed a run end that capture could
+/// not queue: the engine stays silent about it unless this group is reported,
+/// because no pipeline stage ever touches an unregistered project.
+#[derive(Debug, Serialize)]
+pub struct DeferredHints {
+    pub cwd: String,
+    pub hints: i64,
+    pub oldest: i64,
+    pub newest: i64,
+}
 
 impl State {
     /// Read existing state without schema setup, journal changes, or directory
@@ -291,6 +303,28 @@ impl State {
             "DELETE FROM pending_hints WHERE store=?1 AND at < ?2",
             params![store, before],
         )?)
+    }
+    /// Deferred hints grouped by their recorded working directory, the group
+    /// waiting longest for registration first.
+    pub fn deferred_hints(&self) -> Result<Vec<DeferredHints>> {
+        let mut stmt = self.db.prepare(
+            "SELECT cwd,count(*),min(at),max(at) FROM pending_hints GROUP BY cwd ORDER BY min(at),cwd LIMIT 20",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(DeferredHints {
+                cwd: r.get(0)?,
+                hints: r.get(1)?,
+                oldest: r.get(2)?,
+                newest: r.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+    /// Total turn-end hints waiting for project registration.
+    pub fn deferred_hint_total(&self) -> Result<i64> {
+        Ok(self
+            .db
+            .query_row("SELECT count(*) FROM pending_hints", [], |r| r.get(0))?)
     }
     /// Whether a live runtime observed this exact turn end.
     pub fn hinted(&self, key: &RunKey) -> Result<bool> {

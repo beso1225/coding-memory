@@ -91,8 +91,11 @@ holds a newer format as `unsupported_history_version`; revalidate capture after
 a DSH upgrade.
 
 The first turn of an unregistered project is deferred, and the plugin publishes
-`<state-dir>/dsh/projections/<session>.<turn>.json`. Register and reconcile that
-snapshot once; later turns are captured automatically:
+`<state-dir>/dsh/projections/<session>.<turn>.json`. Deferred hints are grouped
+by their recorded directory in `worker-status` output and the dashboard's
+worker section, so an unregistered project is visible instead of silently
+stopping capture while every stage reason list stays empty. Register and
+reconcile that snapshot once; later turns are captured automatically:
 
 ```sh
 coding-memory --state-dir /absolute/engine-state dsh --dsh-home /absolute/dsh-home \

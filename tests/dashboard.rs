@@ -125,6 +125,46 @@ fn attention_reasons_separate_extraction_and_consolidation_holds() -> Result<()>
 }
 
 #[test]
+fn deferred_capture_hints_for_unregistered_projects_are_surfaced() -> Result<()> {
+    let dir = tempdir()?;
+    let path = dir.path().join("state.sqlite");
+    let mut state = State::open(&path)?;
+    state.register_project("alpha", "/repo", 1)?;
+    // Without deferred hints the worker section reports the empty state
+    // explicitly instead of omitting the check.
+    assert!(render(dir.path())?.contains("No capture hints are deferred"));
+    state.save_pending_hint(
+        &coding_memory::domain::RunKey {
+            store: "s".into(),
+            thread: "t1".into(),
+            turn: "1".into(),
+        },
+        "/unregistered<script>",
+        1,
+    )?;
+    state.save_pending_hint(
+        &coding_memory::domain::RunKey {
+            store: "s".into(),
+            thread: "t1".into(),
+            turn: "2".into(),
+        },
+        "/unregistered<script>",
+        2,
+    )?;
+    let html = render(dir.path())?;
+    for label in [
+        "2 capture hints deferred for an unregistered project",
+        "/unregistered&lt;script&gt;",
+        "Register the project, then reconcile its DSH projection",
+        "turns that ended before registration stay excluded as the enablement baseline",
+    ] {
+        assert!(html.contains(label), "Missing {label}");
+    }
+    assert!(!html.contains("/unregistered<script>"));
+    Ok(())
+}
+
+#[test]
 fn missing_section_is_unavailable_while_empty_sections_are_zero() -> Result<()> {
     let dir = tempdir()?;
     let path = dir.path().join("state.sqlite");
